@@ -71,3 +71,13 @@
 debug/release workspace 各 **67 个测试**通过，0 失败／忽略。新增读取副作用、RMW 锁存与分次写入、任意 JSR 前缀接续 step、索引写入和七周期 RESET 事件回归。旧 M0/M1 中有意只断言必要访问的 JSR/RTS/RTI/IRQ/RESET 列表，按手册补入真实 dummy read；原有结果、标志、顺序和周期预期保留。
 
 格式、全目标 check、全目标 Clippy `-D warnings`、CPU Wasm 编译和 diff 检查通过。M2.3 仍保留 M1 的中断边界采样约定；没有将总线比较通过等同于引脚相位通过，M2.4～M2.5 待完成。远程 CI 尚未运行。
+
+## M2.4：周期中断采样子阶段
+
+同日同工具链。IRQ/NMI 已改为周期采样、指令阶段轮询，并实现分支轮询差异及 BRK/IRQ 的 NMI 向量抢占。debug/release workspace 各 **73 个测试**通过；96 个固定 revD 引脚场景（2304 周期）逐项比较总线地址／数据／读写／SYNC 通过。`python3 tools/prepare_visual6502.py` 校验模型文件；`node tools/verify_visual6502.cjs` 实际重跑 96 个场景，生成观察与固定 fixture 一致。本地 Node `v26.8.1`。
+
+Klaus 中断适配在初次复核时发现跨行替换误删错误陷阱，那个试跑结果作废，未提交错误镜像。修正后校验保留原始 505 条指令语句及全部陷阱；decimal 适配也增加指令保留校验。`python3 tools/prepare_klaus.py` 重建并校验最终镜像／符号通过。
+
+`cargo run -p hesper-cpu6502 --example interrupt --release --offline -- --feedback-delay 4` 实际到达 `$06F5`，1049 个 step／3013 周期，NMI/IRQ/BRK 顺序计数 `[1,3,2]`。默认 0 延迟实际在 `$075C` 退出失败：与上游注明的真实 NMOS BRK/NMI 重叠 B 位问题一致；1～3 同类失败，5～10 超出该程序另一组响应时序预期。没有关闭陷阱、吞掉错误或把默认配置报告为通过。固定配置、哈希及复現命令见测试数据说明。
+
+格式、全目标 check、全目标 Clippy `-D warnings`、diff 检查通过；完整 151 万官方单步用例已在此版本重新比较结果、周期数量及总线。RDY/SO、半周期和物理 RESET 持续输入尚未实现，M2.4 及 M2 整体仍未验收；远程 CI 未运行。

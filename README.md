@@ -2,7 +2,7 @@
 
 用 Rust 编写的复古计算机模拟项目，以独立、可测试、可复用的 **MOS NMOS 6502 CPU 核心**为主体。按 CPU → Apple I → 原版 Apple II → WebAssembly 的顺序推进。
 
-M1 已实现全部 151 个 NMOS 官方 opcode（56 条指令及其寻址方式）、二进制／十进制 ADC/SBC、BRK/RTI 与指令边界上的 IRQ/NMI。另有 64 KiB RAM Bus、复位、寄存器快照、周期统计、结构化错误和自包含 CLI 演示。具体寻址方式、周期、标志和测试映射见 [opcode 清单](docs/opcodes.md)，其余 opcode 均未实现。
+M1 已实现全部 151 个 NMOS 官方 opcode（56 条指令及其寻址方式）、二进制／十进制 ADC/SBC、BRK/RTI 与周期采样 IRQ/NMI。另有 64 KiB RAM Bus、复位、寄存器快照、周期统计、结构化错误和自包含 CLI 演示。具体寻址方式、周期、标志和测试映射见 [opcode 清单](docs/opcodes.md)，其余 opcode 均未实现。
 
 ## 运行
 
@@ -64,7 +64,7 @@ cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
 “按指令执行并统计周期”不等于“逐周期总线精确模拟”。M2.3 已提供真正逐周期的总线接口，`step` 包装同一个引擎；全部 151 万条官方单步用例通过地址、数据和读写序列比较。宿主可在周期之间推进设备；引脚相位时序仍待 M2.4 完善。
 
-未实现非官方 opcode、RDY/SO、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。中断输入在指令边界处理，不模拟指令内部边沿、NMI 抢占中断向量及精确流水线时序。
+未实现非官方 opcode、RDY/SO、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。M2.4 已接入周期中断采样、分支轮询和 NMI 抢占 BRK/IRQ 向量，96 条固定 revD 引脚 trace 交叉验证通过；半周期引脚及物理 RESET 保持时序仍待完善。
 
 M2.2 已通过固定版本的 **151 个官方 opcode／151 万条 SingleStepTests 用例**（寄存器、内存和周期数量），以及 Klaus 功能测试、Bruce Clark 全标志十进制穷举；M2.3 同时通过总线序列比较。672 条原始格式样例保留为离线快速回归。数据准备、重放命令和许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。M2 接下来完善中断／引脚与调试回归；Apple I 延后到 CPU 验收后的独立 M3，见 [路线图](docs/roadmap.md)。
 

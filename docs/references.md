@@ -49,3 +49,6 @@ M1 新增 8 条固定来源的 SingleStepTests 十进制输入／结果测试，
 
 
 M2.3 总线阶段依据 MOS 6500-10A（1976 年第二版）附录 A 的 [单周期表转录](https://xotmatrix.com/6502/6502-single-cycle-execution.html)，与固定 SingleStepTests NMOS 原始事件逐项交叉比较。分支实际为先读操作数后 PC，再在跨页时读未修正高字节的地址；不把旧手册表中的简略地址描述当作完整相位模型。RESET 使用只读的栈入口，物理引脚时序仍属 M2.4。
+
+
+M2.4 已实际运行 [Visual6502 revD 固定模型](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e)，依据原始模型生成的引脚时间表交叉比较，而不复制模拟器指令实现。[Klaus 中断源码](https://github.com/Klaus2m5/6502_65C02_functional_tests/blob/7954e2dbb49c469ea286070bf46cdd71aeb29e4b/6502_interrupt_test.a65) 的 `nmi_trap` 明确提示并发 BRK/NMI 的 B 位断言可能在真实 NMOS 失败；记录零延迟失败与显式 4 周期反馈延迟通过的范围，见测试数据说明。

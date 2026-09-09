@@ -290,40 +290,44 @@ fn rti_polls_restored_i_without_cli_delay() {
 #[test]
 fn nmi_latches_an_edge_ignores_i_and_requires_release_to_retrigger() {
     for flags in [0xeb, 0xef] {
-        let (mut cpu, mut bus) = setup(&[0xea, 0xea], flags);
-        let before = cpu.registers();
+        let (mut cpu, mut bus) = setup(&[0xea, 0xea, 0xea, 0xea], flags);
         cpu.set_nmi_line(true);
+        step(&mut cpu, &mut bus, instruction(0xea), 0x8001, 2);
+        let before = cpu.registers();
         step(&mut cpu, &mut bus, StepKind::Nmi, 0xa000, 7);
-        assert_eq!(&bus.ram.as_slice()[0x01fb..=0x01fd], &[flags, 0, 0x80]);
-        step(&mut cpu, &mut bus, instruction(0x40), 0x8000, 6);
+        assert_eq!(&bus.ram.as_slice()[0x01fb..=0x01fd], &[flags, 1, 0x80]);
+        step(&mut cpu, &mut bus, instruction(0x40), 0x8001, 6);
         assert_eq!(cpu.registers(), before);
         cpu.set_nmi_line(true); // Held asserted: no second edge.
-        step(&mut cpu, &mut bus, instruction(0xea), 0x8001, 2);
+        step(&mut cpu, &mut bus, instruction(0xea), 0x8002, 2);
         cpu.set_nmi_line(false);
+        step(&mut cpu, &mut bus, instruction(0xea), 0x8003, 2);
         cpu.set_nmi_line(true);
-        cpu.set_nmi_line(false); // Pulse remains latched after release.
+        step(&mut cpu, &mut bus, instruction(0xea), 0x8004, 2);
+        cpu.set_nmi_line(false); // Sampled pulse remains latched after release.
         step(&mut cpu, &mut bus, StepKind::Nmi, 0xa000, 7);
     }
 }
 
 #[test]
 fn multiple_unserviced_nmi_edges_coalesce() {
-    let (mut cpu, mut bus) = setup(&[0xea], 0x20);
-    for _ in 0..3 {
-        cpu.set_nmi_line(true);
-        cpu.set_nmi_line(false);
+    let (mut cpu, mut bus) = setup(&[0xee, 0x00, 0x40, 0xea], 0x20);
+    // Three sampled edges during one six-cycle INC, before any can be serviced.
+    for index in 0..6 {
+        cpu.set_nmi_line(index % 2 == 0);
+        assert_eq!(cpu.cycle(&mut bus).unwrap().completed.is_some(), index == 5);
     }
     step(&mut cpu, &mut bus, StepKind::Nmi, 0xa000, 7);
-    step(&mut cpu, &mut bus, instruction(0x40), 0x8000, 6);
-    step(&mut cpu, &mut bus, instruction(0xea), 0x8001, 2);
+    step(&mut cpu, &mut bus, instruction(0x40), 0x8003, 6);
+    step(&mut cpu, &mut bus, instruction(0xea), 0x8004, 2);
 }
 
 #[test]
 fn nmi_wins_over_queued_irq_and_held_irq_is_resampled_after_rti() {
     let (mut cpu, mut bus) = setup(&[0xea, 0xea], 0x20);
     cpu.set_irq_line(true);
-    step(&mut cpu, &mut bus, instruction(0xea), 0x8001, 2);
     cpu.set_nmi_line(true);
+    step(&mut cpu, &mut bus, instruction(0xea), 0x8001, 2);
     step(&mut cpu, &mut bus, StepKind::Nmi, 0xa000, 7);
     // No stale queued IRQ may preempt the handler before RTI restores I=0.
     step(&mut cpu, &mut bus, instruction(0x40), 0x8001, 6);
@@ -333,17 +337,19 @@ fn nmi_wins_over_queued_irq_and_held_irq_is_resampled_after_rti() {
 #[test]
 fn nmi_can_nest_inside_irq_and_both_returns_restore_their_contexts() {
     let (mut cpu, mut bus) = setup(&[0xea, 0xea], 0x28);
+    bus.ram.load(0x9000, &[0xea, 0x40]).unwrap();
     let before = cpu.registers();
     cpu.set_irq_line(true);
     step(&mut cpu, &mut bus, instruction(0xea), 0x8001, 2);
     cpu.set_irq_line(false);
     step(&mut cpu, &mut bus, StepKind::Irq, 0x9000, 7);
-    let handler = cpu.registers();
     cpu.set_nmi_line(true);
+    step(&mut cpu, &mut bus, instruction(0xea), 0x9001, 2);
+    let handler = cpu.registers();
     step(&mut cpu, &mut bus, StepKind::Nmi, 0xa000, 7);
     assert_eq!(cpu.registers().sp, 0xf7);
-    assert_eq!(&bus.ram.as_slice()[0x01f8..=0x01fa], &[0x2c, 0x00, 0x90]);
-    step(&mut cpu, &mut bus, instruction(0x40), 0x9000, 6);
+    assert_eq!(&bus.ram.as_slice()[0x01f8..=0x01fa], &[0x2c, 0x01, 0x90]);
+    step(&mut cpu, &mut bus, instruction(0x40), 0x9001, 6);
     assert_eq!(cpu.registers(), handler);
     step(&mut cpu, &mut bus, instruction(0x40), 0x8001, 6);
     assert_eq!(
@@ -358,6 +364,7 @@ fn nmi_can_nest_inside_irq_and_both_returns_restore_their_contexts() {
 #[test]
 fn reset_discards_pending_interrupts_without_inventing_nmi_edges() {
     let (mut cpu, mut bus) = setup(&[0x58, 0xea, 0xea], 0x20);
+    bus.ram.load(0x9000, &[0xea, 0x40]).unwrap();
     cpu.set_irq_line(true);
     step(&mut cpu, &mut bus, instruction(0x58), 0x8001, 2);
     cpu.set_nmi_line(true);
@@ -368,6 +375,8 @@ fn reset_discards_pending_interrupts_without_inventing_nmi_edges() {
     // The external IRQ level survived reset and was polled again after CLI.
     step(&mut cpu, &mut bus, StepKind::Irq, 0x9000, 7);
     cpu.set_nmi_line(false);
+    step(&mut cpu, &mut bus, instruction(0xea), 0x9001, 2);
     cpu.set_nmi_line(true);
+    step(&mut cpu, &mut bus, instruction(0x40), 0x8002, 6);
     step(&mut cpu, &mut bus, StepKind::Nmi, 0xa000, 7);
 }

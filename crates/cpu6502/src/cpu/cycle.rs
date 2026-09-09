@@ -75,6 +75,8 @@ pub(super) struct Execution {
     value: u8,
     base: u16,
     address: u16,
+    branch_irq: bool,
+    branch_nmi: bool,
 }
 
 impl Execution {
@@ -90,6 +92,8 @@ impl Execution {
             value: 0,
             base: 0,
             address: 0,
+            branch_irq: false,
+            branch_nmi: false,
         }
     }
 
@@ -151,7 +155,10 @@ impl Cpu {
     /// This host request does not yet model the physical RESET pin hold time.
     pub fn begin_reset(&mut self) {
         self.irq_pending = false;
+        self.irq_sample = false;
         self.nmi_pending = false;
+        self.nmi_edge = false;
+        self.nmi_sample = self.nmi_line;
         self.execution = Some(Execution::new(
             StepKind::Reset,
             self.registers,
@@ -177,9 +184,12 @@ impl Cpu {
     }
 
     /// Advance one CPU bus cycle. No speculative or logging-only bus accesses.
-    /// IRQ/NMI sampling is still the M1 boundary convention until the pin model
-    /// is upgraded; the instruction bus sequences themselves are cycle driven.
+    /// Interrupt inputs are sampled each cycle; instruction polling uses the
+    /// previous sample, with the NMOS taken-branch polling exceptions.
     pub fn cycle(&mut self, bus: &mut dyn Bus) -> Result<Cycle, CpuError> {
+        let sampled_i = self.registers.status.interrupt_disable;
+        let polled_irq = self.irq_sample;
+        let polled_nmi = self.nmi_edge;
         let mut execution = if let Some(execution) = self.execution.take() {
             execution
         } else if self.nmi_pending || self.irq_pending {
@@ -207,22 +217,32 @@ impl Cpu {
             execution.cycles = 1;
             execution.phase = execution.first_phase();
             self.execution = Some(execution);
+            self.sample_interrupt_pins(sampled_i);
             return Ok(Cycle {
                 bus: access,
                 completed: None,
             });
         };
+        let phase = execution.phase;
+        if phase == Phase::Relative {
+            execution.branch_irq = polled_irq;
+            execution.branch_nmi = polled_nmi;
+        }
         let (access, done) = self.advance(bus, &mut execution);
         execution.cycles += 1;
         let completed = if done {
-            // Preserved M1 interrupt convention; bus sequencing is independent.
             if matches!(execution.kind, StepKind::Instruction { .. }) {
-                let i = if matches!(execution.op, Op::Cli | Op::Sei | Op::Plp) {
-                    execution.before.status.interrupt_disable
-                } else {
-                    self.registers.status.interrupt_disable
+                let (irq, nmi) = match phase {
+                    // A taken same-page branch retains the operand-cycle poll.
+                    Phase::BranchTaken => (execution.branch_irq, execution.branch_nmi),
+                    Phase::BranchCross => (
+                        execution.branch_irq || polled_irq,
+                        execution.branch_nmi || polled_nmi,
+                    ),
+                    _ => (polled_irq, polled_nmi),
                 };
-                self.irq_pending = execution.op != Op::Brk && self.irq_line && !i;
+                self.irq_pending = execution.op != Op::Brk && irq;
+                self.nmi_pending = execution.op != Op::Brk && nmi;
             }
             Some(Step {
                 address: execution.before.pc,
@@ -235,6 +255,7 @@ impl Cpu {
             self.execution = Some(execution);
             None
         };
+        self.sample_interrupt_pins(sampled_i);
         Ok(Cycle {
             bus: access,
             completed,
@@ -555,11 +576,15 @@ impl Cpu {
                     PushLow => PushStatus,
                     _ => {
                         self.registers.status.interrupt_disable = true;
-                        e.address = match e.kind {
-                            StepKind::Nmi => 0xfffa,
-                            StepKind::Reset => 0xfffc,
-                            _ => 0xfffe,
+                        e.address = if e.kind == StepKind::Reset {
+                            0xfffc
+                        } else if e.kind == StepKind::Nmi || self.nmi_edge {
+                            0xfffa
+                        } else {
+                            0xfffe
                         };
+                        // An edge sampled after this selection remains pending.
+                        self.nmi_edge = false;
                         VectorLow
                     }
                 };

@@ -53,3 +53,27 @@ Klaus 数据固定为 [`7954e2dbb49c469ea286070bf46cdd71aeb29e4b`](https://githu
 十进制源码仅转换汇编器伪指令并开启全部检查，原有运算及预期计算代码保留。脚本在缓存内构建 [cc65 V2.19](https://github.com/cc65/cc65/releases/tag/V2.19) 的 ca65/ld65，提交 `555282497c3ecf8b313d87d5973093af19c35bd5`，源码包 SHA-256=`62c77f00ef4141153a0ddecef06ca086c11c68f14d022beadeaf353d1d833ff1`。该版本工具实际报告 V2.18（上游发布说明已注明），BUILD_ID 固定为 `Git 55528249`；保留源码包内的 zlib 风格 LICENSE，不安装到系统。需要 Python 3.12+、make 和本地 C 编译器。转换后源码哈希为 `586f6f2da4fc8763630f73211356c6de5f8d47cbc01cc38fddcd761a6ed3ec39`；脚本检查最终镜像及 TEST/DONE/ERROR 符号地址，可在缓存查看完整 listing。
 
 M2.2 历史通过范围见 [verification.md](../../../../docs/verification.md)：指令状态／内存和 SingleStep 周期数量；此时尚未比较逐周期总线序列，也未运行 Klaus 中断程序。
+
+
+## M2.4 引脚与中断程序（进行中）
+
+`visual6502/pins.json` 包含本项目原创的 96 个短程序／事件时间表，在 [Visual6502 revD](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) 晶体管模型上实际生成的 24 周期总线观察（共 2304 周期），输入为低相位开始前的 IRQ/NMI 改变。初始 RAM 未单列的地址为 `$EA`；引导代码通过真实指令设置寄存器，再停在目标取指。CPU 测试恢复相同状态及 RAM，预期不是由 Hesper 生成。fixture SHA-256：`a213dc580177c1e7030707f76cc1ab9468376ccc91fb32921e44d28d421c363a`。
+
+```sh
+# 离线快速比较固定观察
+cargo test -p hesper-cpu6502 --test pins
+# 显式准备外部模型，随后 Node 本地重新运行并核对固定 trace
+python3 tools/prepare_visual6502.py
+node tools/verify_visual6502.cjs
+# 构建保留全部 505 条原指令语句的 Klaus 中断程序，运行明确延迟配置
+python3 tools/prepare_klaus.py
+cargo run -p hesper-cpu6502 --example interrupt --release -- --feedback-delay 4
+```
+
+模型文件哈希见 [manifest.json](visual6502/manifest.json)。上游 `chipsim.js`、`macros.js`、`wires.js`、`nodenames.js` 带 MIT 许可；`segdefs.js` 标明 CC BY-NC-SA 3.0，原作者 Greg James、来源 www.visual6502.org；`transdefs.js` 文件本身没有单独许可声明。模型文件及其原有声明仅保留在缓存，未复制进 CPU 或提交网表。新增 fixture 是原创程序的数字观察，并记录上述来源；不据此给 Hesper 自身选择许可证。Node 仅为显式外部验证工具，普通 Cargo 测试不需要它。
+
+Klaus 中断源码沿用前述固定版本／GPL-3.0-or-later，采用相同 ca65/ld65。保留默认 `I_port=$BFFC, I_ddr=0, I_drive=1, IRQ_bit=0, NMI_bit=1, I_filter=$7F, D_clear=0, load_data_direct=1, report=0`。只改汇编伪指令并添加成功地址符号；独立检查转换前后全部 505 条指令语句一致，错误陷阱保留。转换源码 SHA-256=`f2ce31cba447eef9ad0a292a5d616b85e4b1ba1b947abaf168d3c00fcad0b1d9`；65536 字节镜像 SHA-256=`ecc829d494fd1f4b4262ac5c58e8cb3925f7aa7570ce815e9a3214b6f66a3c58`。加载 `$0000`，入口 `$0400`，唯一成功地址 `$06F5`，预算 1000000 周期；后面的手动 65C02 WAI/STP 测试不执行。
+
+反馈寄存器写入立即可读；引脚从下一周期起经过 `--feedback-delay` 个额外周期传递，范围 0～32。**4 周期额外延迟**配置实际通过，1049 个 step、3013 周期，NMI/IRQ/BRK 顺序计数 `[1,3,2]`。这是明确的测试设备配置，CPU 没有为该程序添加特殊逻辑。
+
+**默认 0 延迟没有通过这个外部程序**：NMI 与 BRK 重叠，进入 `$075C` 的 B 位检查陷阱，退出失败。上游 `nmi_trap` 附近的源码明确注明真实 NMOS 也可能在这里失败；revD 场景验证了向量被抢占但 B=1 的行为。因此保留失败和正确 NMOS 行为，不关闭陷阱、修改 B 预期或把此配置报告为通过。延迟 1～3 同样触发该陷阱；5～10 则超出上游另一组响应时序预期，不宣称这些配置通过。

@@ -2,7 +2,7 @@
 //!
 //! Implemented opcodes are listed in `docs/opcodes.md`. Each step executes
 //! one instruction or entry via the same single-cycle bus sequencer. Interrupt
-//! input sampling still uses a documented boundary approximation.
+//! inputs use cycle sampling with documented NMOS polling/vector rules.
 //! Program loading, execution limits, tracing and devices belong to the host.
 
 mod bus;

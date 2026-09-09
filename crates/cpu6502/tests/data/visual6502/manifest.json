@@ -1,0 +1,13 @@
+{
+  "revision": "d8ecc129b34e0eaf320e0400fcf33329475bdb1e",
+  "model": "NMOS 6502 revD",
+  "files": {
+    "nodenames.js": "82d676dabc3e190a50c1ac41b44c0e30c5d0a4675d30827333427ae67eefdf37",
+    "segdefs.js": "52bec71bdee12e8bca8bffb15753a9472b17c3e69878f1bb1fc8881ca7356e2e",
+    "transdefs.js": "d49b4a9b3c4969048ca6a82d5c2338d3699fb96cee25b34e85630854cd8443d2",
+    "wires.js": "e0c18a58bbed7b494b6bdec380978e0022c31adfe1bd92ce24b02404ca109ec1",
+    "chipsim.js": "c6fbb5c9065f976f609f603c7f592ab94b475c9a1ca8fb1cb27d73da91ed17c2",
+    "macros.js": "fd4fa9a4f270190791f39bbd7602091198c001c5fcbdb208ca78f5c6845d2951",
+    "README": "a0bb5062cab4309aa60d88bedabcafd4c687cd7b5b5062348685079c6b642ebe"
+  }
+}

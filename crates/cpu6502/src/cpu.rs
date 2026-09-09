@@ -65,8 +65,11 @@ pub struct Cpu {
     registers: Registers,
     execution: Option<Execution>,
     irq_line: bool,
+    irq_sample: bool,
     irq_pending: bool,
     nmi_line: bool,
+    nmi_sample: bool,
+    nmi_edge: bool,
     nmi_pending: bool,
 }
 
@@ -246,20 +249,25 @@ impl Cpu {
     }
 
     /// Set the IRQ input level (`true` means the active-low pin is asserted).
-    /// Hold it constant over a step: that instruction polls it for the NEXT step.
+    /// Sampled each cycle; hold through a sampling point for a valid request.
     /// Deasserting the line does not cancel an interrupt already polled.
     pub fn set_irq_line(&mut self, asserted: bool) {
         self.irq_line = asserted;
     }
 
     /// Set the NMI input level (`true` means the active-low pin is asserted).
-    /// A false-to-true transition latches one NMI for the next step. Holding it
-    /// asserted does not retrigger; multiple unserviced edges coalesce.
+    /// A sampled false-to-true transition latches an edge. Instruction polling
+    /// and vector selection consume it; a pulse entirely between cycles is missed.
     pub fn set_nmi_line(&mut self, asserted: bool) {
-        if asserted && !self.nmi_line {
-            self.nmi_pending = true;
-        }
         self.nmi_line = asserted;
+    }
+
+    fn sample_interrupt_pins(&mut self, interrupt_disable: bool) {
+        self.irq_sample = self.irq_line && !interrupt_disable;
+        if self.nmi_line && !self.nmi_sample {
+            self.nmi_edge = true;
+        }
+        self.nmi_sample = self.nmi_line;
     }
 
     fn adc(&mut self, operand: u8) {

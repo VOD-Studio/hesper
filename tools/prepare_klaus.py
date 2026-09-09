@@ -18,6 +18,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 CC65 = "555282497c3ecf8b313d87d5973093af19c35bd5"  # Upstream tag V2.19
 DECIMAL_HASH = "03798ab778456cc350044fdbe28b4078278648892712b994cdbdda09018674e7"
+INTERRUPT_HASH = "ecc829d494fd1f4b4262ac5c58e8cb3925f7aa7570ce815e9a3214b6f66a3c58"
 CONFIG = '''MEMORY { ZP: start = $0000, size = $0100, file = ""; RAM: start = $0200, size = $FE00, file = %O; }
 SEGMENTS { ZEROPAGE: load = ZP, type = zp; CODE: load = RAM, type = rw; }
 '''
@@ -75,9 +76,67 @@ def checked_hash(data: bytes, expected: str, label: str) -> None:
         raise ValueError(f"{label}: SHA-256 expected {expected}, got {actual}")
 
 
+def instructions(source: str) -> list[str]:
+    opcodes = ROOT / "crates/cpu6502/tests/data/opcodes.txt"
+    ops = {line.split()[1].lower() for line in opcodes.read_text().splitlines()
+           if line and not line.startswith("#")}
+    result = []
+    for line in source.splitlines():
+        fields = line.split(";")[0].split()
+        for index in range(min(2, len(fields))):
+            if fields[index].lower() in ops:
+                result.append("".join(fields[index:]).lower().replace("\\1", "arg")
+                              .replace("ibit", "arg").replace("skip\\?", "@skip"))
+                break
+    return result
+
+
+def prepare_interrupt(cache: Path, assembler: Path) -> None:
+    original = (cache / "6502_interrupt_test.a65").read_text()
+    source = re.sub(r"(?m)^(\w+)[ \t]+equ[ \t]+", r"\1 = ", original)
+    source = re.sub(r"(?m)^[ \t]*noopt[^\n]*$", "", source)
+    # Horizontal whitespace only: crossing a newline here would erase trap bodies.
+    source = re.sub(r"(?m)^(\w+)[ \t]+macro\b[^\n]*",
+                    lambda m: ".macro " + m[1] + (" arg" if m[1] in
+                        ["I_set", "I_clr", "push_stat", "set_stat"] else ""), source)
+    source = re.sub(r"\bibit\b", "arg", source.replace("\\1", "arg"))
+    source = source.replace("skip\\?", "@skip")
+    for old, new in [("if", ".if"), ("else", ".else"), ("endif", ".endif"),
+                     ("endm", ".endmacro"), ("db", ".byte"), ("dw", ".word"),
+                     ("include", ".include")]:
+        source = re.sub(r"(?m)^([ \t]*)" + old + r"\b", r"\1" + new, source)
+    source = re.sub(r"(?m)^(\w+[ \t]+)ds[ \t]+", r"\1.res ", source).replace("!=", "<>")
+    source = re.sub(r"(?m)^[ \t]*(?:data|bss|code)[ \t]*$", "", source)
+    for old, new in [("zero_page", "ZEROPAGE"), ("data_segment", "DATA"),
+                     ("code_segment", "CODE"), (r"\$fffa", "VECTORS")]:
+        source = re.sub(r"(?m)^[ \t]*org " + old + r"[ \t]*$", f'.segment "{new}"', source)
+    source = re.sub(r"(?m)^[ \t]*end start[ \t]*$", "", source)
+    source = source.replace("        success         ;if you get here everything went well",
+                            "PASSED:\n        success         ;if you get here everything went well")
+    source = ".feature labels_without_colons\n.export start, PASSED, I_port\n" + source
+    if len(instructions(original)) != 505 or instructions(source) != instructions(original):
+        raise ValueError("interrupt adapter must preserve all 505 original instruction statements")
+    checked_hash(source.encode(), "f2ce31cba447eef9ad0a292a5d616b85e4b1ba1b947abaf168d3c00fcad0b1d9", "interrupt adapter")
+    (cache / "interrupt-ca65.s").write_text(source)
+    (cache / "interrupt.cfg").write_text(
+        'MEMORY { ZP: start=$000A,size=$00F6,file=""; RAM: start=$0000,size=$10000,file=%O,fill=yes; }\n'
+        'SEGMENTS { ZEROPAGE:load=ZP,type=zp; DATA:load=RAM,type=bss,start=$0200; CODE:load=RAM,type=rw,start=$0400; VECTORS:load=RAM,type=ro,start=$FFFA; }\n')
+    subprocess.run([str(assembler / "ca65"), "-o", str(cache / "interrupt.o"),
+                    "-l", str(cache / "interrupt.lst"), str(cache / "interrupt-ca65.s")], check=True)
+    subprocess.run([str(assembler / "ld65"), "-C", str(cache / "interrupt.cfg"),
+                    "-o", str(cache / "interrupt.bin"), "-Ln", str(cache / "interrupt.lbl"),
+                    str(cache / "interrupt.o")], check=True)
+    checked_hash((cache / "interrupt.bin").read_bytes(), INTERRUPT_HASH, "interrupt image")
+    if (cache / "interrupt.lbl").read_text().splitlines() != [
+        "al 00BFFC .I_port", "al 0006F5 .PASSED", "al 000400 .start"
+    ]:
+        raise ValueError("interrupt entry, success or feedback address changed")
+
+
 def prepare_decimal(cache_dir: Path, check_only: bool) -> None:
     if check_only:
         checked_hash((cache_dir / "decimal.bin").read_bytes(), DECIMAL_HASH, "decimal image")
+        checked_hash((cache_dir / "interrupt.bin").read_bytes(), INTERRUPT_HASH, "interrupt image")
         return
     tool_cache = ROOT / ".cache/cpu6502/cc65"
     archive = tool_cache / f"{CC65}.tar.gz"
@@ -119,6 +178,8 @@ def prepare_decimal(cache_dir: Path, check_only: bool) -> None:
         "; Adapted from the pinned public-domain Bruce Clark test: ca65 directives and all flag checks.\n"
         '.feature labels_without_colons\n.export TEST, DONE\n.exportzp ERROR\n' + source
     )
+    if instructions(source) != instructions((cache_dir / "6502_decimal_test.a65").read_text()):
+        raise ValueError("decimal adapter changed original instruction statements")
     checked_hash(source.encode(), "586f6f2da4fc8763630f73211356c6de5f8d47cbc01cc38fddcd761a6ed3ec39", "decimal adapter")
     (cache_dir / "decimal-ca65.s").write_text(source)
     (cache_dir / "decimal.cfg").write_text(CONFIG)
@@ -132,6 +193,7 @@ def prepare_decimal(cache_dir: Path, check_only: bool) -> None:
         "al 00024B .DONE", "al 00000B .ERROR", "al 000200 .TEST"
     ]:
         raise ValueError("decimal entry, DONE or ERROR address changed")
+    prepare_interrupt(cache_dir, source_dir / "bin")
 
 
 def main() -> None:
