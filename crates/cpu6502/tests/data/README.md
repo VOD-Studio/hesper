@@ -77,3 +77,14 @@ Klaus 中断源码沿用前述固定版本／GPL-3.0-or-later，采用相同 ca6
 反馈寄存器写入立即可读；引脚从下一周期起经过 `--feedback-delay` 个额外周期传递，范围 0～32。**4 周期额外延迟**配置实际通过，1049 个 step、3013 周期，NMI/IRQ/BRK 顺序计数 `[1,3,2]`。这是明确的测试设备配置，CPU 没有为该程序添加特殊逻辑。
 
 **默认 0 延迟没有通过这个外部程序**：NMI 与 BRK 重叠，进入 `$075C` 的 B 位检查陷阱，退出失败。上游 `nmi_trap` 附近的源码明确注明真实 NMOS 也可能在这里失败；revD 场景验证了向量被抢占但 B=1 的行为。因此保留失败和正确 NMOS 行为，不关闭陷阱、修改 B 预期或把此配置报告为通过。延迟 1～3 同样触发该陷阱；5～10 则超出上游另一组响应时序预期，不宣称这些配置通过。
+
+
+## 快速回归、全量验证与失败诊断
+
+普通 `cargo test --workspace` 使用仓库里的 672 条单步样例、246 组 revD 引脚观察和本地穷举／边界测试，不读取外部下载缓存。当前 workspace 共 83 个测试；本机热缓存 debug 约 1.7 秒、release 约 1.6 秒，不作为其他环境的性能保证。
+
+完整官方 JSON、Klaus 镜像与 Visual6502 模型需要显式执行上述准备命令。全量 SingleStep、functional、decimal、interrupt（`--feedback-delay 4`）、`node tools/verify_visual6502.cjs` 及 `cargo test -p hesper-cpu6502 --test pins --release` 合起来才覆盖当前已实现范围；不能用其中一条替代全部。准备命令验证来源哈希，运行命令缺数据或校验失败直接报错。
+
+[快速 CI](../../../../.github/workflows/ci.yml) 在拉取 Rust 开发依赖后离线运行固定测试；[全量 CI](../../../../.github/workflows/full-cpu.yml) 只在 GitHub Actions 中手动运行 **Full CPU conformance** 时下载和执行外部数据。Node 26、Python 3.12+、make／C 编译器仅用于数据准备和参考模型，不成为 CPU 运行依赖。两份配置尚未远程运行验证。
+
+外部执行失败报告保留最后 32 个真实总线周期及其指令前后状态，并给出当前执行阶段、引脚和中断锁存；格式化不读取 Bus。SingleStep 报告继续附版本、opcode、用例索引和重放命令。Klaus 默认 0 延迟已知失败仍退出 1，不以“预期失败”替代外部程序通过的声明。

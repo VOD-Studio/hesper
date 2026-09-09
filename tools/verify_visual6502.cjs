@@ -109,6 +109,7 @@ if (args[0] === '--record') {
     console.log(`Recorded ${actual.length} independent revD traces to ${args[1]}`);
 } else {
     const expected = fs.readFileSync(path.join(fixtures, 'pins.json'), 'utf8');
+    if (crypto.createHash('sha256').update(expected).digest('hex') !== manifest.fixture_sha256) throw Error('Fixture hash mismatch');
     if (serialized !== expected) throw Error('Reference traces differ from pinned fixtures; inspect differences before changing any oracle');
     console.log(`Visual6502 revD @ ${manifest.revision}: ${actual.length} pin traces reproduced`);
 }

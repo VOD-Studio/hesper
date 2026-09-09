@@ -1,6 +1,7 @@
 //! Cycle positions cross-checked with Visual6502 revD d8ecc129 (see references).
 use hesper_cpu6502::{Bus, Cpu, Ram, Registers, Status, StepKind};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +25,15 @@ struct Reference {
 
 #[test]
 fn fixed_visual6502_revd_pin_traces_match_actual_bus_cycles() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("data/visual6502/manifest.json")).unwrap();
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("data/visual6502/pins.json"))
+        ),
+        manifest["fixture_sha256"].as_str().unwrap()
+    );
     let cases: Vec<Reference> =
         serde_json::from_str(include_str!("data/visual6502/pins.json")).unwrap();
     assert_eq!(cases.len(), 246);

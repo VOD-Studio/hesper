@@ -1,6 +1,7 @@
 {
   "revision": "d8ecc129b34e0eaf320e0400fcf33329475bdb1e",
   "model": "NMOS 6502 revD",
+  "fixture_sha256": "c2913d4ab2c52af44ae9b69c3647c630215c90485e25f6f254fed6d24d516ac7",
   "files": {
     "nodenames.js": "82d676dabc3e190a50c1ac41b44c0e30c5d0a4675d30827333427ae67eefdf37",
     "segdefs.js": "52bec71bdee12e8bca8bffb15753a9472b17c3e69878f1bb1fc8881ca7356e2e",

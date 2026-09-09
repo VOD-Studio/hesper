@@ -1,6 +1,6 @@
 # NMOS opcode 支持清单
 
-M1：**全部 151 个官方 opcode 已实现并通过自包含测试**（56 条指令）。IRQ/NMI 的入口与指令边界采样另有中断测试；没有通过完整外部 CPU 套件的声明。
+**全部 151 个官方 opcode 已实现并通过自包含测试**（56 条指令），同时通过 M2 的 151 万条官方单步用例结果／周期／总线验证。IRQ/NMI 与引脚采样另有测试；非官方指令和物理 RESET 持续输入仍未实现。
 
 下表逐项对应独立手写的 [测试规格](../crates/cpu6502/tests/data/opcodes.txt)，不从 CPU 解码器产生预期值。[official.rs](../crates/cpu6502/tests/official.rs) 中 `every_documented_opcode_has_independent_result_length_flags_and_cycle_expectations` 对每一行断言结果、PC、标志、周期和写入；M0 的 [回归测试](../crates/cpu6502/tests/conformance.rs) 全部保留。
 
@@ -168,7 +168,10 @@ M1：**全部 151 个官方 opcode 已实现并通过自包含测试**（56 条�
 
 ADC/SBC 的所有模式已有上述矩阵测试；[arithmetic.rs](../crates/cpu6502/tests/arithmetic.rs) 另穷举二进制 A／操作数／C（每条 131072 组）与有效 BCD 结果／进借位（每条 20000 组），覆盖 NMOS 特有标志阶段、无效 BCD 和固定来源的 8 条外部十进制样例。十进制模式不增加周期。
 
-[interrupts.rs](../crates/cpu6502/tests/interrupts.rs) 验证 BRK/RTI 的完整状态与必要栈访问、IRQ/NMI 的 7 周期、掩码／边沿／优先级／嵌套／RESET，以及当前指令级模型下 CLI/SEI/PLP 的旧 I 采样与 RTI 的恢复后采样。模型精度限制见 [架构文档](architecture.md#中断输入与执行事件)。
+[interrupts.rs](../crates/cpu6502/tests/interrupts.rs) 验证 BRK/RTI 的完整状态与必要栈访问、IRQ/NMI 的 7 周期、掩码／边沿／优先级／嵌套／RESET，以及周期模型下 CLI/SEI/PLP 的 I 采样延迟与 RTI 的恢复后采样。模型精度限制见 [架构文档](architecture.md#中断输入与执行事件)。
 
 
 M2.3：上表全部 151 个官方 opcode 还通过固定 SingleStepTests NMOS `6502/v1` 每文件 10000 条、共 1510000 条用例的寄存器／内存、周期数量和完整总线序列比较。版本与逐文件哈希见 [数据说明](../crates/cpu6502/tests/data/README.md)。这不包含非官方 opcode 或外部引脚相位；RESET 的七次访问另由 `cycles.rs` 与 `conformance.rs` 验证。
+
+
+M2.4：`pins.rs` 的 246 组固定 revD 场景核对 IRQ/NMI 的采样、分支轮询、向量抢占、RDY 及 SO；SO 扫描覆盖六种写 V 指令。`cycles.rs` 另验证等待、读副作用、栈／地址阶段、中途复位请求及有界恢复。这些是明确场景的验证，物理 RESET 保持／释放和所有引脚交叉窗口尚未完成。

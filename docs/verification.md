@@ -1,5 +1,7 @@
 # CPU 本地验证记录
 
+当前：M2.1～M2.3 已验收；M2.4 的 IRQ/NMI/RDY/SO 与 M2.5 调试／CI 工程已落地，物理 RESET 持续输入仍未完成。下面保留各阶段历史结果，最后一节是当前代码的复验。
+
 ## M1
 
 日期：2026-09-09。平台：macOS / `aarch64-apple-darwin`。
@@ -93,3 +95,29 @@ Klaus 中断适配在初次复核时发现跨行替换误删错误陷阱，那�
 ## M2.5：有界调试子阶段
 
 新增 debug_state 只读快照、CLI 总线 trace 与 1～4096 条保留上限、外部 runner 共用的末尾 32 周期失败历史。debug/release workspace 各 **83 个测试**通过，Clippy 全目标 `-D warnings` 及格式检查通过。实际运行 `cargo run -p hesper -- --bus-trace --trace-limit 4`，输出最后四个真实周期及原有正确演示结果。测试覆盖 RESET trace、历史截断、超限后诊断、无额外读取，以及不正确的外部预期被明确报告。
+
+
+## M2 当前代码复验与 CI 分层
+
+2026-09-09，macOS aarch64，Rust/Cargo 1.98.1；Python 3.14.7、Node 26.8.1。已安装 Wasm 目标。以下命令均实际执行，未使用跳过测试或 warning 抑制：
+
+| 命令 | 本地结果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 通过 |
+| `cargo check --workspace --all-targets` | 通过 |
+| `cargo test --workspace` | 83 个通过，0 失败／忽略；热缓存 1.73 秒 |
+| `cargo test --workspace --release` | 83 个通过，0 失败／忽略；热缓存 1.58 秒 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown` | 通过，仅目标编译 |
+| `cargo run -p hesper` | 正确输出 0～9；54 条指令／147+7=154 周期 |
+| `cargo run -p hesper -- --trace` | 正确输出 54 条指令记录与结果 |
+| `cargo run -p hesper -- --bus-trace --trace-limit 4` | 仅保留周期 151～154 的真实记录，结果相同 |
+| `git diff --check` | 通过 |
+
+同一代码再次运行全部 **1510000 条官方单步用例**：寄存器／内存、周期数量和总线序列均通过。Klaus functional：30646176 条指令／96241364 周期，成功 `$3469`；Bruce Clark decimal 全检查：17609915 条／53953825 周期，成功 `$024B` 且 ERROR=0。含 Cargo 启动的本机热缓存耗时分别为 3.14／1.42 秒。
+
+Klaus 中断 4 周期反馈延迟：1049 个 step／3013 周期，成功 `$06F5`，顺序计数 `[1,3,2]`。**默认 0 延迟仍在 `$075C` 的上游已知 NMOS 陷阱退出 1**，并实际输出最后 32 个总线周期的诊断，没有将这个配置报告为通过。Visual6502 原模型实际重跑并精确重现 **246 组／5904 周期**观察，CPU 对照全部通过。三个准备脚本重新核对固定数据、汇编产物及来源哈希通过。
+
+CI 分为每次变更的固定小样例回归，以及手动触发的完整外部验证（45 分钟上限）；后者显式准备数据，缺失／损坏／零匹配不跳过。两份 YAML 在本地解析与步骤结构检查通过，Python／Node 工具语法检查通过；Actions v7 标签已核对存在。**未远程运行 CI，未验证 Linux 工作流执行结果**。当前仓库已有 origin 配置；本节不沿用早期阶段“未配置远程”的状态描述。
+
+CPU 普通依赖树仅包含自身，没有第三方运行依赖。当前物理 RESET 断言／保持／释放及其中途窗口仍未实现，因此 M2 整体验收和 M2.5 最终验收继续保留未完成，下一功能点见路线图；Apple I 未启动。

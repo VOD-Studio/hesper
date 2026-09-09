@@ -1,6 +1,6 @@
 # 行为依据与外部测试边界
 
-本轮查阅日期：2026-09-09。核心和本地测试自行实现；未复制外部模拟器代码，引入下述有来源与许可证的固定测试样例，未引入 ROM。
+查阅日期：2026-09-09。核心和本地测试自行实现；未复制外部模拟器实现，未引入 Apple ROM。当前执行范围见下表；文末的 M1／M2.1 小节保留当时的验证边界，最新结果以 [verification.md](verification.md) 为准。
 
 ## MOS 原始手册
 
@@ -18,9 +18,9 @@
 
 | 项目 | 本轮用途 | 尚未完成 |
 | --- | --- | --- |
-| [Klaus Dormann 功能测试](https://github.com/Klaus2m5/6502_65C02_functional_tests) | 查阅说明及 `6502_functional_test.a65`：确认 NMOS 官方指令范围及十进制测试限制；源码许可为 GPL-3.0-or-later | 未接入、未运行任何该套件用例；后续另行固定提交和运行配置 |
-| [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02) | 核对间接 JMP 页尾资料；M1 执行 8 条十进制样例，M2.1 执行 672 条原始格式样例；[许可证 MIT](https://github.com/SingleStepTests/65x02/blob/2f6980a2d95757486c7bee24355c360e40e2a224/LICENSE) | 已接入 JSON runner；尚未运行完整官方子集或整个套件；不使用 `nes6502` 或任何 `65c02` 目录 |
-| [Visual6502](https://github.com/trebonian/visual6502) | 查阅项目说明及原始 NMOS 中断研究笔记，作为时序交叉参考 | 未运行模型，未验证引脚／总线时序；后续使用其代码或数据前核对对应许可证 |
+| [Klaus／Bruce Clark](https://github.com/Klaus2m5/6502_65C02_functional_tests/tree/7954e2dbb49c469ea286070bf46cdd71aeb29e4b) | 功能程序、全标志 decimal 全输入和显式 4 周期反馈延迟中断配置已运行；原文件许可分别为 GPL-3.0-or-later／public domain | 默认 0 延迟中断程序会触发上游注明的 NMOS BRK/NMI 陷阱；保留失败，不能声称全部配置通过 |
+| [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02/tree/2f6980a2d95757486c7bee24355c360e40e2a224/6502) | 全部 151 个官方 NMOS opcode／151 万用例已比较结果、周期数量和总线；MIT，哈希见测试数据清单 | 非官方 opcode 未实现，不使用 `nes6502` 或 `65c02` 数据，不宣称整个项目数据集通过 |
+| [Visual6502](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) | revD 模型实际生成并重现 246 组／5904 周期的 IRQ/NMI/RDY/SO 观察；模型按文件保留 MIT／CC BY-NC-SA 3.0 等声明，仅在缓存内使用 | 没有完成物理 RESET 持续输入或全部电气相位窗口，不推广为所有 NMOS 修订认证 |
 
 SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`，文件 [`6502/v1/6c.json`](https://github.com/SingleStepTests/65x02/blob/2f6980a2d95757486c7bee24355c360e40e2a224/6502/v1/6c.json)。临时读取后检查名为 `6c ff 70`、初始 PC=`$2887` 的样例：指针 `$70FF` 的低字节为 `$9D`，高字节来自 `$7000` 的 `$98`，结果 PC=`$989D`，数据列出 5 次读取。这是**资料核对，不是 Hesper 执行外部测试的通过记录**；本地边界测试使用独立编写的地址和预期值。
 
@@ -52,3 +52,8 @@ M2.3 总线阶段依据 MOS 6500-10A（1976 年第二版）附录 A 的 [单周�
 
 
 M2.4 已实际运行 [Visual6502 revD 固定模型](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e)，依据原始模型生成的引脚时间表交叉比较，而不复制模拟器指令实现。[Klaus 中断源码](https://github.com/Klaus2m5/6502_65C02_functional_tests/blob/7954e2dbb49c469ea286070bf46cdd71aeb29e4b/6502_interrupt_test.a65) 的 `nmi_trap` 明确提示并发 BRK/NMI 的 B 位断言可能在真实 NMOS 失败；记录零延迟失败与显式 4 周期反馈延迟通过的范围，见测试数据说明。
+
+
+RDY 的读等待／写继续和 SO 的低有效边沿以 MOS 原始硬件资料为起点，细化窗口由固定 revD 模型的原创程序相位扫描交叉核对。V 写入延续规则属于对这些原始观察的数字归纳；[编程手册 §3.6](https://lbaeza.neocities.org/mcs6500/6500_ch03) 给出 SO 与 V 以及 ADC/BIT/CLV/PLP/RTI/SBC 的关系，不能单凭指令表推导完整相位优先级。
+
+CI 的手动触发与步骤语法依据 [GitHub Actions 官方说明](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)，工具安装参数依据 [setup-python](https://github.com/actions/setup-python) 与 [setup-node](https://github.com/actions/setup-node) 的官方 README。配置存在不等于远程任务通过。
