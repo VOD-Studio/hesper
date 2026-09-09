@@ -11,6 +11,7 @@ fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--full" => options.full = true,
             "--opcode" => {
                 let value = args.next().ok_or("--opcode requires a hex byte")?;
                 options.opcode = Some(
@@ -29,7 +30,7 @@ fn run() -> Result<(), String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: singlestep [--opcode HEX [--case-index N]]\nReplay pinned NMOS fixtures. Case indexes start at zero."
+                    "Usage: singlestep [--full] [--opcode HEX [--case-index N]]\nReplay pinned NMOS fixtures. Case indexes start at zero."
                 );
                 return Ok(());
             }
@@ -38,7 +39,7 @@ fn run() -> Result<(), String> {
     }
     let report = singlestep::run(Path::new(FIXTURES), options)?;
     println!(
-        "NMOS 6502/v1 @ {}\nSelection: {}\nPassed: {} cases across {} opcode files\nRegisters/memory: passed; cycle counts: passed; bus sequences: not checked",
+        "NMOS 6502/v1 @ {}\nCorpus: {}\nPassed selection: {} cases across {} opcode files\nRegisters/memory: passed; cycle counts: passed; bus sequences: not checked",
         report.revision, report.selection, report.cases, report.files
     );
     Ok(())

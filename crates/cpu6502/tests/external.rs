@@ -20,6 +20,7 @@ fn replay_selects_one_case_and_rejects_empty_or_ambiguous_selection() {
     let report = run(
         Path::new(FIXTURES),
         Options {
+            full: false,
             opcode: Some(0x69),
             case_index: Some(0),
         },
@@ -28,14 +29,17 @@ fn replay_selects_one_case_and_rejects_empty_or_ambiguous_selection() {
     assert_eq!((report.files, report.cases), (1, 1));
     for options in [
         Options {
+            full: false,
             opcode: Some(0x02),
             case_index: None,
         },
         Options {
+            full: false,
             opcode: Some(0x69),
             case_index: Some(32),
         },
         Options {
+            full: false,
             opcode: None,
             case_index: Some(0),
         },
@@ -96,4 +100,37 @@ fn diagnostics_detect_register_memory_flag_and_cycle_mismatches() {
     let mut bad = original.clone();
     bad.cycles.pop();
     assert!(execute_case(&bad, 0xea).unwrap_err().starts_with("cycles:"));
+}
+
+#[test]
+fn full_corpus_manifest_cannot_be_reduced_or_replaced_with_samples() {
+    let directory =
+        std::env::temp_dir().join(format!("hesper-full-manifest-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let original: serde_json::Value =
+        serde_json::from_str(include_str!("data/singlestep/full-manifest.json")).unwrap();
+    for mutation in 0..3 {
+        let mut manifest = original.clone();
+        match mutation {
+            0 => {
+                manifest["files"].as_array_mut().unwrap().pop();
+            }
+            1 => manifest["files"][0]["selected_count"] = 32.into(),
+            _ => manifest["files"][0]["opcode"] = "02".into(),
+        }
+        std::fs::write(
+            directory.join("full-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let result = run(
+            &directory,
+            Options {
+                full: true,
+                ..Options::default()
+            },
+        );
+        assert!(result.unwrap_err().contains("all 151 official files"));
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }

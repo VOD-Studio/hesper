@@ -224,6 +224,7 @@ pub fn execute_case(case: &Case, opcode: u8) -> Result<(), String> {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Options {
+    pub full: bool,
     pub opcode: Option<u8>,
     pub case_index: Option<usize>,
 }
@@ -240,7 +241,11 @@ pub fn run(directory: &Path, options: Options) -> Result<Report, String> {
     if options.case_index.is_some() && options.opcode.is_none() {
         return Err("--case-index requires --opcode".into());
     }
-    let path = directory.join("manifest.json");
+    let path = directory.join(if options.full {
+        "full-manifest.json"
+    } else {
+        "manifest.json"
+    });
     let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let manifest: Manifest =
         serde_json::from_slice(&bytes).map_err(|e| format!("manifest: {e}"))?;
@@ -252,12 +257,48 @@ pub fn run(directory: &Path, options: Options) -> Result<Report, String> {
     {
         return Err("manifest must pin a nonempty NMOS 6502/v1 corpus to a full commit".into());
     }
+    if options.full {
+        let official: BTreeSet<_> = include_str!("../data/opcodes.txt")
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.is_empty())
+            .filter_map(|line| line.split_whitespace().next())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        let listed: BTreeSet<_> = manifest
+            .files
+            .iter()
+            .map(|file| file.opcode.clone())
+            .collect();
+        if official.len() != 151
+            || listed != official
+            || manifest.files.len() != 151
+            || manifest.files.iter().any(|file| {
+                file.source_count != 10_000
+                    || file.selected_count != file.source_count
+                    || file.fixture_sha256 != file.source_sha256
+            })
+        {
+            return Err(
+                "full manifest must contain all 151 official files, 10000 original cases each"
+                    .into(),
+            );
+        }
+    }
     let mut report = Report {
         revision: manifest.revision,
         selection: manifest.selection,
         files: 0,
         cases: 0,
     };
+    let data_directory = if options.full {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.cache/cpu6502/singlestep")
+            .join(&report.revision)
+            .join("6502/v1")
+    } else {
+        directory.to_path_buf()
+    };
+    let replay_mode = if options.full { "--full " } else { "" };
     let mut seen = BTreeSet::new();
     for file in manifest.files {
         let opcode =
@@ -273,8 +314,13 @@ pub fn run(directory: &Path, options: Options) -> Result<Report, String> {
         if options.opcode.is_some_and(|selected| selected != opcode) {
             continue;
         }
-        let path = directory.join(format!("{opcode:02x}.json"));
-        let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let path = data_directory.join(format!("{opcode:02x}.json"));
+        let bytes = fs::read(&path).map_err(|e| {
+            format!(
+                "{}: {e}; prepare with python3 tools/prepare_singlestep.py --full",
+                path.display()
+            )
+        })?;
         verify_hash(&bytes, &file.fixture_sha256)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let cases = parse_cases(&bytes, file.selected_count)
@@ -285,7 +331,7 @@ pub fn run(directory: &Path, options: Options) -> Result<Report, String> {
                 continue;
             }
             execute_case(case, opcode).map_err(|error| format!(
-                "{} / {opcode:02X} case {index} {:?}: {error}\ninitial: {:?}\nreproduce: cargo run -p hesper-cpu6502 --example singlestep -- --opcode {opcode:02X} --case-index {index}",
+                "{} / {opcode:02X} case {index} {:?}: {error}\ninitial: {:?}\nreproduce: cargo run -p hesper-cpu6502 --example singlestep -- {replay_mode}--opcode {opcode:02X} --case-index {index}",
                 report.revision, case.name, case.initial
             ))?;
             report.cases += 1;

@@ -47,3 +47,19 @@
 `cargo fmt --all -- --check`、全目标 `cargo check`、全目标 Clippy `-D warnings` 和 `git diff --check` 均通过。依赖相关检查使用 `--offline`，开发依赖由本地 Cargo 缓存解析并锁定；普通 CPU 库没有新增运行依赖。全量夹具重放与 `--opcode 69 --case-index 0` 单条重放均实际成功。`python3 tools/prepare_singlestep.py` 已核对 21 份上游文件的哈希以及 672 条夹具的原始顺序选择。
 
 验证范围是所选样例的寄存器／内存与周期数量；未比较完整总线序列，尚未执行全部 151 个官方 opcode 文件或 Klaus 汇编程序。远程 CI 尚未执行。M2.2～M2.5 未完成。
+
+## M2.2
+
+日期、平台及工具链同上。未修改 CPU 指令语义。固定范围实际结果：
+
+| 命令／范围 | 结果 |
+| --- | --- |
+| `python3 tools/prepare_singlestep.py --full` | 151 个原始文件哈希／数量通过，1510000 条，未包含非官方 opcode |
+| `cargo run -p hesper-cpu6502 --example singlestep --release --offline -- --full` | 全部 1510000 条寄存器／内存、周期数量通过；此时未比较总线序列 |
+| `python3 tools/prepare_klaus.py` | 固定源码、镜像、listing、许可证哈希通过；缓存内 ca65/ld65 构建及开启全部检查的 decimal 镜像／符号校验通过 |
+| `cargo run -p hesper-cpu6502 --example functional --release --offline` | 到达 `$3469`；30646176 条指令，96241364 周期 |
+| `cargo run -p hesper-cpu6502 --example functional --release --offline -- --decimal` | 到达 `$024B` 且 ERROR=0；17609915 条指令，53953825 周期；ADC/SBC 各覆盖 256×256×2 种输入，A/N/V/Z/C 全部检查 |
+
+格式检查、全目标 check、debug/release workspace 测试（各 **62 个测试**，0 失败／忽略）、全目标 Clippy `-D warnings`、CPU Wasm 编译检查、CLI 正常及 54 条 trace、`git diff --check` 均实际通过。Cargo 依赖相关命令使用 `--offline`。全量清单不可缩减／换成样例的错误路径进入离线回归。
+
+准备脚本需要 Python 3.12+、make 和 C 编译器，汇编器只在忽略缓存内构建，无系统安装。功能测试使用上游 AS65 镜像，没有声称本地用 AS65 重建；decimal 使用固定 ca65 构建，来源和配置见 [数据说明](../crates/cpu6502/tests/data/README.md)。没有执行 Klaus 中断或 Visual6502 模型；M2.3～M2.5 尚未完成，远程 CI 未运行、未推送。

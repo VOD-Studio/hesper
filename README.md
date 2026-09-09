@@ -66,7 +66,7 @@ cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
 未实现非官方 opcode、RDY/SO、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。中断输入在指令边界处理，不模拟指令内部边沿、NMI 抢占中断向量及精确流水线时序。
 
-M2.1 已通过 21 个 opcode 的 672 条固定原始格式样例，另保留 8 条十进制选定样例；范围、重放命令及许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。未执行完整外部套件。M2 继续专注 CPU：扩展到官方指令子集全量一致性测试，再升级总线时序、完善中断／引脚与调试回归；Apple I 延后到 CPU 验收后的独立 M3，分阶段计划见 [路线图](docs/roadmap.md)。
+M2.2 已通过固定版本的 **151 个官方 opcode／151 万条 SingleStepTests 用例**（寄存器、内存和周期数量），以及 Klaus 功能测试、Bruce Clark 全标志十进制穷举；总线序列尚未比较。672 条原始格式样例保留为离线快速回归。数据准备、重放命令和许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。M2 接下来升级总线时序、完善中断／引脚与调试回归；Apple I 延后到 CPU 验收后的独立 M3，见 [路线图](docs/roadmap.md)。
 
 构造 CPU 时的零寄存器、全零 RAM 是可重复运行的模拟器约定，**不是硬件上电保证**；NMOS RESET 保留 D 和通用寄存器，程序应自行初始化栈并选择运算模式。具体兼容性假设见 [架构](docs/architecture.md)，后续计划见 [路线图](docs/roadmap.md)，行为依据见 [参考资料](docs/references.md)。
 
