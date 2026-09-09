@@ -44,6 +44,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 StepKind::Instruction { opcode } => format!("{opcode:02X}"),
                 StepKind::Irq => "IRQ".to_owned(),
                 StepKind::Nmi => "NMI".to_owned(),
+                StepKind::Reset => "RESET".to_owned(),
             };
             println!(
                 "${:04X} {event} | {} -> {} | +{} cycles total={total}",

@@ -116,6 +116,7 @@ struct ObservedBus {
     ram: Ram,
     allowed: BTreeSet<u16>,
     writes: Vec<u16>,
+    events: Vec<(u16, u8, Direction)>,
     unlisted: Option<u16>,
 }
 
@@ -130,12 +131,15 @@ impl ObservedBus {
 impl Bus for ObservedBus {
     fn read(&mut self, addr: u16) -> u8 {
         self.check_address(addr);
-        self.ram.read(addr)
+        let value = self.ram.read(addr);
+        self.events.push((addr, value, Direction::Read));
+        value
     }
 
     fn write(&mut self, addr: u16, value: u8) {
         self.check_address(addr);
         self.writes.push(addr);
+        self.events.push((addr, value, Direction::Write));
         self.ram.write(addr, value);
     }
 }
@@ -155,14 +159,34 @@ pub fn execute_case(case: &Case, opcode: u8) -> Result<(), String> {
             .map(|&(a, _)| a)
             .collect(),
         writes: Vec::new(),
+        events: Vec::new(),
         unlisted: None,
     };
     for &(addr, value) in &case.initial.ram {
         bus.ram.write(addr, value);
     }
     let mut cpu = Cpu::from_registers(case.initial.registers());
-    // Exactly one instruction, with no RESET or external interrupt inputs.
-    let step = cpu.step(&mut bus).map_err(|e| e.to_string())?;
+    // A finite cycle budget also catches accidental non-completing sequencers.
+    let mut completed = None;
+    for index in 0..7 {
+        let cycle = cpu.cycle(&mut bus).map_err(|e| e.to_string())?;
+        let direction = match cycle.bus.direction {
+            hesper_cpu6502::Direction::Read => Direction::Read,
+            hesper_cpu6502::Direction::Write => Direction::Write,
+        };
+        if bus.events.len() != index + 1
+            || bus.events[index] != (cycle.bus.address, cycle.bus.data, direction)
+        {
+            return Err(format!(
+                "cycle {index}: returned transaction differs from actual Bus activity"
+            ));
+        }
+        if cycle.completed.is_some() {
+            completed = cycle.completed;
+            break;
+        }
+    }
+    let step = completed.ok_or("official instruction exceeded seven-cycle budget")?;
     if step.kind != (StepKind::Instruction { opcode }) {
         return Err(format!("unexpected step event: {:?}", step.kind));
     }
@@ -218,6 +242,21 @@ pub fn execute_case(case: &Case, opcode: u8) -> Result<(), String> {
             case.cycles.len(),
             step.cycles
         ));
+    }
+    if bus.events.len() != case.cycles.len() {
+        return Err(format!(
+            "bus event count: expected {}, got {}",
+            case.cycles.len(),
+            bus.events.len()
+        ));
+    }
+    for (index, (expected, actual)) in case.cycles.iter().zip(&bus.events).enumerate() {
+        if expected != actual {
+            return Err(format!(
+                "bus cycle {index}: expected {expected:?}, got {actual:?}\nactual bus: {:?}",
+                bus.events
+            ));
+        }
     }
     Ok(())
 }

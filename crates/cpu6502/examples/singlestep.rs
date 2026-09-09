@@ -39,7 +39,7 @@ fn run() -> Result<(), String> {
     }
     let report = singlestep::run(Path::new(FIXTURES), options)?;
     println!(
-        "NMOS 6502/v1 @ {}\nCorpus: {}\nPassed selection: {} cases across {} opcode files\nRegisters/memory: passed; cycle counts: passed; bus sequences: not checked",
+        "NMOS 6502/v1 @ {}\nCorpus: {}\nPassed selection: {} cases across {} opcode files\nRegisters/memory: passed; cycle counts: passed; bus sequences: passed",
         report.revision, report.selection, report.cases, report.files
     );
     Ok(())

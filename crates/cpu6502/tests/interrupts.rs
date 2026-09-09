@@ -78,7 +78,7 @@ fn brk_pushes_pc_plus_two_and_old_flags_with_b_and_preserves_decimal() {
                 ..before
             }
         );
-        // Necessary accesses only: this is not a claim of full bus-cycle accuracy.
+        // BRK's seven accesses now correspond one-for-one to bus cycles.
         assert_eq!(
             bus.accesses,
             [
@@ -150,6 +150,8 @@ fn rti_restores_all_flags_and_pc_without_increment_and_wraps_sp() {
             bus.accesses,
             [
                 Access::Read(0x8000),
+                Access::Read(0x8001),
+                Access::Read(0x01fd),
                 Access::Read(0x01fe),
                 Access::Read(0x01ff),
                 Access::Read(0x0100)
@@ -179,6 +181,8 @@ fn irq_polls_a_level_and_latched_request_survives_deassertion() {
     assert_eq!(
         bus.accesses,
         [
+            Access::Read(0x8001),
+            Access::Read(0x8001),
             Access::Write(0x01fd, 0x80),
             Access::Write(0x01fc, 0x01),
             Access::Write(0x01fb, 0xeb),

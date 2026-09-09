@@ -46,3 +46,6 @@ M1 新增 8 条固定来源的 SingleStepTests 十进制输入／结果测试，
 ## M2.1 原始格式验证
 
 沿用 SingleStepTests 固定提交 `2f6980a2d95757486c7bee24355c360e40e2a224`，读取 [6502 数据格式与测试流程](https://github.com/SingleStepTests/65x02/tree/2f6980a2d95757486c7bee24355c360e40e2a224/6502)。首批 21 个 opcode 各取前 32 条，按原始状态运行并比较寄存器／内存与周期数量；上游和夹具各自的 SHA-256 见 [清单](../crates/cpu6502/tests/data/singlestep/manifest.json)。MIT 许可沿用数据目录内原文。当前不比较完整总线访问序列，具体命令与选择规则见 [数据说明](../crates/cpu6502/tests/data/README.md)。
+
+
+M2.3 总线阶段依据 MOS 6500-10A（1976 年第二版）附录 A 的 [单周期表转录](https://xotmatrix.com/6502/6502-single-cycle-execution.html)，与固定 SingleStepTests NMOS 原始事件逐项交叉比较。分支实际为先读操作数后 PC，再在跨页时读未修正高字节的地址；不把旧手册表中的简略地址描述当作完整相位模型。RESET 使用只读的栈入口，物理引脚时序仍属 M2.4。

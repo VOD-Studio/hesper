@@ -89,8 +89,19 @@ fn reset_reads_little_endian_vector_and_preserves_nmos_state() {
                     ..before
                 }
             );
-            // M0's documented sparse reset accesses, not a cycle-exact bus trace.
-            assert_eq!(bus.accesses, [Access::Read(0xfffc), Access::Read(0xfffd)]);
+            // MOS hardware manual: RESET substitutes reads for three stack writes.
+            assert_eq!(
+                bus.accesses,
+                [
+                    Access::Read(before.pc),
+                    Access::Read(before.pc),
+                    Access::Read(0x100 | u16::from(sp)),
+                    Access::Read(0x100 | u16::from(sp.wrapping_sub(1))),
+                    Access::Read(0x100 | u16::from(sp.wrapping_sub(2))),
+                    Access::Read(0xfffc),
+                    Access::Read(0xfffd),
+                ]
+            );
             assert_eq!(&bus.ram.as_slice()[0x0100..0x0200], &[0xa5; 256]);
         }
     }
@@ -656,6 +667,7 @@ fn jsr_rts_return_address_stack_order_and_sp_wrap() {
         [
             Access::Read(0x4000),
             Access::Read(0x4001),
+            Access::Read(0x0100),
             Access::Write(0x0100, 0x40),
             Access::Write(0x01ff, 0x02),
             Access::Read(0x4002),
@@ -675,8 +687,11 @@ fn jsr_rts_return_address_stack_order_and_sp_wrap() {
         bus.accesses,
         [
             Access::Read(0x1234),
+            Access::Read(0x1235),
+            Access::Read(0x01fe),
             Access::Read(0x01ff),
-            Access::Read(0x0100)
+            Access::Read(0x0100),
+            Access::Read(0x4002),
         ]
     );
 }
