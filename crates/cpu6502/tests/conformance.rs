@@ -20,7 +20,7 @@ fn check_step(cpu: &mut Cpu, bus: &mut dyn Bus, after: Registers, cycles: u8) ->
     assert_eq!(step.before, before);
     assert_eq!(step.after, after);
     assert_eq!(step.address, before.pc);
-    assert_eq!(step.cycles, cycles);
+    assert_eq!(step.cycles, u64::from(cycles));
     step
 }
 
@@ -60,7 +60,7 @@ fn deterministic_construction_is_separate_from_reset() {
     let mut ram = Ram::new();
     ram.load(0xfffc, &[0xcd, 0xab]).unwrap();
     let mut cpu = cpu;
-    assert_eq!(cpu.reset(&mut ram), 7);
+    assert_eq!(cpu.reset(&mut ram).unwrap().cycles, 7);
     assert_eq!(cpu.registers().pc, 0xabcd);
     assert_eq!(cpu.registers().sp, 0xfd);
     assert_eq!(cpu.registers().status.bits(), 0x24);
@@ -79,7 +79,7 @@ fn reset_reads_little_endian_vector_and_preserves_nmos_state() {
             let mut bus = RecordingBus::default();
             bus.ram.load(0xfffc, &[0x34, 0x12]).unwrap();
             bus.ram.load(0x0100, &[0xa5; 256]).unwrap();
-            assert_eq!(cpu.reset(&mut bus), 7);
+            assert_eq!(cpu.reset(&mut bus).unwrap().cycles, 7);
             assert_eq!(
                 cpu.registers(),
                 Registers {
@@ -113,11 +113,11 @@ fn repeated_reset_decrements_current_sp_instead_of_reinitializing_registers() {
     let mut ram = Ram::new();
     ram.load(0xfffc, &[0x00, 0x80]).unwrap();
     ram.load(0x8000, &[0xa2, 0x10, 0x9a, 0xa9, 0x7f]).unwrap();
-    cpu.reset(&mut ram);
+    cpu.reset(&mut ram).unwrap();
     for _ in 0..3 {
         cpu.step(&mut ram).unwrap();
     }
-    assert_eq!(cpu.reset(&mut ram), 7);
+    assert_eq!(cpu.reset(&mut ram).unwrap().cycles, 7);
     let state = cpu.registers();
     assert_eq!(
         (state.a, state.x, state.sp, state.pc),
@@ -776,7 +776,7 @@ fn nested_subroutines_restore_stack_and_caller() {
     let mut cpu = Cpu::from_registers(initial());
     let mut cycles = 0;
     for _ in 0..6 {
-        cycles += u16::from(cpu.step(&mut ram).unwrap().cycles);
+        cycles += cpu.step(&mut ram).unwrap().cycles;
     }
     assert_eq!(cycles, 31); // JSR + JSR + PHA + PLA + RTS + RTS
     assert_eq!(

@@ -236,7 +236,7 @@ pub fn execute_case(case: &Case, opcode: u8) -> Result<(), String> {
             ));
         }
     }
-    if usize::from(step.cycles) != case.cycles.len() {
+    if step.cycles != case.cycles.len() as u64 {
         return Err(format!(
             "cycles: expected {}, got {}",
             case.cycles.len(),

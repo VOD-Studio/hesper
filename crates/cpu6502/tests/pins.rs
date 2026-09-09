@@ -26,7 +26,7 @@ struct Reference {
 fn fixed_visual6502_revd_pin_traces_match_actual_bus_cycles() {
     let cases: Vec<Reference> =
         serde_json::from_str(include_str!("data/visual6502/pins.json")).unwrap();
-    assert_eq!(cases.len(), 96);
+    assert_eq!(cases.len(), 246);
     for case in cases {
         let state = case.initial;
         let mut cpu = Cpu::from_registers(Registers {
@@ -43,20 +43,26 @@ fn fixed_visual6502_revd_pin_traces_match_actual_bus_cycles() {
             ram.write(address, value);
         }
         assert_eq!(case.cycles.len(), 24);
-        assert!(case.events.iter().all(|(half, _, _)| half % 2 == 0));
         for (index, (address, data, direction, sync)) in case.cycles.into_iter().enumerate() {
-            for (half, pin, asserted) in &case.events {
-                if *half == index * 2 {
-                    match pin.as_str() {
-                        "irq" => cpu.set_irq_line(*asserted),
-                        "nmi" => cpu.set_nmi_line(*asserted),
-                        _ => panic!("invalid pin"),
+            let mut result = None;
+            for phase in 0..2 {
+                for (half, pin, asserted) in &case.events {
+                    if *half == index * 2 + phase {
+                        match pin.as_str() {
+                            "irq" => cpu.set_irq_line(*asserted),
+                            "nmi" => cpu.set_nmi_line(*asserted),
+                            "rdy" => cpu.set_ready(!asserted),
+                            "so" => cpu.set_so_line(*asserted),
+                            _ => panic!("invalid pin"),
+                        }
                     }
                 }
+                result = cpu
+                    .half_cycle(&mut ram)
+                    .unwrap_or_else(|e| panic!("{} cycle {index} phase {phase}: {e}", case.name));
+                assert_eq!(result.is_some(), phase == 1);
             }
-            let result = cpu
-                .cycle(&mut ram)
-                .unwrap_or_else(|e| panic!("{} cycle {index}: {e}", case.name));
+            let result = result.unwrap();
             let read = result.bus.direction == hesper_cpu6502::Direction::Read;
             assert!(direction == "read" || direction == "write");
             assert_eq!(

@@ -1,4 +1,6 @@
-use hesper_cpu6502::{Bus, BusCycle, Cpu, Direction, Ram, Registers, Status, StepKind};
+use hesper_cpu6502::{
+    Bus, BusCycle, ClockPhase, Cpu, CpuError, Direction, Ram, Registers, Status, StepKind,
+};
 
 #[derive(Default)]
 struct Device {
@@ -201,4 +203,177 @@ fn reset_is_seven_observable_cycles_with_stack_reads_and_a_separate_event() {
         }
     }
     assert!(cpu.at_instruction_boundary());
+}
+
+#[test]
+fn rdy_repeats_real_reads_and_long_waits_are_included_without_u8_overflow() {
+    let mut cpu = cpu();
+    let before = cpu.registers();
+    let mut bus = Device::default();
+    bus.ram.write(0x8000, 0xea);
+    cpu.set_ready(false);
+    for _ in 0..1000 {
+        let cycle = cpu.cycle(&mut bus).unwrap();
+        assert!(cycle.stalled && cycle.completed.is_none() && cycle.bus.sync);
+        assert_eq!(cycle.bus.address, 0x8000);
+        assert_eq!(cpu.registers(), before);
+    }
+    cpu.set_ready(true);
+    let step = cpu.step(&mut bus).unwrap();
+    assert_eq!(step.before, before);
+    assert_eq!(step.cycles, 1002);
+    assert_eq!(bus.accesses.len(), 1002);
+    assert_eq!(step.after.pc, 0x8001);
+}
+
+#[test]
+fn rdy_does_not_stop_either_write_of_a_nmos_rmw() {
+    let mut cpu = cpu();
+    let mut bus = Device::default();
+    bus.ram.load(0x8000, &[0xe6, 0x40, 0xea]).unwrap();
+    bus.ram.write(0x40, 0x7f);
+    for _ in 0..3 {
+        cpu.cycle(&mut bus).unwrap();
+    }
+    cpu.set_ready(false);
+    for value in [0x7f, 0x80] {
+        let cycle = cpu.cycle(&mut bus).unwrap();
+        assert!(!cycle.stalled);
+        assert_eq!(
+            (cycle.bus.address, cycle.bus.data, cycle.bus.direction),
+            (0x40, value, Direction::Write)
+        );
+        if value == 0x80 {
+            assert_eq!(cycle.completed.unwrap().cycles, 5);
+        }
+    }
+    assert!(cpu.cycle(&mut bus).unwrap().stalled);
+    assert_eq!(cpu.registers().pc, 0x8002);
+}
+
+#[test]
+fn read_side_effects_continue_during_rdy_and_only_resumed_data_is_latched() {
+    let mut cpu = cpu();
+    let mut bus = Device {
+        side_effect: Some(0x40),
+        ..Device::default()
+    };
+    bus.ram.load(0x8000, &[0xa5, 0x40]).unwrap();
+    bus.ram.write(0x40, 0x10);
+    for _ in 0..2 {
+        cpu.cycle(&mut bus).unwrap();
+    }
+    cpu.set_ready(false);
+    for expected in [0x10, 0x11, 0x12] {
+        assert_eq!(cpu.cycle(&mut bus).unwrap().bus.data, expected);
+        assert_eq!(cpu.registers().a, 0);
+    }
+    cpu.set_ready(true);
+    let step = cpu.step(&mut bus).unwrap();
+    assert_eq!((step.after.a, step.cycles), (0x13, 6));
+}
+
+#[test]
+fn stalled_step_has_a_finite_budget_and_can_resume_without_resetting_state() {
+    let mut cpu = cpu();
+    let mut bus = Device::default();
+    bus.ram.write(0x8000, 0xea);
+    assert_eq!(
+        cpu.step_with_cycle_budget(&mut bus, 0),
+        Err(CpuError::CycleBudgetExceeded {
+            address: 0x8000,
+            budget: 0
+        })
+    );
+    assert!(bus.accesses.is_empty());
+    cpu.set_ready(false);
+    assert_eq!(
+        cpu.step(&mut bus),
+        Err(CpuError::CycleBudgetExceeded {
+            address: 0x8000,
+            budget: 7
+        })
+    );
+    assert_eq!(bus.accesses.len(), 7);
+    cpu.set_ready(true);
+    assert_eq!(cpu.step(&mut bus).unwrap().cycles, 9);
+}
+
+#[test]
+fn reset_uses_the_same_bounded_engine_and_can_resume_after_rdy() {
+    let mut cpu = cpu();
+    let mut bus = Device::default();
+    bus.ram.load(0xfffc, &[0x34, 0x12]).unwrap();
+    cpu.set_ready(false);
+    assert!(matches!(
+        cpu.reset(&mut bus),
+        Err(CpuError::CycleBudgetExceeded { budget: 7, .. })
+    ));
+    assert_eq!(bus.accesses.len(), 7);
+    assert!(
+        bus.accesses
+            .iter()
+            .all(|&(addr, _, direction)| addr == 0x8000 && direction == Direction::Read)
+    );
+    cpu.set_ready(true);
+    let step = cpu.step(&mut bus).unwrap();
+    assert_eq!(
+        (step.kind, step.after.pc, step.cycles),
+        (StepKind::Reset, 0x1234, 14)
+    );
+}
+
+#[test]
+fn clv_overlaps_so_and_a_held_low_so_does_not_retrigger() {
+    // RevD: an SO edge at CLV's second phi2 loses to its overlapping V write.
+    // Holding SO low through subsequent NOPs must not create another edge.
+    let mut cpu = cpu();
+    let mut bus = Device::default();
+    bus.ram
+        .load(0x8000, &[0xb8, 0xea, 0xea, 0xea, 0xea])
+        .unwrap();
+    for half in 0..16 {
+        if half == 3 {
+            cpu.set_so_line(true);
+        }
+        cpu.half_cycle(&mut bus).unwrap();
+    }
+    assert!(!cpu.registers().status.overflow);
+    cpu.set_so_line(false);
+    cpu.cycle(&mut bus).unwrap();
+    cpu.set_so_line(true);
+    cpu.cycle(&mut bus).unwrap();
+    cpu.cycle(&mut bus).unwrap();
+    assert!(cpu.registers().status.overflow);
+}
+
+#[test]
+fn so_edges_in_adjacent_half_cycles_can_change_a_branch_decision() {
+    for edge in [4, 5] {
+        let mut cpu = cpu();
+        let mut bus = Device::default();
+        bus.ram.load(0x8000, &[0xea, 0x50, 1, 0xea, 0xea]).unwrap();
+        for half in 0..8 {
+            assert_eq!(
+                cpu.next_clock_phase(),
+                if half % 2 == 0 {
+                    ClockPhase::Phi1
+                } else {
+                    ClockPhase::Phi2
+                }
+            );
+            if half == edge {
+                cpu.set_so_line(true);
+            }
+            let result = cpu.half_cycle(&mut bus).unwrap();
+            assert_eq!(result.is_some(), half % 2 == 1);
+        }
+        if edge == 4 {
+            assert!(cpu.at_instruction_boundary());
+            assert_eq!(cpu.registers().pc, 0x8003);
+        } else {
+            assert!(!cpu.at_instruction_boundary());
+            assert_eq!(cpu.step(&mut bus).unwrap().after.pc, 0x8004);
+        }
+    }
 }

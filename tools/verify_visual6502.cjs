@@ -77,6 +77,29 @@ for (const pin of ['irq','nmi']) for (const width of [1,2,3]) {
     scenarios.push({name: `${pin}-pulse-${width}`, program: [0xea,0xea,0xea], events: [[0,pin,true],[width*2,pin,false]]});
 }
 
+for (const [family, program] of [['nop',[0xea,0xea,0xea]], ['rmw',[0xee,0,0x20,0xea]], ['store',[0x8d,0,0x20,0xea]]]) {
+    for (let half = 0; half < 12; half++) {
+        scenarios.push({name:`rdy-${family}-${half}`, program,
+            events:[[half,'rdy',true],[half+8,'rdy',false]]});
+    }
+}
+for (const pin of ['irq','nmi']) for (const stall of [0,1,2]) for (const at of [0,2,4]) {
+    scenarios.push({name:`rdy-${pin}-${stall}-${at}`, program:[0xea,0xea,0xea],
+        events:[[stall*2,'rdy',true],[(stall+4)*2,'rdy',false],[at*2,pin,true]]});
+}
+for (const [family,program] of [['branch',[0xea,0x50,1,0xea,0xea]], ['clv',[0xb8,0x50,1,0xea,0xea]],
+    ['adc',[0x69,0,0x50,1,0xea,0xea]], ['bit',[0x24,0x40,0x50,1,0xea,0xea]]]) {
+    for (let half = 0; half < 12; half++) scenarios.push({name:`so-${family}-${half}`, program,
+        ram:[[0x40,0]], events:[[half,'so',true]]});
+}
+for (const [family,program,ram] of [
+    ['sbc',[0xe9,0,0x50,1,0xea,0xea],[]],
+    ['plp',[0x28,0x50,1,0xea,0xea],[[0x1fe,0x20]]],
+    ['rti',[0x40,0xea,0x50,1,0xea,0xea],[[0x1fe,0x20],[0x1ff,2],[0x100,0x80]]],
+]) for (let half = 0; half < 16; half++) {
+    scenarios.push({name:`so-${family}-${half}`, program, ram, events:[[half,'so',true]]});
+}
+
 const args = process.argv.slice(2);
 if (args.length && !(args.length === 2 && args[0] === '--record')) throw Error('Usage: node tools/verify_visual6502.cjs [--record OUTPUT]');
 const actual = scenarios.map(reference);

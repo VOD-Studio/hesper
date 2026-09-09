@@ -4,7 +4,7 @@ use crate::instruction::Op;
 
 mod cycle;
 use cycle::Execution;
-pub use cycle::{BusCycle, Cycle, Direction};
+pub use cycle::{BusCycle, ClockPhase, Cycle, Direction};
 
 /// The six stored NMOS status flags. B is not a persistent hardware flag.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +71,13 @@ pub struct Cpu {
     nmi_sample: bool,
     nmi_edge: bool,
     nmi_pending: bool,
+    not_ready: bool,
+    so_line: bool,
+    so_sample: bool,
+    so_pending: bool,
+    v_write_pending: [Option<bool>; 2],
+    phi2: bool,
+    fetch_wait: Option<(Registers, u64)>,
 }
 
 /// Hardware interrupt entry is a separate step, not an executed BRK opcode.
@@ -89,12 +96,13 @@ pub struct Step {
     pub kind: StepKind,
     pub before: Registers,
     pub after: Registers,
-    pub cycles: u8,
+    pub cycles: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuError {
     UnsupportedOpcode { address: u16, opcode: u8 },
+    CycleBudgetExceeded { address: u16, budget: u64 },
 }
 
 impl fmt::Display for CpuError {
@@ -102,6 +110,12 @@ impl fmt::Display for CpuError {
         match self {
             Self::UnsupportedOpcode { address, opcode } => {
                 write!(f, "unsupported opcode ${opcode:02X} at ${address:04X}")
+            }
+            Self::CycleBudgetExceeded { address, budget } => {
+                write!(
+                    f,
+                    "cycle budget {budget} exhausted at ${address:04X}; CPU can be resumed"
+                )
             }
         }
     }
@@ -155,6 +169,11 @@ impl Cpu {
             Cpx => self.compare(self.registers.x, value),
             Cpy => self.compare(self.registers.y, value),
             _ => unreachable!("private decoder sent non-read operation to ALU"),
+        }
+        if matches!(op, Adc | Sbc) {
+            self.v_write_pending[1] = Some(self.registers.status.overflow);
+        } else if op == Bit {
+            self.v_write_pending[0] = Some(self.registers.status.overflow);
         }
     }
 
@@ -230,6 +249,9 @@ impl Cpu {
             Nop => {}
             _ => unreachable!("private decoder sent non-implied operation to ALU"),
         }
+        if op == Clv {
+            self.v_write_pending = [Some(false); 2];
+        }
     }
 
     fn branch_taken(&self, op: Op) -> bool {
@@ -260,6 +282,16 @@ impl Cpu {
     /// and vector selection consume it; a pulse entirely between cycles is missed.
     pub fn set_nmi_line(&mut self, asserted: bool) {
         self.nmi_line = asserted;
+    }
+
+    /// RDY high allows progress. Low repeats reads; NMOS writes keep progressing.
+    pub fn set_ready(&mut self, ready: bool) {
+        self.not_ready = !ready;
+    }
+
+    /// Active-low SO. Sampled at phi1; a new falling edge sets V one cycle later.
+    pub fn set_so_line(&mut self, asserted: bool) {
+        self.so_line = asserted;
     }
 
     fn sample_interrupt_pins(&mut self, interrupt_disable: bool) {

@@ -66,7 +66,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         result.steps,
         result.instruction_cycles,
         result.reset_cycles,
-        result.instruction_cycles + u64::from(result.reset_cycles)
+        result.instruction_cycles + result.reset_cycles
     );
     Ok(())
 }

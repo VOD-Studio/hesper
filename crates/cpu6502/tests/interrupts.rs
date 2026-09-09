@@ -51,7 +51,7 @@ fn step(cpu: &mut Cpu, bus: &mut Spy, kind: StepKind, pc: u16, cycles: u8) -> St
     assert_eq!(result.before, before);
     assert_eq!(result.after, cpu.registers());
     assert_eq!(result.after.pc, pc);
-    assert_eq!(result.cycles, cycles);
+    assert_eq!(result.cycles, u64::from(cycles));
     result
 }
 
@@ -368,7 +368,7 @@ fn reset_discards_pending_interrupts_without_inventing_nmi_edges() {
     cpu.set_irq_line(true);
     step(&mut cpu, &mut bus, instruction(0x58), 0x8001, 2);
     cpu.set_nmi_line(true);
-    assert_eq!(cpu.reset(&mut bus), 7);
+    assert_eq!(cpu.reset(&mut bus).unwrap().cycles, 7);
     assert_eq!(cpu.registers().sp, 0xfa);
     step(&mut cpu, &mut bus, instruction(0x58), 0x8001, 2);
     step(&mut cpu, &mut bus, instruction(0xea), 0x8002, 2);

@@ -27,7 +27,7 @@ pub struct DemoRun {
     pub registers: Registers,
     pub steps: u64,
     pub instruction_cycles: u64,
-    pub reset_cycles: u8,
+    pub reset_cycles: u64,
 }
 
 #[derive(Debug)]
@@ -68,7 +68,7 @@ pub fn run_demo(max_steps: u64, mut trace: impl FnMut(&Step, u64)) -> Result<Dem
     ram.load(0xfffc, &DEMO_START.to_le_bytes())
         .map_err(DemoError::Load)?;
     let mut cpu = Cpu::new();
-    let reset_cycles = cpu.reset(&mut ram);
+    let reset_cycles = cpu.reset(&mut ram).map_err(DemoError::Cpu)?.cycles;
     let mut steps = 0;
     let mut instruction_cycles = 0;
     while cpu.registers().pc != DEMO_DONE {
@@ -80,8 +80,8 @@ pub fn run_demo(max_steps: u64, mut trace: impl FnMut(&Step, u64)) -> Result<Dem
         }
         let step = cpu.step(&mut ram).map_err(DemoError::Cpu)?;
         steps += 1;
-        instruction_cycles += u64::from(step.cycles);
-        trace(&step, instruction_cycles + u64::from(reset_cycles));
+        instruction_cycles += step.cycles;
+        trace(&step, instruction_cycles + reset_cycles);
     }
     Ok(DemoRun {
         ram,

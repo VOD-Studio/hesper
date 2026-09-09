@@ -12,6 +12,12 @@ pub enum Direction {
     Write,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockPhase {
+    Phi1,
+    Phi2,
+}
+
 /// Data captured by the actual bus transaction, including discarded reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusCycle {
@@ -24,6 +30,8 @@ pub struct BusCycle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cycle {
     pub bus: BusCycle,
+    /// RDY held a read: the bus transaction occurred, execution did not advance.
+    pub stalled: bool,
     /// Present only when this cycle completes an instruction or entry sequence.
     pub completed: Option<Step>,
 }
@@ -70,7 +78,7 @@ pub(super) struct Execution {
     mode: Mode,
     phase: Phase,
     before: Registers,
-    cycles: u8,
+    cycles: u64,
     low: u8,
     value: u8,
     base: u16,
@@ -125,6 +133,24 @@ impl Execution {
     fn intermediate(&self) -> u16 {
         (self.base & 0xff00) | (self.address & 0xff)
     }
+
+    // Only needed when RDY is low. A write returns None and must run normally.
+    fn read_address(&self, cpu: &Cpu) -> Option<u16> {
+        use Phase::*;
+        Some(match self.phase {
+            Fetch | Implied | Low | High | Relative | StackDummyPc | Padding | JsrHigh
+            | ReturnDummy | BranchCross => cpu.registers.pc,
+            ZeroIndex | PointerLow | BranchTaken => self.base,
+            PointerHigh => (self.base & 0xff00) | (self.base.wrapping_add(1) & 0xff),
+            Indexed => self.intermediate(),
+            Memory if !self.store() => self.address,
+            StackDummy | JsrDummy | PullRegister | ReturnLow | ReturnHigh => cpu.stack_address(),
+            PushHigh | PushLow | PushStatus if self.kind == StepKind::Reset => cpu.stack_address(),
+            VectorLow => self.address,
+            VectorHigh => self.address.wrapping_add(1),
+            _ => return None,
+        })
+    }
 }
 
 fn read(bus: &mut dyn Bus, address: u16) -> BusCycle {
@@ -148,17 +174,20 @@ fn write(bus: &mut dyn Bus, address: u16, data: u8) -> BusCycle {
 impl Cpu {
     /// True when the next cycle starts an instruction or interrupt entry.
     pub fn at_instruction_boundary(&self) -> bool {
-        self.execution.is_none()
+        self.execution.is_none() && self.fetch_wait.is_none() && !self.phi2
     }
 
     /// Begin the seven-cycle RESET entry, discarding any unfinished instruction.
     /// This host request does not yet model the physical RESET pin hold time.
     pub fn begin_reset(&mut self) {
+        self.phi2 = false;
+        self.fetch_wait = None;
         self.irq_pending = false;
         self.irq_sample = false;
         self.nmi_pending = false;
         self.nmi_edge = false;
         self.nmi_sample = self.nmi_line;
+        self.v_write_pending = [None; 2];
         self.execution = Some(Execution::new(
             StepKind::Reset,
             self.registers,
@@ -167,26 +196,61 @@ impl Cpu {
         ));
     }
 
-    /// Perform the same seven bus cycles exposed by `begin_reset` + `cycle`.
-    /// Preserves A/X/Y and N/V/D/Z/C; reads (never writes) three stack locations.
-    pub fn reset(&mut self, bus: &mut dyn Bus) -> u8 {
+    /// Begin RESET and spend at most seven cycles in the same cycle engine.
+    /// RDY can exhaust this budget; resume with `cycle` or `step`, not `reset`.
+    /// Without external pin activity, preserves A/X/Y and N/V/D/Z/C and reads
+    /// (never writes) three stack locations.
+    pub fn reset(&mut self, bus: &mut dyn Bus) -> Result<Step, CpuError> {
         self.begin_reset();
-        let mut count = 0;
-        // RESET cannot encounter an opcode error; it never decodes memory.
-        while let Some(mut execution) = self.execution.take() {
-            let (_, done) = self.advance(bus, &mut execution);
-            count += 1;
-            if !done {
-                self.execution = Some(execution);
-            }
-        }
-        count
+        self.step(bus)
     }
 
-    /// Advance one CPU bus cycle. No speculative or logging-only bus accesses.
+    pub fn next_clock_phase(&self) -> ClockPhase {
+        if self.phi2 {
+            ClockPhase::Phi2
+        } else {
+            ClockPhase::Phi1
+        }
+    }
+
+    /// Advance one phase. Phi1 samples SO; phi2 performs the actual bus transfer,
+    /// samples IRQ/NMI/RDY and finishes the cycle. The host may change inputs in
+    /// between. This is digital phase scheduling, not an electrical pin simulator.
+    pub fn half_cycle(&mut self, bus: &mut dyn Bus) -> Result<Option<Cycle>, CpuError> {
+        if !self.phi2 {
+            if self.so_pending {
+                self.registers.status.overflow = true;
+            }
+            // V writes overlap the next opcode fetch: BIT/pulls commit at the
+            // next phi1, ADC/SBC one later, and CLV covers both. They win a
+            // coincident SO update. See the fixed revD SO sweep, not a new edge
+            // when SO remains low. Architectural results remain visible to step.
+            if let Some(value) = self.v_write_pending[0] {
+                self.registers.status.overflow = value;
+            }
+            self.v_write_pending = [self.v_write_pending[1], None];
+            self.so_pending = self.so_line && !self.so_sample;
+            self.so_sample = self.so_line;
+            self.phi2 = true;
+            Ok(None)
+        } else {
+            self.phi2 = false;
+            self.finish_phi2(bus).map(Some)
+        }
+    }
+
+    /// Advance/finish one CPU bus cycle. No speculative or logging-only reads.
     /// Interrupt inputs are sampled each cycle; instruction polling uses the
     /// previous sample, with the NMOS taken-branch polling exceptions.
     pub fn cycle(&mut self, bus: &mut dyn Bus) -> Result<Cycle, CpuError> {
+        if !self.phi2 {
+            self.half_cycle(bus)?;
+        }
+        self.phi2 = false;
+        self.finish_phi2(bus)
+    }
+
+    fn finish_phi2(&mut self, bus: &mut dyn Bus) -> Result<Cycle, CpuError> {
         let sampled_i = self.registers.status.interrupt_disable;
         let polled_irq = self.irq_sample;
         let polled_nmi = self.nmi_edge;
@@ -204,6 +268,16 @@ impl Cpu {
         } else {
             let mut access = read(bus, self.registers.pc);
             access.sync = true;
+            if self.not_ready {
+                let (before, waits) = self.fetch_wait.unwrap_or((self.registers, 0));
+                self.fetch_wait = Some((before, waits + 1));
+                self.sample_interrupt_pins(sampled_i);
+                return Ok(Cycle {
+                    bus: access,
+                    stalled: true,
+                    completed: None,
+                });
+            }
             let opcode = access.data;
             let Some((op, mode, _)) = decode(opcode) else {
                 return Err(CpuError::UnsupportedOpcode {
@@ -211,18 +285,33 @@ impl Cpu {
                     opcode,
                 });
             };
-            let mut execution =
-                Execution::new(StepKind::Instruction { opcode }, self.registers, op, mode);
+            let (before, waits) = self.fetch_wait.take().unwrap_or((self.registers, 0));
+            let mut execution = Execution::new(StepKind::Instruction { opcode }, before, op, mode);
             self.registers.pc = self.registers.pc.wrapping_add(1);
-            execution.cycles = 1;
+            execution.cycles = waits + 1;
             execution.phase = execution.first_phase();
             self.execution = Some(execution);
             self.sample_interrupt_pins(sampled_i);
             return Ok(Cycle {
                 bus: access,
+                stalled: false,
                 completed: None,
             });
         };
+        if self.not_ready
+            && let Some(address) = execution.read_address(self)
+        {
+            let mut access = read(bus, address);
+            access.sync = execution.phase == Phase::Fetch;
+            execution.cycles += 1;
+            self.execution = Some(execution);
+            self.sample_interrupt_pins(sampled_i);
+            return Ok(Cycle {
+                bus: access,
+                stalled: true,
+                completed: None,
+            });
+        }
         let phase = execution.phase;
         if phase == Phase::Relative {
             execution.branch_irq = polled_irq;
@@ -258,6 +347,7 @@ impl Cpu {
         self.sample_interrupt_pins(sampled_i);
         Ok(Cycle {
             bus: access,
+            stalled: false,
             completed,
         })
     }
@@ -266,11 +356,25 @@ impl Cpu {
     /// The returned count and `before` snapshot cover the entire operation even
     /// when the caller has already advanced some of its cycles individually.
     pub fn step(&mut self, bus: &mut dyn Bus) -> Result<Step, CpuError> {
-        loop {
+        self.step_with_cycle_budget(bus, 7)
+    }
+
+    /// Limit the number of cycles spent in this call, retaining state on timeout.
+    /// `step` uses seven; hosts with RDY waits can choose a larger finite budget.
+    pub fn step_with_cycle_budget(
+        &mut self,
+        bus: &mut dyn Bus,
+        budget: u64,
+    ) -> Result<Step, CpuError> {
+        for _ in 0..budget {
             if let Some(step) = self.cycle(bus)?.completed {
                 return Ok(step);
             }
         }
+        Err(CpuError::CycleBudgetExceeded {
+            address: self.registers.pc,
+            budget,
+        })
     }
 
     fn stack_address(&self) -> u16 {
@@ -487,6 +591,7 @@ impl Cpu {
                     self.load_a(access.data);
                 } else {
                     self.registers.status = Status::from_bits(access.data);
+                    self.v_write_pending[0] = Some(self.registers.status.overflow);
                 }
                 if e.op == Op::Rti {
                     self.registers.sp = self.registers.sp.wrapping_add(1);

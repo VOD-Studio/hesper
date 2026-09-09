@@ -237,7 +237,7 @@ fn every_documented_opcode_has_independent_result_length_flags_and_cycle_expecta
             "{:02X} {} {}",
             spec.opcode, spec.name, spec.mode
         );
-        assert_eq!(step.cycles, cycles, "opcode {:02X}", spec.opcode);
+        assert_eq!(step.cycles, u64::from(cycles), "opcode {:02X}", spec.opcode);
         assert_eq!(bus.writes, writes, "opcode {:02X}", spec.opcode);
     }
 }
@@ -270,7 +270,7 @@ fn all_indexed_reads_add_one_cycle_on_page_cross_but_stores_and_rmw_do_not() {
             ));
             assert_eq!(
                 step.cycles,
-                spec.cycles + extra,
+                u64::from(spec.cycles + extra),
                 "opcode {:02X}",
                 spec.opcode
             );

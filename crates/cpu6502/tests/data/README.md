@@ -57,7 +57,7 @@ M2.2 历史通过范围见 [verification.md](../../../../docs/verification.md)�
 
 ## M2.4 引脚与中断程序（进行中）
 
-`visual6502/pins.json` 包含本项目原创的 96 个短程序／事件时间表，在 [Visual6502 revD](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) 晶体管模型上实际生成的 24 周期总线观察（共 2304 周期），输入为低相位开始前的 IRQ/NMI 改变。初始 RAM 未单列的地址为 `$EA`；引导代码通过真实指令设置寄存器，再停在目标取指。CPU 测试恢复相同状态及 RAM，预期不是由 Hesper 生成。fixture SHA-256：`a213dc580177c1e7030707f76cc1ab9468376ccc91fb32921e44d28d421c363a`。
+`visual6502/pins.json` 包含本项目原创的 246 个短程序／事件时间表，在 [Visual6502 revD](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) 晶体管模型上实际生成的 24 周期总线观察（共 5904 周期），事件以半周期索引给出 IRQ/NMI/RDY/SO 的低有效断言／释放；覆盖读写等待、等待中断以及 SO 与分支、CLV、ADC、SBC、BIT、PLP、RTI 的相位重叠。初始 RAM 未单列的地址为 `$EA`；引导代码通过真实指令设置寄存器，再停在目标取指。CPU 测试恢复相同状态及 RAM，预期不是由 Hesper 生成。fixture SHA-256：`c2913d4ab2c52af44ae9b69c3647c630215c90485e25f6f254fed6d24d516ac7`。
 
 ```sh
 # 离线快速比较固定观察

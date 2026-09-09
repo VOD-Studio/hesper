@@ -81,7 +81,7 @@ fn run() -> Result<(), String> {
         let step = cpu
             .step(&mut ram)
             .map_err(|error| format!("{error}; state={:?}", cpu.registers()))?;
-        cycles += u64::from(step.cycles);
+        cycles += step.cycles;
         if step.before.pc == step.after.pc {
             return Err(format!(
                 "functional failure trap: {step:?}; instructions={steps}; cycles={cycles}"
