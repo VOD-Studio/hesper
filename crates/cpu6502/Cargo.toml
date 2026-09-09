@@ -1,0 +1,9 @@
+[package]
+name = "hesper-cpu6502"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "An instruction-stepped NMOS 6502 core for Hesper"
+
+[lints]
+workspace = true

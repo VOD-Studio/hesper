@@ -5,3 +5,7 @@ version = 4
 [[package]]
 name = "hesper"
 version = "0.1.0"
+
+[[package]]
+name = "hesper-cpu6502"
+version = "0.1.0"
