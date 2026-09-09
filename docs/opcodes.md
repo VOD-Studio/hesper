@@ -1,6 +1,6 @@
 # NMOS opcode 支持清单
 
-M1 进行中：**133 个 opcode 已实现并通过自包含测试**。ADC/SBC 与 BRK/RTI、外部中断将在后续功能点补齐；没有通过完整外部 CPU 套件的声明。
+M1 进行中：**149 个 opcode 已实现并通过自包含测试**。BRK/RTI、外部中断将在后续功能点补齐；没有通过完整外部 CPU 套件的声明。
 
 下表逐项对应独立手写的 [测试规格](../crates/cpu6502/tests/data/opcodes.txt)，不从 CPU 解码器产生预期值。[official.rs](../crates/cpu6502/tests/official.rs) 中 `every_documented_opcode_has_independent_result_length_flags_and_cycle_expectations` 对每一行断言结果、PC、标志、周期和写入；M0 的 [回归测试](../crates/cpu6502/tests/conformance.rs) 全部保留。
 
@@ -141,7 +141,25 @@ M1 进行中：**133 个 opcode 已实现并通过自包含测试**。ADC/SBC �
 | F6 | INC | zpx | 2 | 6 | NZ | 已实现 | 已测试 |
 | F8 | SED | imp | 1 | 2 | D=1 | 已实现 | 已测试 |
 | FE | INC | abx | 3 | 7 | NZ | 已实现 | 已测试 |
+| 61 | ADC | izx | 2 | 6 | NVZC | 已实现 | 已测试 |
+| 65 | ADC | zp | 2 | 3 | NVZC | 已实现 | 已测试 |
+| 69 | ADC | imm | 2 | 2 | NVZC | 已实现 | 已测试 |
+| 6D | ADC | abs | 3 | 4 | NVZC | 已实现 | 已测试 |
+| 71 | ADC | izy | 2 | 5+ | NVZC | 已实现 | 已测试 |
+| 75 | ADC | zpx | 2 | 4 | NVZC | 已实现 | 已测试 |
+| 79 | ADC | aby | 3 | 4+ | NVZC | 已实现 | 已测试 |
+| 7D | ADC | abx | 3 | 4+ | NVZC | 已实现 | 已测试 |
+| E1 | SBC | izx | 2 | 6 | NVZC | 已实现 | 已测试 |
+| E5 | SBC | zp | 2 | 3 | NVZC | 已实现 | 已测试 |
+| E9 | SBC | imm | 2 | 2 | NVZC | 已实现 | 已测试 |
+| ED | SBC | abs | 3 | 4 | NVZC | 已实现 | 已测试 |
+| F1 | SBC | izy | 2 | 5+ | NVZC | 已实现 | 已测试 |
+| F5 | SBC | zpx | 2 | 4 | NVZC | 已实现 | 已测试 |
+| F9 | SBC | aby | 3 | 4+ | NVZC | 已实现 | 已测试 |
+| FD | SBC | abx | 3 | 4+ | NVZC | 已实现 | 已测试 |
 
 周期与标志来源：[MOS 6500-50A 附录 B](https://lbaeza.neocities.org/mcs6500/6500_appb)。额外测试覆盖所有分支、索引读取跨页与 16 位回绕、零页指针回绕、NMOS RMW 的旧值／新值两次写入，以及原有栈和间接 JMP 边界。
 
-表外 123 个字节仍返回 `UnsupportedOpcode`（当前包括 BRK）；错误契约遍历全部未支持字节。RESET 是外部操作，不属于 opcode。
+表外 107 个字节仍返回 `UnsupportedOpcode`（当前包括 BRK）；错误契约遍历全部未支持字节。RESET 是外部操作，不属于 opcode。
+
+ADC/SBC 的所有模式已有上述矩阵测试；[arithmetic.rs](../crates/cpu6502/tests/arithmetic.rs) 另穷举二进制 A／操作数／C（每条 131072 组）与有效 BCD 结果／进借位（每条 20000 组），覆盖 NMOS 特有标志阶段、无效 BCD 和固定来源的 8 条外部十进制样例。十进制模式不增加周期。

@@ -2,7 +2,7 @@
 
 用 Rust 编写的复古计算机模拟项目，以独立、可测试、可复用的 **MOS NMOS 6502 CPU 核心**为主体。按 CPU → Apple I → 原版 Apple II → WebAssembly 的顺序推进。
 
-当前 M1 进行中，包含 133 个真实实现的 opcode、64 KiB RAM Bus、复位、寄存器快照、指令周期统计、结构化错误和自包含 CLI 演示。具体寻址方式、周期、标志和测试映射见 [opcode 清单](docs/opcodes.md)，其余 opcode 均未实现。
+当前 M1 进行中，包含 149 个真实实现的 opcode、64 KiB RAM Bus、复位、寄存器快照、指令周期统计、结构化错误和自包含 CLI 演示。具体寻址方式、周期、标志和测试映射见 [opcode 清单](docs/opcodes.md)，其余 opcode 均未实现。
 
 ## 运行
 
@@ -64,7 +64,7 @@ cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
 “按指令执行并统计周期”不等于“逐周期总线精确模拟”。当前不重现全部 dummy read、逐周期设备推进或引脚时序；不能据此宣称已验证整条总线访问序列。
 
-尚未实现 ADC/SBC（包括二进制和十进制）、IRQ/NMI/BRK/RTI、非官方 opcode、机器系统或浏览器前端。BRK `$00` 和其他未支持字节返回 `UnsupportedOpcode { address, opcode }`。
+已实现 ADC/SBC 的二进制及 NMOS 十进制运算；尚未实现 IRQ/NMI/BRK/RTI、非官方 opcode、机器系统或浏览器前端。BRK `$00` 和其他未支持字节返回 `UnsupportedOpcode { address, opcode }`。
 
 构造 CPU 时的零寄存器、全零 RAM 是可重复运行的模拟器约定，**不是硬件上电保证**；NMOS RESET 保留 D 和通用寄存器，程序应自行初始化栈并选择运算模式。具体兼容性假设见 [架构](docs/architecture.md)，后续计划见 [路线图](docs/roadmap.md)，行为依据见 [参考资料](docs/references.md)。
 

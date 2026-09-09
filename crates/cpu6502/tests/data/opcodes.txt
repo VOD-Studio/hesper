@@ -56,22 +56,22 @@
 5D EOR abx 4
 5E LSR abx 7
 60 RTS imp 6
-# 61 ADC izx 6
-# 65 ADC zp 3
+61 ADC izx 6
+65 ADC zp 3
 66 ROR zp 5
 68 PLA imp 4
-# 69 ADC imm 2
+69 ADC imm 2
 6A ROR acc 2
 6C JMP ind 5
-# 6D ADC abs 4
+6D ADC abs 4
 6E ROR abs 6
 70 BVS rel 2
-# 71 ADC izy 5
-# 75 ADC zpx 4
+71 ADC izy 5
+75 ADC zpx 4
 76 ROR zpx 6
 78 SEI imp 2
-# 79 ADC aby 4
-# 7D ADC abx 4
+79 ADC aby 4
+7D ADC abx 4
 7E ROR abx 7
 81 STA izx 6
 84 STY zp 3
@@ -134,21 +134,21 @@ D9 CMP aby 4
 DD CMP abx 4
 DE DEC abx 7
 E0 CPX imm 2
-# E1 SBC izx 6
+E1 SBC izx 6
 E4 CPX zp 3
-# E5 SBC zp 3
+E5 SBC zp 3
 E6 INC zp 5
 E8 INX imp 2
-# E9 SBC imm 2
+E9 SBC imm 2
 EA NOP imp 2
 EC CPX abs 4
-# ED SBC abs 4
+ED SBC abs 4
 EE INC abs 6
 F0 BEQ rel 2
-# F1 SBC izy 5
-# F5 SBC zpx 4
+F1 SBC izy 5
+F5 SBC zpx 4
 F6 INC zpx 6
 F8 SED imp 2
-# F9 SBC aby 4
-# FD SBC abx 4
+F9 SBC aby 4
+FD SBC abx 4
 FE INC abx 7

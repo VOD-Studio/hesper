@@ -102,7 +102,7 @@ fn setup(spec: &Spec) -> (Spy, u16, u16) {
 #[test]
 fn every_documented_opcode_has_independent_result_length_flags_and_cycle_expectations() {
     let cases = specs();
-    assert_eq!(cases.len(), 133);
+    assert_eq!(cases.len(), 149);
     let mut seen = [false; 256];
     for spec in cases {
         assert!(!seen[usize::from(spec.opcode)], "duplicate specification");
@@ -113,6 +113,14 @@ fn every_documented_opcode_has_independent_result_length_flags_and_cycle_expecta
         let mut writes = Vec::new();
         let mut cycles = spec.cycles;
         match spec.name {
+            "ADC" => {
+                expected.a = 0xd6;
+                flags = 0xa4;
+            }
+            "SBC" => {
+                expected.a = 0xd5;
+                flags = 0xe4;
+            }
             "LDA" => {
                 expected.a = 0x80;
                 flags = 0xe5;

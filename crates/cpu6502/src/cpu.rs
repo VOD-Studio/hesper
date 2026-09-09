@@ -134,10 +134,12 @@ impl Cpu {
         };
         use Op::*;
         match op {
-            Lda | Ldx | Ldy | And | Ora | Eor | Bit | Cmp | Cpx | Cpy => {
+            Lda | Ldx | Ldy | And | Ora | Eor | Bit | Cmp | Cpx | Cpy | Adc | Sbc => {
                 let (value, crossed) = self.read_operand(bus, mode);
                 cycles += u8::from(crossed);
                 match op {
+                    Adc => self.adc(value),
+                    Sbc => self.sbc(value),
                     Lda => self.load_a(value),
                     Ldx => {
                         self.registers.x = value;
@@ -353,6 +355,62 @@ impl Cpu {
         let lo = bus.read(u16::from(pointer));
         let hi = bus.read(u16::from(pointer.wrapping_add(1)));
         u16::from_le_bytes([lo, hi])
+    }
+
+    fn adc(&mut self, operand: u8) {
+        let a = self.registers.a;
+        let carry = u16::from(self.registers.status.carry);
+        let binary = u16::from(a) + u16::from(operand) + carry;
+        if self.registers.status.decimal {
+            // NMOS: low-digit correction precedes N/V, high correction follows.
+            // Even invalid BCD digits produce only ONE low-digit carry.
+            let low = u16::from(a & 0x0f) + u16::from(operand & 0x0f) + carry;
+            let low = if low > 9 {
+                ((low + 6) & 0x0f) | 0x10
+            } else {
+                low
+            };
+            let intermediate = u16::from(a & 0xf0) + u16::from(operand & 0xf0) + low;
+            self.registers.status.zero = binary as u8 == 0;
+            self.registers.status.negative = intermediate & 0x80 != 0;
+            self.registers.status.overflow =
+                (!(a ^ operand) & (a ^ intermediate as u8) & 0x80) != 0;
+            let corrected = if intermediate >= 0xa0 {
+                intermediate + 0x60
+            } else {
+                intermediate
+            };
+            self.registers.status.carry = corrected > 0xff;
+            self.registers.a = corrected as u8;
+        } else {
+            self.registers.status.carry = binary > 0xff;
+            self.registers.status.overflow = (!(a ^ operand) & (a ^ binary as u8) & 0x80) != 0;
+            self.load_a(binary as u8);
+        }
+    }
+
+    fn sbc(&mut self, operand: u8) {
+        let a = self.registers.a;
+        let borrow = i16::from(!self.registers.status.carry);
+        let binary = i16::from(a) - i16::from(operand) - borrow;
+        // All four SBC flags are taken from the binary subtraction, even in D=1.
+        self.registers.status.carry = binary >= 0;
+        self.registers.status.overflow = ((a ^ operand) & (a ^ binary as u8) & 0x80) != 0;
+        self.registers.status.set_nz(binary as u8);
+        self.registers.a = if self.registers.status.decimal {
+            let mut low = i16::from(a & 0x0f) - i16::from(operand & 0x0f) - borrow;
+            let mut high = i16::from(a >> 4) - i16::from(operand >> 4);
+            if low < 0 {
+                low -= 6;
+                high -= 1;
+            }
+            if high < 0 {
+                high -= 6;
+            }
+            (((high << 4) & 0xf0) | (low & 0x0f)) as u8
+        } else {
+            binary as u8
+        };
     }
 
     fn compare(&mut self, register: u8, operand: u8) {

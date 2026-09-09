@@ -32,3 +32,9 @@ SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`
 - [Clippy 官方用法](https://doc.rust-lang.org/stable/clippy/usage.html)：workspace 全目标检查及 `-D warnings`。
 
 本项目许可证尚待所有者确认，引用资料或未来测试数据的许可证不等于已为 Hesper 选择许可证。
+
+## M1 新增依据与验证范围
+
+十进制行为优先对照 MOS 手册第 2 章，并核对 [Bruce Clark 的原始十进制测试源码](https://github.com/Klaus2m5/6502_65C02_functional_tests/blob/7954e2dbb49c469ea286070bf46cdd71aeb29e4b/6502_decimal_test.a65)，固定提交 `7954e2dbb49c469ea286070bf46cdd71aeb29e4b`。该文件自述 public domain；仓库其他文件的 GPL 不能代替逐文件核对。采用 `cputype=0` 的 NMOS 规则：ADC 的 N/V 与 Z 来源阶段不同，SBC 的四个算术标志取二进制结果。本轮未组装或执行该外部汇编程序；本地穷举及手写边界测试均由本项目实现。
+
+M1 新增 8 条固定来源的 SingleStepTests 十进制输入／结果测试，选择方法、提交、许可证、字段与运行命令见 [测试数据说明](../crates/cpu6502/tests/data/README.md)。这是有界的选定用例结果／周期验证，尚未通过整个外部套件或完整总线序列。

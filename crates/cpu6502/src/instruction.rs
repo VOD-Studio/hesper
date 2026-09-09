@@ -2,6 +2,8 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Op {
+    Adc,
+    Sbc,
     Lda,
     Ldx,
     Ldy,
@@ -211,6 +213,22 @@ pub(crate) fn decode(opcode: u8) -> Option<(Op, Mode, u8)> {
         0xf6 => (Inc, Zpx, 6),
         0xf8 => (Sed, Imp, 2),
         0xfe => (Inc, Abx, 7),
+        0x61 => (Adc, Izx, 6),
+        0x65 => (Adc, Zp, 3),
+        0x69 => (Adc, Imm, 2),
+        0x6d => (Adc, Abs, 4),
+        0x71 => (Adc, Izy, 5),
+        0x75 => (Adc, Zpx, 4),
+        0x79 => (Adc, Aby, 4),
+        0x7d => (Adc, Abx, 4),
+        0xe1 => (Sbc, Izx, 6),
+        0xe5 => (Sbc, Zp, 3),
+        0xe9 => (Sbc, Imm, 2),
+        0xed => (Sbc, Abs, 4),
+        0xf1 => (Sbc, Izy, 5),
+        0xf5 => (Sbc, Zpx, 4),
+        0xf9 => (Sbc, Aby, 4),
+        0xfd => (Sbc, Abx, 4),
         _ => return None,
     })
 }

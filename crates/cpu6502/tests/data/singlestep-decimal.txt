@@ -1,0 +1,10 @@
+# Selected NMOS SingleStepTests facts. Full source/selection/license: README.md here.
+# opcode A operand carry expected_A expected_NVZC initial_PC
+69 02 0A 1 13 00 5AFA
+69 E3 8F 1 D9 41 F619
+69 D7 9B 1 D9 41 2F89
+69 9F 93 0 98 41 E0FF
+E9 9C C4 1 78 80 0084
+E9 F1 AF 1 4C 01 E805
+E9 0A 38 1 72 80 DE9B
+E9 DE 95 0 48 01 0B65
