@@ -1,5 +1,6 @@
 use hesper_cpu6502::{
-    Bus, BusCycle, ClockPhase, Cpu, CpuError, Direction, Ram, Registers, Status, StepKind,
+    Bus, BusCycle, ClockPhase, Cpu, CpuError, Direction, ExecutionPhase, Ram, Registers, Status,
+    StepKind,
 };
 
 #[derive(Default)]
@@ -345,6 +346,39 @@ fn clv_overlaps_so_and_a_held_low_so_does_not_retrigger() {
     cpu.cycle(&mut bus).unwrap();
     cpu.cycle(&mut bus).unwrap();
     assert!(cpu.registers().status.overflow);
+}
+
+#[test]
+fn debug_snapshot_observes_pending_pins_and_rmw_latches_without_bus_access() {
+    let mut cpu = cpu();
+    let mut bus = Device::default();
+    bus.ram.load(0x8000, &[0xe6, 0x40]).unwrap();
+    bus.ram.write(0x40, 0x7f);
+    for _ in 0..3 {
+        cpu.cycle(&mut bus).unwrap();
+    }
+    let state = cpu.debug_state();
+    let execution = state.execution.unwrap();
+    assert_eq!(execution.phase, ExecutionPhase::RmwOld);
+    assert_eq!(execution.instruction_address, 0x8000);
+    assert_eq!(
+        (
+            execution.effective_address,
+            execution.data,
+            execution.cycles
+        ),
+        (0x40, 0x7f, 3)
+    );
+    cpu.set_nmi_line(true);
+    cpu.set_ready(false);
+    cpu.half_cycle(&mut bus).unwrap();
+    let state = cpu.debug_state();
+    assert_eq!(state.next_clock_phase, ClockPhase::Phi2);
+    assert!(state.pins.nmi && !state.pins.ready && !state.latches.nmi_edge);
+    assert_eq!(bus.accesses.len(), 3);
+    cpu.half_cycle(&mut bus).unwrap();
+    assert!(cpu.debug_state().latches.nmi_edge);
+    assert_eq!(bus.accesses.len(), 4);
 }
 
 #[test]

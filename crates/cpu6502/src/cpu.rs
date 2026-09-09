@@ -4,7 +4,10 @@ use crate::instruction::Op;
 
 mod cycle;
 use cycle::Execution;
-pub use cycle::{BusCycle, ClockPhase, Cycle, Direction};
+pub use cycle::{
+    BusCycle, ClockPhase, Cycle, DebugState, Direction, ExecutionState, InputPins,
+    Phase as ExecutionPhase, PinLatches,
+};
 
 /// The six stored NMOS status flags. B is not a persistent hardware flag.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

@@ -90,7 +90,19 @@ fn diagnostics_detect_register_memory_flag_and_cycle_mismatches() {
     // Deliberately corrupt copies to test the checker, never the stored oracle.
     let mut bad = original.clone();
     bad.final_state.a ^= 1;
-    assert!(execute_case(&bad, 0xea).unwrap_err().starts_with("A:"));
+    let message = execute_case(&bad, 0xea).unwrap_err();
+    assert!(message.starts_with("A:"));
+    for context in [
+        "current:",
+        "recent bus cycles (last 2 of 2)",
+        "SYNC=true",
+        "pins=",
+        "latches=",
+        "Instruction { opcode: 234 }",
+        " -> ",
+    ] {
+        assert!(message.contains(context), "missing {context}: {message}");
+    }
     let mut bad = original.clone();
     bad.final_state.p ^= 0x80;
     assert!(execute_case(&bad, 0xea).unwrap_err().starts_with("P "));
@@ -133,4 +145,47 @@ fn full_corpus_manifest_cannot_be_reduced_or_replaced_with_samples() {
         assert!(result.unwrap_err().contains("all 151 official files"));
     }
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn failure_history_keeps_only_32_real_cycles_and_never_reads_the_bus() {
+    use hesper_cpu6502::{Bus, Cpu, Ram, Registers};
+    struct Counted {
+        ram: Ram,
+        reads: usize,
+    }
+    impl Bus for Counted {
+        fn read(&mut self, address: u16) -> u8 {
+            self.reads += 1;
+            self.ram.read(address)
+        }
+        fn write(&mut self, address: u16, value: u8) {
+            self.ram.write(address, value);
+        }
+    }
+    let mut bus = Counted {
+        ram: Ram::new(),
+        reads: 0,
+    };
+    bus.ram.load(0x8000, &[0xea; 20]).unwrap();
+    bus.ram.write(0x8014, 0x02);
+    let mut cpu = Cpu::from_registers(Registers {
+        pc: 0x8000,
+        ..Registers::default()
+    });
+    let mut trace = singlestep::trace::Trace::default();
+    for _ in 0..40 {
+        trace.record(cpu.cycle(&mut bus).unwrap(), &cpu);
+    }
+    let error = cpu.cycle(&mut bus).unwrap_err();
+    let message = trace.failure(&error.to_string(), &cpu);
+    assert!(message.starts_with("unsupported opcode $02 at $8014"));
+    assert!(message.contains("recent bus cycles (last 32 of 40)"));
+    assert_eq!(
+        message.lines().filter(|line| line.starts_with('#')).count(),
+        32
+    );
+    assert!(message.contains("\n#9 Read ") && message.contains("\n#40 Read "));
+    assert!(!message.contains("\n#8 Read "));
+    assert_eq!(bus.reads, 41);
 }

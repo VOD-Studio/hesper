@@ -89,3 +89,7 @@ Klaus 中断适配在初次复核时发现跨行替换误删错误陷阱，那�
 本地 debug/release workspace 各 **80 个测试**通过，0 失败／忽略；包含长达 1000 周期的等待、读副作用、RMW 连写、SO 保持电平不重触发以及 RESET 超限后恢复。格式、全目标 check、Clippy `-D warnings`、diff 检查通过。151 万官方单步用例在此代码重新执行，寄存器／内存、周期数量和逐周期总线全部通过。
 
 物理 RESET 引脚的持续断言／释放仍未实现；宿主 begin_reset 的七周期契约与物理引脚明确分开。本阶段不据此标记 M2.4 或 M2 整体验收完成。远程 CI 未运行。
+
+## M2.5：有界调试子阶段
+
+新增 debug_state 只读快照、CLI 总线 trace 与 1～4096 条保留上限、外部 runner 共用的末尾 32 周期失败历史。debug/release workspace 各 **83 个测试**通过，Clippy 全目标 `-D warnings` 及格式检查通过。实际运行 `cargo run -p hesper -- --bus-trace --trace-limit 4`，输出最后四个真实周期及原有正确演示结果。测试覆盖 RESET trace、历史截断、超限后诊断、无额外读取，以及不正确的外部预期被明确报告。

@@ -138,3 +138,44 @@ fn cli_help_does_not_execute_demo() {
     assert!(output.starts_with("Usage: hesper"));
     assert!(!output.contains("Completed"));
 }
+
+#[test]
+fn cli_bus_trace_is_bounded_and_includes_reset_without_extra_execution() {
+    let full = cli(&["--bus-trace", "--trace-limit", "200"]);
+    assert!(full.status.success());
+    let output = String::from_utf8(full.stdout).unwrap();
+    assert_eq!(
+        output
+            .lines()
+            .filter(|l| l.starts_with('C') && !l.starts_with("Completed"))
+            .count(),
+        154
+    );
+    assert!(output.starts_with("C000001 R $0000=00 SYNC=true stalled=false"));
+    assert!(output.contains("C000007 R $FFFD=80"));
+    assert!(output.contains("$0200..$0209: 0 1 2 3 4 5 6 7 8 9"));
+    let tail = cli(&["--bus-trace", "--trace-limit", "2"]);
+    assert!(tail.status.success());
+    let output = String::from_utf8(tail.stdout).unwrap();
+    assert!(output.starts_with("C000153 R $800D=D0 SYNC=true"));
+    assert_eq!(output.lines().count(), 5);
+    let failure = cli(&["--trace", "--trace-limit", "1", "--max-steps", "53"]);
+    assert!(!failure.status.success());
+    let output = String::from_utf8(failure.stdout).unwrap();
+    assert_eq!(output.lines().count(), 1);
+    assert!(output.starts_with("$800B E0 |"));
+    for args in [
+        vec!["--trace-limit"],
+        vec!["--trace-limit", "0"],
+        vec!["--trace-limit", "4097"],
+        vec!["--trace-limit", "no"],
+    ] {
+        let output = cli(&args);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("--trace-limit requires 1..4096")
+        );
+    }
+}

@@ -11,6 +11,7 @@ M1 已实现全部 151 个 NMOS 官方 opcode（56 条指令及其寻址方式�
 ```sh
 cargo run -p hesper
 cargo run -p hesper -- --trace
+cargo run -p hesper -- --bus-trace --trace-limit 200
 cargo run -p hesper -- --max-steps 54
 cargo run -p hesper -- --help
 ```
@@ -27,7 +28,7 @@ A=09 X=0A Y=00 SP=FF PC=800F P=27
 Completed: 54 instructions, 147 instruction cycles + 7 reset cycles = 154 total cycles
 ```
 
-`--trace` 每条记录包含取到的指令地址和 opcode、执行前后 A/X/Y/SP/PC/P、单条周期和累计周期；累计值包含 RESET 的 7 周期。trace 使用执行时捕获的数据，不额外读取 Bus。
+`--trace` 每条记录包含取到的指令地址和 opcode、执行前后 A/X/Y/SP/PC/P、单条周期和累计周期；累计值包含 RESET 的 7 周期。`--bus-trace` 显示每周期地址、数据、读写、SYNC、等待、下一阶段、引脚和锁存。默认只保留末尾 64 条记录，`--trace-limit 1..4096` 调整上限，两种 trace 可同时启用；结束或超限失败时输出保留记录。trace 使用执行时捕获的数据，不额外读取 Bus。
 
 ## 结构
 
@@ -38,7 +39,7 @@ examples/        原创演示汇编与机器码说明
 docs/            架构、opcode、资料、路线图与验证记录
 ```
 
-只有两个 crate，CPU 库无第三方运行依赖；外部测试工具使用开发依赖解析 JSON 和校验哈希。CPU 不持有整机或 Bus；调用者通过 `reset(&mut bus)`、`step(&mut bus)` 、单周期 `cycle(&mut bus)` 或 `half_cycle(&mut bus)` 驱动它，用 `registers()` 获取值快照。`step` 返回 `Result<Step, CpuError>`，其中 `StepKind` 区分实际指令与 7 周期的 IRQ/NMI/RESET 入口；一次调用不会同时执行中断入口和处理程序指令。中断输入 API 和采样约定见 [架构文档](docs/architecture.md#中断输入与执行事件)。
+只有两个 crate，CPU 库无第三方运行依赖；外部测试工具使用开发依赖解析 JSON 和校验哈希。CPU 不持有整机或 Bus；调用者通过 `reset(&mut bus)`、`step(&mut bus)` 、单周期 `cycle(&mut bus)` 或 `half_cycle(&mut bus)` 驱动它，用 `registers()` 获取寄存器、`debug_state()` 获取只读阶段／锁存快照。`step` 返回 `Result<Step, CpuError>`，其中 `StepKind` 区分实际指令与 7 周期的 IRQ/NMI/RESET 入口；一次调用不会同时执行中断入口和处理程序指令。中断输入 API 和采样约定见 [架构文档](docs/architecture.md#中断输入与执行事件)。
 
 ## 验证
 

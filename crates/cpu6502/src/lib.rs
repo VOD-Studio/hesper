@@ -11,5 +11,6 @@ mod instruction;
 
 pub use bus::{Bus, LoadError, RAM_SIZE, Ram};
 pub use cpu::{
-    BusCycle, ClockPhase, Cpu, CpuError, Cycle, Direction, Registers, Status, Step, StepKind,
+    BusCycle, ClockPhase, Cpu, CpuError, Cycle, DebugState, Direction, ExecutionPhase,
+    ExecutionState, InputPins, PinLatches, Registers, Status, Step, StepKind,
 };

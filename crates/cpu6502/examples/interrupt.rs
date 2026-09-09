@@ -3,6 +3,9 @@ use hesper_cpu6502::{Bus, Cpu, Ram, Registers, Status};
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::Path, process::ExitCode};
 
+#[path = "../tests/support/trace.rs"]
+pub mod trace;
+
 #[derive(Default)]
 struct Feedback {
     ram: Ram,
@@ -56,7 +59,7 @@ fn run() -> Result<(), String> {
     let mut instructions = 0;
     let mut port = 0;
     let mut transitions = std::collections::VecDeque::new();
-    let mut recent = std::collections::VecDeque::new();
+    let mut trace = trace::Trace::default();
     for cycles in 0..1_000_000 {
         if cpu.at_instruction_boundary() && cpu.registers().pc == 0x06f5 {
             println!(
@@ -74,27 +77,22 @@ fn run() -> Result<(), String> {
         cpu.set_nmi_line(port & 2 != 0);
         let result = cpu
             .cycle(&mut bus)
-            .map_err(|e| format!("{e}; recent={recent:?}"))?;
+            .map_err(|e| trace.failure(&e.to_string(), &cpu))?;
+        trace.record(result, &cpu);
         if let Some(value) = bus.changed.take() {
             transitions.push_back((cycles + 1 + delay, value));
         }
         if let Some(step) = result.completed {
             instructions += 1;
-            if recent.len() == 16 {
-                recent.pop_front();
-            }
-            recent.push_back(step);
             if step.before.pc == step.after.pc {
-                return Err(format!(
-                    "interrupt failure trap: {step:?}; cycles={cycles}; port={port:02X}; recent={recent:?}"
+                return Err(trace.failure(
+                    &format!("interrupt failure trap: {step:?}; cycles={cycles}; port={port:02X}"),
+                    &cpu,
                 ));
             }
         }
     }
-    Err(format!(
-        "interrupt cycle budget exceeded: {:?}",
-        cpu.registers()
-    ))
+    Err(trace.failure("interrupt cycle budget exceeded", &cpu))
 }
 
 fn main() -> ExitCode {

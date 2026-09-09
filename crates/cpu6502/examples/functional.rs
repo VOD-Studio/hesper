@@ -2,8 +2,24 @@
 
 use std::{env, fs, path::Path, process::ExitCode};
 
-use hesper_cpu6502::{Cpu, Ram, Registers, Status};
+use hesper_cpu6502::{Bus, Cpu, Ram, Registers, Status, Step};
 use sha2::{Digest, Sha256};
+
+#[path = "../tests/support/trace.rs"]
+pub mod trace;
+
+fn traced_step(trace: &mut trace::Trace, cpu: &mut Cpu, bus: &mut dyn Bus) -> Result<Step, String> {
+    for _ in 0..7 {
+        let cycle = cpu
+            .cycle(bus)
+            .map_err(|e| trace.failure(&e.to_string(), cpu))?;
+        trace.record(cycle, cpu);
+        if let Some(step) = cycle.completed {
+            return Ok(step);
+        }
+    }
+    Err(trace.failure("seven-cycle step budget exceeded", cpu))
+}
 
 fn run() -> Result<(), String> {
     let args: Vec<_> = env::args().skip(1).collect();
@@ -60,14 +76,18 @@ fn run() -> Result<(), String> {
         ..Registers::default()
     });
     let mut cycles = 0_u64;
+    let mut trace = trace::Trace::default();
     for steps in 0..=100_000_000_u64 {
         if cpu.registers().pc == success {
             // Stop before the upstream end macro ($DB). It is not NMOS HALT.
             if decimal && ram.as_slice()[0x000b] != 0 {
-                return Err(format!(
-                    "decimal ERROR=$01 at DONE: {:?}; variables={:02X?}",
-                    cpu.registers(),
-                    &ram.as_slice()[..17]
+                return Err(trace.failure(
+                    &format!(
+                        "decimal ERROR=$01 at DONE: {:?}; variables={:02X?}",
+                        cpu.registers(),
+                        &ram.as_slice()[..17]
+                    ),
+                    &cpu,
                 ));
             }
             println!(
@@ -78,20 +98,18 @@ fn run() -> Result<(), String> {
         if steps == 100_000_000 || cycles >= 400_000_000 {
             break;
         }
-        let step = cpu
-            .step(&mut ram)
-            .map_err(|error| format!("{error}; state={:?}", cpu.registers()))?;
+        let step = traced_step(&mut trace, &mut cpu, &mut ram)?;
         cycles += step.cycles;
         if step.before.pc == step.after.pc {
-            return Err(format!(
-                "functional failure trap: {step:?}; instructions={steps}; cycles={cycles}"
+            return Err(trace.failure(
+                &format!(
+                    "functional failure trap: {step:?}; instructions={steps}; cycles={cycles}"
+                ),
+                &cpu,
             ));
         }
     }
-    Err(format!(
-        "functional instruction budget exceeded: {:?}",
-        cpu.registers()
-    ))
+    Err(trace.failure("functional instruction/cycle budget exceeded", &cpu))
 }
 
 fn main() -> ExitCode {

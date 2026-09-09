@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use hesper_cpu6502::{Cpu, CpuError, LoadError, Ram, Registers, Step};
+use hesper_cpu6502::{Cpu, CpuError, Cycle, DebugState, LoadError, Ram, Registers, Step};
 
 pub const DEMO_START: u16 = 0x8000;
 pub const DEMO_DONE: u16 = 0x800f;
@@ -62,13 +62,54 @@ impl std::error::Error for DemoError {
 /// Run through RESET to the agreed completion PC, with a host instruction budget.
 /// The trace callback receives accumulated cycles including RESET's 7 cycles.
 pub fn run_demo(max_steps: u64, mut trace: impl FnMut(&Step, u64)) -> Result<DemoRun, DemoError> {
+    run_demo_with_trace(max_steps, |event, total| {
+        if let DemoEvent::Instruction(step) = event {
+            trace(&step, total);
+        }
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DemoEvent {
+    Cycle { cycle: Cycle, state: DebugState },
+    Instruction(Step),
+}
+
+/// Observe actual execution, including the seven RESET bus reads. Callbacks
+/// require no bus access; the host decides how much history to retain.
+pub fn run_demo_with_trace(
+    max_steps: u64,
+    mut trace: impl FnMut(DemoEvent, u64),
+) -> Result<DemoRun, DemoError> {
     let mut ram = Ram::new();
     ram.load(DEMO_START, DEMO_PROGRAM)
         .map_err(DemoError::Load)?;
     ram.load(0xfffc, &DEMO_START.to_le_bytes())
         .map_err(DemoError::Load)?;
     let mut cpu = Cpu::new();
-    let reset_cycles = cpu.reset(&mut ram).map_err(DemoError::Cpu)?.cycles;
+    let mut total = 0;
+    let mut finish_step = |cpu: &mut Cpu, ram: &mut Ram, trace: &mut dyn FnMut(DemoEvent, u64)| {
+        for _ in 0..7 {
+            let cycle = cpu.cycle(ram).map_err(DemoError::Cpu)?;
+            total += 1;
+            trace(
+                DemoEvent::Cycle {
+                    cycle,
+                    state: cpu.debug_state(),
+                },
+                total,
+            );
+            if let Some(step) = cycle.completed {
+                return Ok(step);
+            }
+        }
+        Err(DemoError::Cpu(CpuError::CycleBudgetExceeded {
+            address: cpu.registers().pc,
+            budget: 7,
+        }))
+    };
+    cpu.begin_reset();
+    let reset_cycles = finish_step(&mut cpu, &mut ram, &mut trace)?.cycles;
     let mut steps = 0;
     let mut instruction_cycles = 0;
     while cpu.registers().pc != DEMO_DONE {
@@ -78,10 +119,13 @@ pub fn run_demo(max_steps: u64, mut trace: impl FnMut(&Step, u64)) -> Result<Dem
                 pc: cpu.registers().pc,
             });
         }
-        let step = cpu.step(&mut ram).map_err(DemoError::Cpu)?;
+        let step = finish_step(&mut cpu, &mut ram, &mut trace)?;
         steps += 1;
         instruction_cycles += step.cycles;
-        trace(&step, instruction_cycles + reset_cycles);
+        trace(
+            DemoEvent::Instruction(step),
+            instruction_cycles + reset_cycles,
+        );
     }
     Ok(DemoRun {
         ram,

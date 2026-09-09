@@ -68,3 +68,11 @@ NMI 边沿忽略 I，持续断言不重复产生边沿，未服务边沿会合�
 `set_ready(false)` 令下一次读停在原地址，`Cycle.stalled=true`；每个等待周期仍真实读取设备。恢复时才使用该次读值。写周期继续，包括 RMW 连续两次写入；等待期间继续采样 IRQ/NMI/SO。`Step.cycles` 使用 `u64` 并包含等待。`step`／`reset` 每次最多推进 7 周期；超限返回可恢复的 `CycleBudgetExceeded`，不是死循环。需要更多等待时用 `step_with_cycle_budget`，或宿主带预算逐周期驱动；恢复 RESET 用 step/cycle，不重复调用 reset。`reset` 与 begin_reset/cycle 共用引擎，不绕开引脚采样。
 
 `set_so_line(true)` 表示 SO 低有效断言；在 Phi1 采样下降边沿，再于下一 Phi1 更新 V。保持低电平不重复触发。根据固定 revD 相位扫描，BIT／PLP／RTI 的 V 写入延续至下一 Phi1，ADC／SBC 再晚一个 Phi1，CLV 的清除窗口覆盖两者；这些写入优先于重叠的 SO 更新。内部保留相应 V 写入窗口，避免在整条指令结束时简单置位／清除所导致的错误分支。该规则是本项目对固定模型观察的数字归纳，不宣称适用于所有 NMOS 修订或任意窄脉冲。
+
+## 宿主诊断
+
+`debug_state()` 无需 Bus，提供下一时钟相位、当前操作／下一总线阶段、地址和数据中间值、等待计数、逻辑输入、IRQ/NMI/SO 采样及待处理状态、延迟 V 写入。`ExecutionPhase` 是执行器阶段名，不能等同于 MOS 内部 T 状态或晶体管节点。此快照没有恢复接口，也不包含所有 CPU 状态，不能作为存档格式。
+
+CLI 的 `run_demo_with_trace` 提供真实 Cycle 和指令完成事件，既有 `run_demo` 仍只回调指令。`--trace`／`--bus-trace` 共用有界历史，默认 64 条，`--trace-limit` 限定为 1～4096；异常退出也保留最后记录。CPU 本身不保存日志或打印。
+
+外部 SingleStep/Klaus runner 共用宿主诊断 helper，最多保留最后 32 个实际总线周期及其指令完成事件；失败先给首个差异和当前 debug_state，再给有限历史。SingleStep 同时给固定版本、opcode、用例索引与重放命令。数据解析失败不假造执行 trace；未支持 opcode 的错误保留实际读取的地址和字节。

@@ -37,7 +37,7 @@ pub struct Cycle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase {
+pub enum Phase {
     Fetch,
     Implied,
     Low,
@@ -69,6 +69,53 @@ enum Phase {
     PushStatus,
     VectorLow,
     VectorHigh,
+}
+
+/// Read-only sequencer snapshot. `phase` names the next bus operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutionState {
+    pub kind: StepKind,
+    pub instruction_address: u16,
+    pub phase: Phase,
+    pub cycles: u64,
+    pub base_address: u16,
+    pub effective_address: u16,
+    pub low_byte: u8,
+    pub data: u8,
+}
+
+/// Logical inputs: IRQ/NMI/SO true means asserted (electrically low).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputPins {
+    pub irq: bool,
+    pub nmi: bool,
+    pub ready: bool,
+    pub so: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinLatches {
+    /// Sampled IRQ after applying the sampled I flag.
+    pub irq_sample: bool,
+    pub irq_pending: bool,
+    pub nmi_sample: bool,
+    pub nmi_edge: bool,
+    pub nmi_pending: bool,
+    pub so_sample: bool,
+    pub so_pending: bool,
+}
+
+/// Diagnostic observation, not a restorable CPU savestate or transistor state.
+/// Taking this snapshot never accesses the Bus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DebugState {
+    pub registers: Registers,
+    pub next_clock_phase: ClockPhase,
+    pub execution: Option<ExecutionState>,
+    pub fetch_wait_cycles: u64,
+    pub pins: InputPins,
+    pub latches: PinLatches,
+    pub pending_v_writes: [Option<bool>; 2],
 }
 
 #[derive(Debug)]
@@ -172,6 +219,40 @@ fn write(bus: &mut dyn Bus, address: u16, data: u8) -> BusCycle {
 }
 
 impl Cpu {
+    pub fn debug_state(&self) -> DebugState {
+        DebugState {
+            registers: self.registers,
+            next_clock_phase: self.next_clock_phase(),
+            execution: self.execution.as_ref().map(|e| ExecutionState {
+                kind: e.kind,
+                instruction_address: e.before.pc,
+                phase: e.phase,
+                cycles: e.cycles,
+                base_address: e.base,
+                effective_address: e.address,
+                low_byte: e.low,
+                data: e.value,
+            }),
+            fetch_wait_cycles: self.fetch_wait.map_or(0, |(_, cycles)| cycles),
+            pins: InputPins {
+                irq: self.irq_line,
+                nmi: self.nmi_line,
+                ready: !self.not_ready,
+                so: self.so_line,
+            },
+            latches: PinLatches {
+                irq_sample: self.irq_sample,
+                irq_pending: self.irq_pending,
+                nmi_sample: self.nmi_sample,
+                nmi_edge: self.nmi_edge,
+                nmi_pending: self.nmi_pending,
+                so_sample: self.so_sample,
+                so_pending: self.so_pending,
+            },
+            pending_v_writes: self.v_write_pending,
+        }
+    }
+
     /// True when the next cycle starts an instruction or interrupt entry.
     pub fn at_instruction_boundary(&self) -> bool {
         self.execution.is_none() && self.fetch_wait.is_none() && !self.phi2

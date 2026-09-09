@@ -6,6 +6,9 @@ use hesper_cpu6502::{Bus, Cpu, Ram, Registers, Status, StepKind};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+#[path = "trace.rs"]
+pub mod trace;
+
 pub const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/singlestep");
 
 #[derive(Debug, Deserialize)]
@@ -166,99 +169,104 @@ pub fn execute_case(case: &Case, opcode: u8) -> Result<(), String> {
         bus.ram.write(addr, value);
     }
     let mut cpu = Cpu::from_registers(case.initial.registers());
-    // A finite cycle budget also catches accidental non-completing sequencers.
-    let mut completed = None;
-    for index in 0..7 {
-        let cycle = cpu.cycle(&mut bus).map_err(|e| e.to_string())?;
-        let direction = match cycle.bus.direction {
-            hesper_cpu6502::Direction::Read => Direction::Read,
-            hesper_cpu6502::Direction::Write => Direction::Write,
-        };
-        if bus.events.len() != index + 1
-            || bus.events[index] != (cycle.bus.address, cycle.bus.data, direction)
-        {
+    let mut trace = trace::Trace::default();
+    let result = (|| {
+        // A finite cycle budget also catches accidental non-completing sequencers.
+        let mut completed = None;
+        for index in 0..7 {
+            let cycle = cpu.cycle(&mut bus).map_err(|e| e.to_string())?;
+            trace.record(cycle, &cpu);
+            let direction = match cycle.bus.direction {
+                hesper_cpu6502::Direction::Read => Direction::Read,
+                hesper_cpu6502::Direction::Write => Direction::Write,
+            };
+            if bus.events.len() != index + 1
+                || bus.events[index] != (cycle.bus.address, cycle.bus.data, direction)
+            {
+                return Err(format!(
+                    "cycle {index}: returned transaction differs from actual Bus activity"
+                ));
+            }
+            if cycle.completed.is_some() {
+                completed = cycle.completed;
+                break;
+            }
+        }
+        let step = completed.ok_or("official instruction exceeded seven-cycle budget")?;
+        if step.kind != (StepKind::Instruction { opcode }) {
+            return Err(format!("unexpected step event: {:?}", step.kind));
+        }
+        if let Some(addr) = bus.unlisted {
+            return Err(format!("access to RAM not listed by fixture: ${addr:04X}"));
+        }
+        let expected = &case.final_state;
+        let actual = step.after;
+        for (label, wanted, got) in [
+            ("PC", expected.pc, actual.pc),
+            ("A", u16::from(expected.a), u16::from(actual.a)),
+            ("X", u16::from(expected.x), u16::from(actual.x)),
+            ("Y", u16::from(expected.y), u16::from(actual.y)),
+            ("SP", u16::from(expected.s), u16::from(actual.sp)),
+            // Only the non-stored B/bit-5 representations are normalized.
+            (
+                "P (NV-DIZC)",
+                u16::from(expected.p & 0xcf),
+                u16::from(actual.status.bits() & 0xcf),
+            ),
+        ] {
+            if wanted != got {
+                return Err(format!("{label}: expected ${wanted:04X}, got ${got:04X}"));
+            }
+        }
+        for &(addr, value) in &expected.ram {
+            let actual = bus.ram.as_slice()[usize::from(addr)];
+            if actual != value {
+                return Err(format!(
+                    "RAM ${addr:04X}: expected ${value:02X}, got ${actual:02X}"
+                ));
+            }
+        }
+        // Catch modifications omitted from final.ram, without scanning 64 KiB per case.
+        for addr in bus.writes {
+            let wanted = expected
+                .ram
+                .iter()
+                .chain(&case.initial.ram)
+                .find(|&&(a, _)| a == addr)
+                .map(|&(_, value)| value)
+                .unwrap_or(0);
+            let got = bus.ram.as_slice()[usize::from(addr)];
+            if wanted != got {
+                return Err(format!(
+                    "RAM ${addr:04X}: expected ${wanted:02X}, got ${got:02X}"
+                ));
+            }
+        }
+        if step.cycles != case.cycles.len() as u64 {
             return Err(format!(
-                "cycle {index}: returned transaction differs from actual Bus activity"
+                "cycles: expected {}, got {}",
+                case.cycles.len(),
+                step.cycles
             ));
         }
-        if cycle.completed.is_some() {
-            completed = cycle.completed;
-            break;
-        }
-    }
-    let step = completed.ok_or("official instruction exceeded seven-cycle budget")?;
-    if step.kind != (StepKind::Instruction { opcode }) {
-        return Err(format!("unexpected step event: {:?}", step.kind));
-    }
-    if let Some(addr) = bus.unlisted {
-        return Err(format!("access to RAM not listed by fixture: ${addr:04X}"));
-    }
-    let expected = &case.final_state;
-    let actual = step.after;
-    for (label, wanted, got) in [
-        ("PC", expected.pc, actual.pc),
-        ("A", u16::from(expected.a), u16::from(actual.a)),
-        ("X", u16::from(expected.x), u16::from(actual.x)),
-        ("Y", u16::from(expected.y), u16::from(actual.y)),
-        ("SP", u16::from(expected.s), u16::from(actual.sp)),
-        // Only the non-stored B/bit-5 representations are normalized.
-        (
-            "P (NV-DIZC)",
-            u16::from(expected.p & 0xcf),
-            u16::from(actual.status.bits() & 0xcf),
-        ),
-    ] {
-        if wanted != got {
-            return Err(format!("{label}: expected ${wanted:04X}, got ${got:04X}"));
-        }
-    }
-    for &(addr, value) in &expected.ram {
-        let actual = bus.ram.as_slice()[usize::from(addr)];
-        if actual != value {
+        if bus.events.len() != case.cycles.len() {
             return Err(format!(
-                "RAM ${addr:04X}: expected ${value:02X}, got ${actual:02X}"
+                "bus event count: expected {}, got {}",
+                case.cycles.len(),
+                bus.events.len()
             ));
         }
-    }
-    // Catch modifications omitted from final.ram, without scanning 64 KiB per case.
-    for addr in bus.writes {
-        let wanted = expected
-            .ram
-            .iter()
-            .chain(&case.initial.ram)
-            .find(|&&(a, _)| a == addr)
-            .map(|&(_, value)| value)
-            .unwrap_or(0);
-        let got = bus.ram.as_slice()[usize::from(addr)];
-        if wanted != got {
-            return Err(format!(
-                "RAM ${addr:04X}: expected ${wanted:02X}, got ${got:02X}"
-            ));
+        for (index, (expected, actual)) in case.cycles.iter().zip(&bus.events).enumerate() {
+            if expected != actual {
+                return Err(format!(
+                    "bus cycle {index}: expected {expected:?}, got {actual:?}\nactual bus: {:?}",
+                    bus.events
+                ));
+            }
         }
-    }
-    if step.cycles != case.cycles.len() as u64 {
-        return Err(format!(
-            "cycles: expected {}, got {}",
-            case.cycles.len(),
-            step.cycles
-        ));
-    }
-    if bus.events.len() != case.cycles.len() {
-        return Err(format!(
-            "bus event count: expected {}, got {}",
-            case.cycles.len(),
-            bus.events.len()
-        ));
-    }
-    for (index, (expected, actual)) in case.cycles.iter().zip(&bus.events).enumerate() {
-        if expected != actual {
-            return Err(format!(
-                "bus cycle {index}: expected {expected:?}, got {actual:?}\nactual bus: {:?}",
-                bus.events
-            ));
-        }
-    }
-    Ok(())
+        Ok(())
+    })();
+    result.map_err(|reason: String| trace.failure(&reason, &cpu))
 }
 
 #[derive(Debug, Default, Clone, Copy)]
