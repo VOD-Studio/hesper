@@ -66,7 +66,7 @@ cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
 未实现非官方 opcode、RDY/SO、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。中断输入在指令边界处理，不模拟指令内部边沿、NMI 抢占中断向量及精确流水线时序。
 
-已通过 8 条固定版本的 SingleStepTests 十进制选定样例，范围及许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。未执行完整外部套件。下一步 M2 先加强外部一致性与总线时序验证，再建立 Apple I 文本系统。
+已通过 8 条固定版本的 SingleStepTests 十进制选定样例，范围及许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。未执行完整外部套件。下一步 M2 专注 CPU：扩大外部一致性测试、升级总线时序、完善中断／引脚与调试回归；Apple I 延后到 CPU 验收后的独立 M3，分阶段计划见 [路线图](docs/roadmap.md)。
 
 构造 CPU 时的零寄存器、全零 RAM 是可重复运行的模拟器约定，**不是硬件上电保证**；NMOS RESET 保留 D 和通用寄存器，程序应自行初始化栈并选择运算模式。具体兼容性假设见 [架构](docs/architecture.md)，后续计划见 [路线图](docs/roadmap.md)，行为依据见 [参考资料](docs/references.md)。
 
