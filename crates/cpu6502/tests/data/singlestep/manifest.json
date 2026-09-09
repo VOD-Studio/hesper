@@ -1,0 +1,155 @@
+{
+  "repository": "https://github.com/SingleStepTests/65x02",
+  "revision": "2f6980a2d95757486c7bee24355c360e40e2a224",
+  "variant": "6502/v1",
+  "selection": "first 32 cases in original order per listed opcode",
+  "files": [
+    {
+      "opcode": "ea",
+      "source_sha256": "5748356812c34b0f81627afd4e4b2e2c853ebfecb34c13690a4cbd55d37fa2d0",
+      "source_count": 10000,
+      "fixture_sha256": "cbb9fbdef6dbcf72f9a0407da08583ec5e19ff6b4efb692ff01f9d4135d0aabd",
+      "selected_count": 32
+    },
+    {
+      "opcode": "0a",
+      "source_sha256": "0dcf7316d40dd13c17aa3b2187725d8a5bc65fa42e87e5077fa6b9bef146a035",
+      "source_count": 10000,
+      "fixture_sha256": "7d2c4951e2ad138d349e6eb4f3ecd23c82eeee469636a30b3b1ddc1dde5e94b0",
+      "selected_count": 32
+    },
+    {
+      "opcode": "a9",
+      "source_sha256": "40ec9bdd6ecd6d37926b3c0256f6ae0071ee126caf82c67909b6489b90c681cd",
+      "source_count": 10000,
+      "fixture_sha256": "a20c50c52fbb154b0477f8341d32b04da00e385abdab6fc73b380b1a2d6f14da",
+      "selected_count": 32
+    },
+    {
+      "opcode": "a5",
+      "source_sha256": "b56e9d48efac9a3e210792b2a0fb7bae891f6f35816affacea379f1afdb4407b",
+      "source_count": 10000,
+      "fixture_sha256": "403c7befccc9788aa3959366a522cc6e06a57247fd433e40fa941053482f6baa",
+      "selected_count": 32
+    },
+    {
+      "opcode": "b5",
+      "source_sha256": "559594e0aa7ef9c7c35b8d7792e8a23072bec204326913f60d5f91b6b8418795",
+      "source_count": 10000,
+      "fixture_sha256": "3b68cd69bc987b966319937f62c2ed44ba6026dbcdbb661c53b7b604bddda6d9",
+      "selected_count": 32
+    },
+    {
+      "opcode": "b6",
+      "source_sha256": "e6474251afeb08b8e67a65c0f8078999d44ef8de04b8c4c2f33cec32a73c07fd",
+      "source_count": 10000,
+      "fixture_sha256": "3b83f945d8ffc210d24f6519e40944dd33dafa9c6e9b760f690a307d266af02b",
+      "selected_count": 32
+    },
+    {
+      "opcode": "ad",
+      "source_sha256": "849d0190d3191345fb83db2f09f6c107a7c41639850f2450aaf7b42cd809f12a",
+      "source_count": 10000,
+      "fixture_sha256": "fc600243e358fba70a417bb039cdc099a6f0c8ac69e82a56eb580771e265b0a3",
+      "selected_count": 32
+    },
+    {
+      "opcode": "bd",
+      "source_sha256": "ca39c1aa2a51a07e942528f284e65fda0dcb2497c85643eb06a68af5ec31c99f",
+      "source_count": 10000,
+      "fixture_sha256": "998c99d6b63c0d8076300aa6a3b8b2a9be36bb8f9cf0cde59f252505dc925e82",
+      "selected_count": 32
+    },
+    {
+      "opcode": "b9",
+      "source_sha256": "9d791d1609b9fadaa27b1c0b0e43da68ab16af5f8a1ef164cf1a68849531e64b",
+      "source_count": 10000,
+      "fixture_sha256": "5936437ca44ec602b68e9fa3021d4939edf9220082837b4447708c3e191f0ae8",
+      "selected_count": 32
+    },
+    {
+      "opcode": "6c",
+      "source_sha256": "49b7891f9b4ae192a289b5dcf4d7fdea2d87a703205673d9411fe8ad2769cbbd",
+      "source_count": 10000,
+      "fixture_sha256": "f96c75d86719a006eaa307a81a93e9d7ed445a4e4f2b2c87707d5f538cd2ef80",
+      "selected_count": 32
+    },
+    {
+      "opcode": "a1",
+      "source_sha256": "89a2aa0621f461393e77cdf18879d8e64e981febd1fb09d8776a23bbc2453075",
+      "source_count": 10000,
+      "fixture_sha256": "84e4ca0cc2f550fcbe964c682eb69282e9cf87da55ce56d9200dda9c7ceecbce",
+      "selected_count": 32
+    },
+    {
+      "opcode": "b1",
+      "source_sha256": "1fe133601c1d2e81b7c03a68aad2819d9118895155ec56b9a953f09b778ce389",
+      "source_count": 10000,
+      "fixture_sha256": "b4996e2a41e7d574131f889467ac5b1475c7cbeab69859e5bf84c8e52dc41d9d",
+      "selected_count": 32
+    },
+    {
+      "opcode": "d0",
+      "source_sha256": "89c32d1502829150ad557e38abfc75c2100d4900b0dc4491b7e3326f1a49ac31",
+      "source_count": 10000,
+      "fixture_sha256": "8b2dd5a116080600357d21e7133ffe0f56e4ef19f2d18f26ce57e36a63a4d3d3",
+      "selected_count": 32
+    },
+    {
+      "opcode": "00",
+      "source_sha256": "cd255389bacb969ff028c67375e7d0fed4065bb9405a8432de4a7521e69d1024",
+      "source_count": 10000,
+      "fixture_sha256": "4f500137c2ea830a56894efaa80208a56ea6963885ee8170da15b99d541be5ad",
+      "selected_count": 32
+    },
+    {
+      "opcode": "40",
+      "source_sha256": "6d94119e50f14fa56dae56f0a00656cc28c69e8368cfb1299d4289bf9fcbc501",
+      "source_count": 10000,
+      "fixture_sha256": "e1b790f952fff7e813932cc1ad6072bfac184db6671e886606bea4522077aef2",
+      "selected_count": 32
+    },
+    {
+      "opcode": "69",
+      "source_sha256": "cd05943c2a67e3b38541bdaeca9f64170863fa15da38c2cad21e7039c6bce10b",
+      "source_count": 10000,
+      "fixture_sha256": "964cad35ddf80c7a20baa1d5566181b27d2cf854469e0e4d7d70ce1921b5ed66",
+      "selected_count": 32
+    },
+    {
+      "opcode": "e9",
+      "source_sha256": "ac2d3a110732d1a40036f1cf9d47480237eb1aaac217640c9da42e63486c5752",
+      "source_count": 10000,
+      "fixture_sha256": "b36f375397d4c26d1ede8523d61775b76fe37218e5f1697ca62336542bcaa7ff",
+      "selected_count": 32
+    },
+    {
+      "opcode": "9d",
+      "source_sha256": "4ca962a72a90dbe01aa9823059cea1261fae699e7c081ee20c5a570489b487b2",
+      "source_count": 10000,
+      "fixture_sha256": "130e89a01e33ec427e1c34237edec7fbc17d87b81eaad4ea977285dd6a207477",
+      "selected_count": 32
+    },
+    {
+      "opcode": "fe",
+      "source_sha256": "ab9bed36ae8ba5b3f4738bea6c2fb424304d1dcd2c7131ccab35f5d956bd0716",
+      "source_count": 10000,
+      "fixture_sha256": "8974f776bfe2286501085ba777cbb958e7985c521c328dbf85961b854f492e31",
+      "selected_count": 32
+    },
+    {
+      "opcode": "20",
+      "source_sha256": "89802c388dffbc9f2b978a4a0526d7b358ca91083045c4c802dd70d96bd15f16",
+      "source_count": 10000,
+      "fixture_sha256": "5af71fed0bb1e59630e446a656d01e6cf7c3824609e68acf0f5fc12e8dd555cb",
+      "selected_count": 32
+    },
+    {
+      "opcode": "60",
+      "source_sha256": "c8cfe548d44922d5f242bd86b8fe9fddb2eb10ac647ca07ef30dcd785e3f8f15",
+      "source_count": 10000,
+      "fixture_sha256": "298cddb168930be649bd1df0c0113d0dbe926abb2e6c034d093ac7c00d7af6cd",
+      "selected_count": 32
+    }
+  ]
+}

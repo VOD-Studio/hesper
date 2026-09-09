@@ -1,4 +1,6 @@
-# M1 本地验证记录
+# CPU 本地验证记录
+
+## M1
 
 日期：2026-09-09。平台：macOS / `aarch64-apple-darwin`。
 
@@ -37,3 +39,11 @@
 [GitHub Actions](../.github/workflows/ci.yml) 已配置格式、构建检查、debug／release 测试、Clippy 和两种 CLI 演示。本仓库当前未配置远程地址，本轮没有远程运行 CI，也没有推送或发布。CI 的 Linux 环境执行结果仍未验证。
 
 未执行 Klaus Dormann 汇编测试或 Visual6502 晶体管模型。SingleStepTests 仅执行所选 8 条 NMOS 十进制输入／结果，并检查 2 周期；固定提交和 MIT 许可见 [数据说明](../crates/cpu6502/tests/data/README.md)。间接 JMP 的一条外部记录仍仅用于资料核对，未运行完整 JSON runner 或整个套件。未运行 Apple I、Apple II 或 Web 前端，也未引入任何 Apple ROM。
+
+## M2.1
+
+日期：2026-09-09，工具链与 M1 相同。新增测试工具和固定夹具，未修改 CPU 指令语义。`cargo test --workspace --offline` 与 `cargo test --workspace --release --offline` 各通过 61 个测试（55 个 CPU 包测试 + 6 个 CLI 测试），0 失败、0 忽略。新测试实际执行 672 条原始格式 NMOS 用例，并验证过滤、缺失／损坏数据及差异报告。
+
+`cargo fmt --all -- --check`、全目标 `cargo check`、全目标 Clippy `-D warnings` 和 `git diff --check` 均通过。依赖相关检查使用 `--offline`，开发依赖由本地 Cargo 缓存解析并锁定；普通 CPU 库没有新增运行依赖。全量夹具重放与 `--opcode 69 --case-index 0` 单条重放均实际成功。`python3 tools/prepare_singlestep.py` 已核对 21 份上游文件的哈希以及 672 条夹具的原始顺序选择。
+
+验证范围是所选样例的寄存器／内存与周期数量；未比较完整总线序列，尚未执行全部 151 个官方 opcode 文件或 Klaus 汇编程序。远程 CI 尚未执行。M2.2～M2.5 未完成。

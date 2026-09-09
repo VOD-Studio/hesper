@@ -38,7 +38,7 @@ examples/        原创演示汇编与机器码说明
 docs/            架构、opcode、资料、路线图与验证记录
 ```
 
-只有两个 crate，无第三方 Rust 依赖。CPU 不持有整机或 Bus；调用者通过 `reset(&mut bus)`、`step(&mut bus)` 驱动它，用 `registers()` 获取值快照。`step` 返回 `Result<Step, CpuError>`，其中 `StepKind` 区分实际指令与 7 周期的 IRQ/NMI 入口；一次调用不会同时执行中断入口和处理程序指令。中断输入 API 和采样约定见 [架构文档](docs/architecture.md#中断输入与执行事件)。
+只有两个 crate，CPU 库无第三方运行依赖；外部测试工具使用开发依赖解析 JSON 和校验哈希。CPU 不持有整机或 Bus；调用者通过 `reset(&mut bus)`、`step(&mut bus)` 驱动它，用 `registers()` 获取值快照。`step` 返回 `Result<Step, CpuError>`，其中 `StepKind` 区分实际指令与 7 周期的 IRQ/NMI 入口；一次调用不会同时执行中断入口和处理程序指令。中断输入 API 和采样约定见 [架构文档](docs/architecture.md#中断输入与执行事件)。
 
 ## 验证
 
@@ -66,7 +66,7 @@ cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
 未实现非官方 opcode、RDY/SO、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。中断输入在指令边界处理，不模拟指令内部边沿、NMI 抢占中断向量及精确流水线时序。
 
-已通过 8 条固定版本的 SingleStepTests 十进制选定样例，范围及许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。未执行完整外部套件。下一步 M2 专注 CPU：扩大外部一致性测试、升级总线时序、完善中断／引脚与调试回归；Apple I 延后到 CPU 验收后的独立 M3，分阶段计划见 [路线图](docs/roadmap.md)。
+M2.1 已通过 21 个 opcode 的 672 条固定原始格式样例，另保留 8 条十进制选定样例；范围、重放命令及许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。未执行完整外部套件。M2 继续专注 CPU：扩展到官方指令子集全量一致性测试，再升级总线时序、完善中断／引脚与调试回归；Apple I 延后到 CPU 验收后的独立 M3，分阶段计划见 [路线图](docs/roadmap.md)。
 
 构造 CPU 时的零寄存器、全零 RAM 是可重复运行的模拟器约定，**不是硬件上电保证**；NMOS RESET 保留 D 和通用寄存器，程序应自行初始化栈并选择运算模式。具体兼容性假设见 [架构](docs/architecture.md)，后续计划见 [路线图](docs/roadmap.md)，行为依据见 [参考资料](docs/references.md)。
 

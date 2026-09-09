@@ -1,6 +1,6 @@
 # 行为依据与外部测试边界
 
-本轮查阅日期：2026-09-09。核心和本地测试自行实现；未复制外部模拟器代码，仅引入下述有来源与许可证的 8 条测试样例，未引入 ROM。
+本轮查阅日期：2026-09-09。核心和本地测试自行实现；未复制外部模拟器代码，引入下述有来源与许可证的固定测试样例，未引入 ROM。
 
 ## MOS 原始手册
 
@@ -19,7 +19,7 @@
 | 项目 | 本轮用途 | 尚未完成 |
 | --- | --- | --- |
 | [Klaus Dormann 功能测试](https://github.com/Klaus2m5/6502_65C02_functional_tests) | 查阅说明及 `6502_functional_test.a65`：确认 NMOS 官方指令范围及十进制测试限制；源码许可为 GPL-3.0-or-later | 未接入、未运行任何该套件用例；后续另行固定提交和运行配置 |
-| [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02) | 核对一个间接 JMP 页尾样例，执行 8 条固定来源十进制样例；[许可证 MIT](https://github.com/SingleStepTests/65x02/blob/2f6980a2d95757486c7bee24355c360e40e2a224/LICENSE) | 未接入完整 JSON runner，未通过整个套件；不使用 `nes6502` 或任何 `65c02` 目录 |
+| [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02) | 核对间接 JMP 页尾资料；M1 执行 8 条十进制样例，M2.1 执行 672 条原始格式样例；[许可证 MIT](https://github.com/SingleStepTests/65x02/blob/2f6980a2d95757486c7bee24355c360e40e2a224/LICENSE) | 已接入 JSON runner；尚未运行完整官方子集或整个套件；不使用 `nes6502` 或任何 `65c02` 目录 |
 | [Visual6502](https://github.com/trebonian/visual6502) | 查阅项目说明及原始 NMOS 中断研究笔记，作为时序交叉参考 | 未运行模型，未验证引脚／总线时序；后续使用其代码或数据前核对对应许可证 |
 
 SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`，文件 [`6502/v1/6c.json`](https://github.com/SingleStepTests/65x02/blob/2f6980a2d95757486c7bee24355c360e40e2a224/6502/v1/6c.json)。临时读取后检查名为 `6c ff 70`、初始 PC=`$2887` 的样例：指针 `$70FF` 的低字节为 `$9D`，高字节来自 `$7000` 的 `$98`，结果 PC=`$989D`，数据列出 5 次读取。这是**资料核对，不是 Hesper 执行外部测试的通过记录**；本地边界测试使用独立编写的地址和预期值。
@@ -42,3 +42,7 @@ M1 新增 8 条固定来源的 SingleStepTests 十进制输入／结果测试，
 中断先依据 MOS 手册第 9 章及硬件手册附录 A 的 [BRK/IRQ 与 RTI 访问表转录](https://xotmatrix.github.io/6502/6502-single-cycle-execution.html)。旧版 BRK 文字未完整列明 I 的变化，另核对 Visual6502 的 [BRK 与 B 位研究](https://www.nesdev.org/wiki/Visual6502wiki/6502_BRK_and_B_bit) 及 [中断时序研究](https://www.nesdev.org/wiki/Visual6502wiki/6502_Timing_of_Interrupt_Handling)（原 Visual6502 NMOS 研究的镜像，不采用 NES 设备行为）：BRK/PHP 与 IRQ/NMI 的 B 栈映像不同，I 不是在所有指令的同一相位更新，RTI 与 CLI 的轮询时机不同。笔记含待验证观察，本轮没有运行其晶体管模型。
 
 [Avery Lee 的 Altirra Hardware Reference Manual](https://www.virtualdub.org/downloads/Altirra%20Hardware%20Reference%20Manual.pdf)，第 3 章 CPU，Interrupt timing／Setting the I flag with an interrupt pending／Overlapping interrupts，进一步讨论连续改写 I、分支、IRQ/NMI 重叠的时间窗口。特别是它对 PLP 后接设置 I 的指令组合有更细区别；当前统一使用指令前 I 的模型没有复现这些相位差异。将这些作为 M2 微操作与外部时序验证的具体用例，不声称本轮完成逐周期兼容。
+
+## M2.1 原始格式验证
+
+沿用 SingleStepTests 固定提交 `2f6980a2d95757486c7bee24355c360e40e2a224`，读取 [6502 数据格式与测试流程](https://github.com/SingleStepTests/65x02/tree/2f6980a2d95757486c7bee24355c360e40e2a224/6502)。首批 21 个 opcode 各取前 32 条，按原始状态运行并比较寄存器／内存与周期数量；上游和夹具各自的 SHA-256 见 [清单](../crates/cpu6502/tests/data/singlestep/manifest.json)。MIT 许可沿用数据目录内原文。当前不比较完整总线访问序列，具体命令与选择规则见 [数据说明](../crates/cpu6502/tests/data/README.md)。
