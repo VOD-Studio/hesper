@@ -1,7 +1,7 @@
 use std::{env, error::Error, fmt::Write as _, process::ExitCode};
 
 use hesper::{DEFAULT_MAX_STEPS, run_demo};
-use hesper_cpu6502::Registers;
+use hesper_cpu6502::{Registers, StepKind};
 
 fn registers(state: Registers) -> String {
     format!(
@@ -40,10 +40,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let result = run_demo(max_steps, |step, total| {
         if trace {
+            let event = match step.kind {
+                StepKind::Instruction { opcode } => format!("{opcode:02X}"),
+                StepKind::Irq => "IRQ".to_owned(),
+                StepKind::Nmi => "NMI".to_owned(),
+            };
             println!(
-                "${:04X} {:02X} | {} -> {} | +{} cycles total={total}",
+                "${:04X} {event} | {} -> {} | +{} cycles total={total}",
                 step.address,
-                step.opcode,
                 registers(step.before),
                 registers(step.after),
                 step.cycles

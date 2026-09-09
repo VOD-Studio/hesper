@@ -2,6 +2,8 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Op {
+    Brk,
+    Rti,
     Adc,
     Sbc,
     Lda,
@@ -80,6 +82,8 @@ pub(crate) fn decode(opcode: u8) -> Option<(Op, Mode, u8)> {
     use Mode::*;
     use Op::*;
     Some(match opcode {
+        0x00 => (Brk, Imp, 7),
+        0x40 => (Rti, Imp, 6),
         0x01 => (Ora, Izx, 6),
         0x05 => (Ora, Zp, 3),
         0x06 => (Asl, Zp, 5),

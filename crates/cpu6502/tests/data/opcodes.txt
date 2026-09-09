@@ -1,7 +1,7 @@
 # Independent MOS 6500-50A appendix B contract: opcode mnemonic mode base_cycles.
 # Modes: imp acc imm zp zpx zpy abs abx aby ind izx izy rel.
-# Commented instructions are the remaining M1 arithmetic/interrupt work.
-# 00 BRK imp 7
+# All 151 official NMOS opcodes; no aliases or extensions.
+00 BRK imp 7
 01 ORA izx 6
 05 ORA zp 3
 06 ASL zp 5
@@ -37,7 +37,7 @@
 39 AND aby 4
 3D AND abx 4
 3E ROL abx 7
-# 40 RTI imp 6
+40 RTI imp 6
 41 EOR izx 6
 45 EOR zp 3
 46 LSR zp 5

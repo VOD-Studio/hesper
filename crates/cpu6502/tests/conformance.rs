@@ -854,7 +854,7 @@ fn every_supported_opcode_preserves_unaffected_flags_when_set_or_clear() {
 }
 
 #[test]
-fn unsupported_opcodes_including_brk_return_context_without_register_changes() {
+fn all_105_unofficial_opcodes_return_context_without_register_changes() {
     // Independent specifications, never obtained from the CPU decoder.
     let supported: Vec<u8> = include_str!("data/opcodes.txt")
         .lines()
@@ -906,7 +906,10 @@ fn step_trace_keeps_fetched_opcode_even_if_instruction_overwrites_itself() {
         },
         4,
     );
-    assert_eq!(step.opcode, 0x8d);
+    assert_eq!(
+        step.kind,
+        hesper_cpu6502::StepKind::Instruction { opcode: 0x8d }
+    );
     assert_eq!(bus.ram.as_slice()[0x8000], 0xea);
     assert_eq!(
         bus.accesses,

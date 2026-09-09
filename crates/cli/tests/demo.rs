@@ -1,6 +1,7 @@
 use std::process::Command;
 
 use hesper::{DEMO_DONE, DemoError, run_demo};
+use hesper_cpu6502::StepKind;
 
 #[test]
 fn demo_executes_from_reset_to_completion_and_writes_all_ten_bytes() {
@@ -32,20 +33,20 @@ fn demo_executes_from_reset_to_completion_and_writes_all_ten_bytes() {
     assert_eq!(
         (
             trace[0].0.address,
-            trace[0].0.opcode,
+            trace[0].0.kind,
             trace[0].0.before.sp,
             trace[0].1
         ),
-        (0x8000, 0xd8, 0xfd, 9)
+        (0x8000, StepKind::Instruction { opcode: 0xd8 }, 0xfd, 9)
     );
     assert_eq!(
         (
             trace[53].0.address,
-            trace[53].0.opcode,
+            trace[53].0.kind,
             trace[53].0.cycles,
             trace[53].1
         ),
-        (0x800d, 0xd0, 2, 154)
+        (0x800d, StepKind::Instruction { opcode: 0xd0 }, 2, 154)
     );
     assert!(trace.iter().all(|(step, _)| step.address != DEMO_DONE));
 }

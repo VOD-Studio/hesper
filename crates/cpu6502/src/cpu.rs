@@ -18,7 +18,7 @@ pub struct Status {
 
 impl Status {
     /// Debugger representation: bit 5 is 1 and B (bit 4) is 0.
-    /// Future PHP/BRK/interrupt stack images must encode B separately.
+    /// PHP/BRK/interrupt stack images encode B separately.
     pub fn bits(self) -> u8 {
         u8::from(self.carry)
             | (u8::from(self.zero) << 1)
@@ -62,13 +62,25 @@ pub struct Registers {
 #[derive(Debug, Default)]
 pub struct Cpu {
     registers: Registers,
+    irq_line: bool,
+    irq_pending: bool,
+    nmi_line: bool,
+    nmi_pending: bool,
+}
+
+/// Hardware interrupt entry is a separate step, not an executed BRK opcode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepKind {
+    Instruction { opcode: u8 },
+    Irq,
+    Nmi,
 }
 
 /// Trace data captured during execution; formatting it requires no bus reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
     pub address: u16,
-    pub opcode: u8,
+    pub kind: StepKind,
     pub before: Registers,
     pub after: Registers,
     pub cycles: u8,
@@ -98,19 +110,43 @@ impl Cpu {
         Self::default()
     }
 
-    /// Explicit state injection for debugging/tests. This does not perform RESET.
+    /// Explicit register injection for debugging/tests, with inactive interrupt
+    /// lines and no pending interrupts. This is neither RESET nor a full savestate.
     pub fn from_registers(registers: Registers) -> Self {
-        Self { registers }
+        Self {
+            registers,
+            ..Self::default()
+        }
     }
 
     pub fn registers(&self) -> Registers {
         self.registers
     }
 
+    /// Set the IRQ input level (`true` means the active-low pin is asserted).
+    /// Hold it constant over a step: that instruction polls it for the NEXT step.
+    /// Deasserting the line does not cancel an interrupt already polled.
+    pub fn set_irq_line(&mut self, asserted: bool) {
+        self.irq_line = asserted;
+    }
+
+    /// Set the NMI input level (`true` means the active-low pin is asserted).
+    /// A false-to-true transition latches one NMI for the next step. Holding it
+    /// asserted does not retrigger; multiple unserviced edges coalesce.
+    pub fn set_nmi_line(&mut self, asserted: bool) {
+        if asserted && !self.nmi_line {
+            self.nmi_pending = true;
+        }
+        self.nmi_line = asserted;
+    }
+
     /// Instruction-level NMOS RESET: set I, decrement SP by 3, fetch $FFFC/$FFFD.
     /// Preserve A/X/Y and N/V/D/Z/C. No stack writes; dummy reads are omitted.
     /// Returns 7 cycles, excluding the first instruction and reset-pin hold time.
     pub fn reset(&mut self, bus: &mut dyn Bus) -> u8 {
+        // RESET wins over queued interrupts, without changing external pin levels.
+        self.irq_pending = false;
+        self.nmi_pending = false;
         self.registers.status.interrupt_disable = true;
         self.registers.sp = self.registers.sp.wrapping_sub(3);
         let lo = bus.read(0xfffc);
@@ -119,11 +155,37 @@ impl Cpu {
         7
     }
 
-    /// Execute one instruction and count cycles, without cycle-exact bus timing.
-    /// Unsupported opcodes (including BRK in M0) leave registers unchanged.
+    /// Execute one instruction OR a pending 7-cycle IRQ/NMI entry sequence.
+    /// Interrupt inputs are modeled at instruction boundaries, not clock phases.
+    /// Unsupported opcodes leave registers and pending interrupt state unchanged.
     /// The opcode fetch has already occurred and its bus side effects remain.
     pub fn step(&mut self, bus: &mut dyn Bus) -> Result<Step, CpuError> {
         let before = self.registers;
+        if self.nmi_pending || self.irq_pending {
+            let kind = if self.nmi_pending {
+                StepKind::Nmi
+            } else {
+                StepKind::Irq
+            };
+            self.nmi_pending = false;
+            self.irq_pending = false;
+            self.enter_interrupt(
+                bus,
+                if kind == StepKind::Nmi {
+                    0xfffa
+                } else {
+                    0xfffe
+                },
+                false,
+            );
+            return Ok(Step {
+                address: before.pc,
+                kind,
+                before,
+                after: self.registers,
+                cycles: 7,
+            });
+        }
         let opcode = self.fetch(bus);
         let Some((op, mode, mut cycles)) = decode(opcode) else {
             self.registers.pc = before.pc;
@@ -276,6 +338,17 @@ impl Cpu {
                 let hi = self.pull(bus);
                 self.registers.pc = u16::from_le_bytes([lo, hi]).wrapping_add(1);
             }
+            Brk => {
+                // BRK reads its padding byte; the stacked return address is PC+2.
+                self.fetch(bus);
+                self.enter_interrupt(bus, 0xfffe, true);
+            }
+            Rti => {
+                self.registers.status = Status::from_bits(self.pull(bus));
+                let lo = self.pull(bus);
+                let hi = self.pull(bus);
+                self.registers.pc = u16::from_le_bytes([lo, hi]);
+            }
             Pha => self.push(bus, self.registers.a),
             Php => self.push(bus, self.registers.status.bits() | 0x10),
             Pla => {
@@ -292,13 +365,36 @@ impl Cpu {
             Sei => self.registers.status.interrupt_disable = true,
             Nop => {}
         }
+        // CLI/SEI/PLP change I after the instruction's IRQ poll. RTI restores it
+        // before polling. This boundary model does not resolve sub-cycle races.
+        let interrupt_disable = if matches!(op, Cli | Sei | Plp) {
+            before.status.interrupt_disable
+        } else {
+            self.registers.status.interrupt_disable
+        };
+        self.irq_pending = op != Brk && self.irq_line && !interrupt_disable;
         Ok(Step {
             address: before.pc,
-            opcode,
+            kind: StepKind::Instruction { opcode },
             before,
             after: self.registers,
             cycles,
         })
+    }
+
+    fn enter_interrupt(&mut self, bus: &mut dyn Bus, vector: u16, software: bool) {
+        let [lo, hi] = self.registers.pc.to_le_bytes();
+        self.push(bus, hi);
+        self.push(bus, lo);
+        self.push(
+            bus,
+            self.registers.status.bits() | if software { 0x10 } else { 0 },
+        );
+        // The stack contains the OLD I flag. NMOS interrupt entry preserves D.
+        self.registers.status.interrupt_disable = true;
+        let lo = bus.read(vector);
+        let hi = bus.read(vector.wrapping_add(1));
+        self.registers.pc = u16::from_le_bytes([lo, hi]);
     }
 
     fn fetch(&mut self, bus: &mut dyn Bus) -> u8 {
