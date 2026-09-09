@@ -1,0 +1,26 @@
+name: Rust M0
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust checks
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets
+      - run: cargo test --workspace
+      - run: cargo test --workspace --release
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo run -p hesper
+      - run: cargo run -p hesper -- --trace
