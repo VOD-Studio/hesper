@@ -4,7 +4,7 @@
 
 - 先阅读 README、相关代码、docs/architecture.md、docs/opcodes.md 和 Git 状态；保留用户未提交的修改。
 - 项目名为 Hesper，现有 CLI 包／二进制名为 `hesper`，CPU 库为 `hesper-cpu6502`。不要擅自重命名项目。
-- 当前交付范围为 M0。后续里程碑按 docs/roadmap.md 执行，未经任务授权不提前创建空机器 crate、Web 项目或框架。
+- 当前交付范围为 M1。后续里程碑按 docs/roadmap.md 执行，未经任务授权不提前创建空机器 crate、Web 项目或框架。
 - 未经用户明确授权，不 commit、push、发布包或执行破坏性 Git 操作。不擅自选择／更改许可证。
 - 用户授权自主提交后，每完成一个可独立验证的功能点就提交一次，包含相应测试；保持每次提交可构建，不混入其他工作。提交授权不代表推送授权。
 

@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::Bus;
+use crate::{
+    Bus,
+    instruction::{Mode, Op, decode},
+};
 
 /// The six stored NMOS status flags. B is not a persistent hardware flag.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -122,136 +125,171 @@ impl Cpu {
     pub fn step(&mut self, bus: &mut dyn Bus) -> Result<Step, CpuError> {
         let before = self.registers;
         let opcode = self.fetch(bus);
-        let cycles = match opcode {
-            0xa9 => {
-                let value = self.fetch(bus);
-                self.load_a(value);
-                2
+        let Some((op, mode, mut cycles)) = decode(opcode) else {
+            self.registers.pc = before.pc;
+            return Err(CpuError::UnsupportedOpcode {
+                address: before.pc,
+                opcode,
+            });
+        };
+        use Op::*;
+        match op {
+            Lda | Ldx | Ldy | And | Ora | Eor | Bit | Cmp | Cpx | Cpy => {
+                let (value, crossed) = self.read_operand(bus, mode);
+                cycles += u8::from(crossed);
+                match op {
+                    Lda => self.load_a(value),
+                    Ldx => {
+                        self.registers.x = value;
+                        self.registers.status.set_nz(value);
+                    }
+                    Ldy => {
+                        self.registers.y = value;
+                        self.registers.status.set_nz(value);
+                    }
+                    And => self.load_a(self.registers.a & value),
+                    Ora => self.load_a(self.registers.a | value),
+                    Eor => self.load_a(self.registers.a ^ value),
+                    Bit => {
+                        self.registers.status.zero = self.registers.a & value == 0;
+                        self.registers.status.negative = value & 0x80 != 0;
+                        self.registers.status.overflow = value & 0x40 != 0;
+                    }
+                    Cmp => self.compare(self.registers.a, value),
+                    Cpx => self.compare(self.registers.x, value),
+                    Cpy => self.compare(self.registers.y, value),
+                    _ => unreachable!("read-operation dispatch is exhaustive"),
+                }
             }
-            0xa5 => {
-                let addr = u16::from(self.fetch(bus));
-                self.load_a(bus.read(addr));
-                3
+            Sta | Stx | Sty => {
+                let (addr, _) = self.address(bus, mode);
+                let value = match op {
+                    Sta => self.registers.a,
+                    Stx => self.registers.x,
+                    _ => self.registers.y,
+                };
+                bus.write(addr, value);
             }
-            0xad => {
-                let addr = self.fetch_word(bus);
-                self.load_a(bus.read(addr));
-                4
-            }
-            0xa2 => {
-                self.registers.x = self.fetch(bus);
-                self.registers.status.set_nz(self.registers.x);
-                2
-            }
-            0x85 => {
-                let addr = u16::from(self.fetch(bus));
-                bus.write(addr, self.registers.a);
-                3
-            }
-            0x8d => {
-                let addr = self.fetch_word(bus);
-                bus.write(addr, self.registers.a);
-                4
-            }
-            0x9d => {
-                let base = self.fetch_word(bus);
-                let addr = base.wrapping_add(u16::from(self.registers.x));
-                bus.write(addr, self.registers.a);
-                // Stores always take 5 cycles, even without a page crossing.
-                5
-            }
-            0xaa => {
-                self.registers.x = self.registers.a;
-                self.registers.status.set_nz(self.registers.x);
-                2
-            }
-            0x8a => {
-                self.load_a(self.registers.x);
-                2
-            }
-            0x9a => {
-                self.registers.sp = self.registers.x;
-                2
-            }
-            0xe8 => {
-                self.registers.x = self.registers.x.wrapping_add(1);
-                self.registers.status.set_nz(self.registers.x);
-                2
-            }
-            0xca => {
-                self.registers.x = self.registers.x.wrapping_sub(1);
-                self.registers.status.set_nz(self.registers.x);
-                2
-            }
-            0xe0 => {
-                let operand = self.fetch(bus);
-                let result = self.registers.x.wrapping_sub(operand);
-                self.registers.status.carry = self.registers.x >= operand;
+            Asl | Lsr | Rol | Ror | Inc | Dec => {
+                let addr = if mode == Mode::Acc {
+                    None
+                } else {
+                    Some(self.address(bus, mode).0)
+                };
+                let value = match addr {
+                    Some(addr) => bus.read(addr),
+                    None => self.registers.a,
+                };
+                let carry = u8::from(self.registers.status.carry);
+                let result = match op {
+                    Asl => {
+                        self.registers.status.carry = value & 0x80 != 0;
+                        value.wrapping_shl(1)
+                    }
+                    Lsr => {
+                        self.registers.status.carry = value & 1 != 0;
+                        value >> 1
+                    }
+                    Rol => {
+                        self.registers.status.carry = value & 0x80 != 0;
+                        value.wrapping_shl(1) | carry
+                    }
+                    Ror => {
+                        self.registers.status.carry = value & 1 != 0;
+                        (value >> 1) | (carry << 7)
+                    }
+                    Inc => value.wrapping_add(1),
+                    Dec => value.wrapping_sub(1),
+                    _ => unreachable!("modify-operation dispatch is exhaustive"),
+                };
+                if let Some(addr) = addr {
+                    // NMOS read/modify/write writes the old value before the new one.
+                    bus.write(addr, value);
+                    bus.write(addr, result);
+                } else {
+                    self.registers.a = result;
+                }
                 self.registers.status.set_nz(result);
-                2
             }
-            0xd0 => self.branch(bus, !self.registers.status.zero),
-            0xf0 => self.branch(bus, self.registers.status.zero),
-            0x4c => {
-                self.registers.pc = self.fetch_word(bus);
-                3
+            Tax | Tsx => {
+                self.registers.x = if op == Tax {
+                    self.registers.a
+                } else {
+                    self.registers.sp
+                };
+                self.registers.status.set_nz(self.registers.x);
             }
-            0x6c => {
-                let pointer = self.fetch_word(bus);
-                let lo = bus.read(pointer);
-                // NMOS: only the pointer's low byte increments ($xxFF -> $xx00).
-                let hi_addr = (pointer & 0xff00) | (pointer.wrapping_add(1) & 0x00ff);
-                let hi = bus.read(hi_addr);
-                self.registers.pc = u16::from_le_bytes([lo, hi]);
-                5
+            Tay => {
+                self.registers.y = self.registers.a;
+                self.registers.status.set_nz(self.registers.y);
             }
-            0x20 => {
+            Txa => self.load_a(self.registers.x),
+            Tya => self.load_a(self.registers.y),
+            Txs => self.registers.sp = self.registers.x,
+            Inx | Dex => {
+                self.registers.x = if op == Inx {
+                    self.registers.x.wrapping_add(1)
+                } else {
+                    self.registers.x.wrapping_sub(1)
+                };
+                self.registers.status.set_nz(self.registers.x);
+            }
+            Iny | Dey => {
+                self.registers.y = if op == Iny {
+                    self.registers.y.wrapping_add(1)
+                } else {
+                    self.registers.y.wrapping_sub(1)
+                };
+                self.registers.status.set_nz(self.registers.y);
+            }
+            Bcc => cycles = self.branch(bus, !self.registers.status.carry),
+            Bcs => cycles = self.branch(bus, self.registers.status.carry),
+            Beq => cycles = self.branch(bus, self.registers.status.zero),
+            Bmi => cycles = self.branch(bus, self.registers.status.negative),
+            Bne => cycles = self.branch(bus, !self.registers.status.zero),
+            Bpl => cycles = self.branch(bus, !self.registers.status.negative),
+            Bvc => cycles = self.branch(bus, !self.registers.status.overflow),
+            Bvs => cycles = self.branch(bus, self.registers.status.overflow),
+            Jmp => {
+                let addr = self.fetch_word(bus);
+                self.registers.pc = if mode == Mode::Ind {
+                    let lo = bus.read(addr);
+                    let hi_addr = (addr & 0xff00) | (addr.wrapping_add(1) & 0x00ff);
+                    u16::from_le_bytes([lo, bus.read(hi_addr)])
+                } else {
+                    addr
+                };
+            }
+            Jsr => {
                 let lo = self.fetch(bus);
-                // PC now points to JSR's final byte, which is the saved address.
+                // Save the final operand address, high first; read high AFTER writes.
                 let [return_lo, return_hi] = self.registers.pc.to_le_bytes();
                 self.push(bus, return_hi);
                 self.push(bus, return_lo);
-                // Fetch high after stack writes: matters if code overlaps stack.
                 let hi = self.fetch(bus);
                 self.registers.pc = u16::from_le_bytes([lo, hi]);
-                6
             }
-            0x60 => {
+            Rts => {
                 let lo = self.pull(bus);
                 let hi = self.pull(bus);
                 self.registers.pc = u16::from_le_bytes([lo, hi]).wrapping_add(1);
-                6
             }
-            0x48 => {
-                self.push(bus, self.registers.a);
-                3
-            }
-            0x68 => {
+            Pha => self.push(bus, self.registers.a),
+            Php => self.push(bus, self.registers.status.bits() | 0x10),
+            Pla => {
                 let value = self.pull(bus);
                 self.load_a(value);
-                4
             }
-            0x18 => {
-                self.registers.status.carry = false;
-                2
-            }
-            0x38 => {
-                self.registers.status.carry = true;
-                2
-            }
-            0xd8 => {
-                self.registers.status.decimal = false;
-                2
-            }
-            0xea => 2,
-            _ => {
-                self.registers.pc = before.pc;
-                return Err(CpuError::UnsupportedOpcode {
-                    address: before.pc,
-                    opcode,
-                });
-            }
-        };
+            Plp => self.registers.status = Status::from_bits(self.pull(bus)),
+            Clc => self.registers.status.carry = false,
+            Cld => self.registers.status.decimal = false,
+            Cli => self.registers.status.interrupt_disable = false,
+            Clv => self.registers.status.overflow = false,
+            Sec => self.registers.status.carry = true,
+            Sed => self.registers.status.decimal = true,
+            Sei => self.registers.status.interrupt_disable = true,
+            Nop => {}
+        }
         Ok(Step {
             address: before.pc,
             opcode,
@@ -271,6 +309,55 @@ impl Cpu {
         let lo = self.fetch(bus);
         let hi = self.fetch(bus);
         u16::from_le_bytes([lo, hi])
+    }
+
+    fn read_operand(&mut self, bus: &mut dyn Bus, mode: Mode) -> (u8, bool) {
+        if mode == Mode::Imm {
+            return (self.fetch(bus), false);
+        }
+        let (addr, crossed) = self.address(bus, mode);
+        (bus.read(addr), crossed)
+    }
+
+    fn address(&mut self, bus: &mut dyn Bus, mode: Mode) -> (u16, bool) {
+        let (base, index) = match mode {
+            Mode::Zp => return (u16::from(self.fetch(bus)), false),
+            Mode::Zpx | Mode::Zpy => {
+                let index = if mode == Mode::Zpx {
+                    self.registers.x
+                } else {
+                    self.registers.y
+                };
+                return (u16::from(self.fetch(bus).wrapping_add(index)), false);
+            }
+            Mode::Abs => return (self.fetch_word(bus), false),
+            Mode::Abx => (self.fetch_word(bus), self.registers.x),
+            Mode::Aby => (self.fetch_word(bus), self.registers.y),
+            Mode::Izx => {
+                let pointer = self.fetch(bus).wrapping_add(self.registers.x);
+                return (Self::zero_page_word(bus, pointer), false);
+            }
+            Mode::Izy => {
+                let pointer = self.fetch(bus);
+                (Self::zero_page_word(bus, pointer), self.registers.y)
+            }
+            // Private decoder + execution match only call this for memory modes.
+            // All 256 opcode bytes are checked by the independent contract tests.
+            _ => unreachable!("non-memory mode sent to address resolver"),
+        };
+        let addr = base.wrapping_add(u16::from(index));
+        (addr, (base & 0xff00) != (addr & 0xff00))
+    }
+
+    fn zero_page_word(bus: &mut dyn Bus, pointer: u8) -> u16 {
+        let lo = bus.read(u16::from(pointer));
+        let hi = bus.read(u16::from(pointer.wrapping_add(1)));
+        u16::from_le_bytes([lo, hi])
+    }
+
+    fn compare(&mut self, register: u8, operand: u8) {
+        self.registers.status.carry = register >= operand;
+        self.registers.status.set_nz(register.wrapping_sub(operand));
     }
 
     fn load_a(&mut self, value: u8) {

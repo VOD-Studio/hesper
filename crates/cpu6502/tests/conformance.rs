@@ -855,13 +855,14 @@ fn every_supported_opcode_preserves_unaffected_flags_when_set_or_clear() {
 
 #[test]
 fn unsupported_opcodes_including_brk_return_context_without_register_changes() {
-    // Independent M0 contract, not generated from the implementation's dispatch.
-    const SUPPORTED: [u8; 25] = [
-        0xa9, 0xa5, 0xad, 0xa2, 0x85, 0x8d, 0x9d, 0xaa, 0x8a, 0x9a, 0xe8, 0xca, 0xe0, 0xd0, 0xf0,
-        0x4c, 0x6c, 0x20, 0x60, 0x48, 0x68, 0x18, 0x38, 0xd8, 0xea,
-    ];
+    // Independent specifications, never obtained from the CPU decoder.
+    let supported: Vec<u8> = include_str!("data/opcodes.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| u8::from_str_radix(line.split_whitespace().next().unwrap(), 16).unwrap())
+        .collect();
     for opcode in 0..=u8::MAX {
-        if SUPPORTED.contains(&opcode) {
+        if supported.contains(&opcode) {
             continue;
         }
         let before = Registers {

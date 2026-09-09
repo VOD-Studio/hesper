@@ -4,7 +4,7 @@
 
 依赖方向为 CLI／未来前端 → 宿主或机器层 → `hesper-cpu6502`。M0 只建立 CPU 库和 CLI 两个 crate。
 
-- **CPU 库**：寄存器、状态、指令解释、寻址、栈、复位、周期数量及错误。`cpu.rs` 用显式 opcode match；当前规模无需解码宏或多层指令对象。
+- **CPU 库**：寄存器、状态、指令解释、寻址、栈、复位、周期数量及错误。`instruction.rs` 为显式 opcode／寻址／周期表，`cpu.rs` 执行语义；不使用解码宏或多层指令对象。
 - **Bus**：`read(&mut self, addr: u16) -> u8` / `write(&mut self, addr: u16, value: u8)`。可变读取为未来设备副作用预留空间。CPU 不持有 Bus，`step` 和 `reset` 接收外部 `&mut dyn Bus`，便于测试、替换内存和组合设备。
 - **Ram**：独立的全零 64 KiB 数组 Bus；模拟访问以 `u16` 地址进行，宿主 `load` 检查整段范围，失败不写入。`as_slice` 仅用于这个 RAM 的无副作用宿主检查，不是通用设备读取接口。
 - **CLI**：`src/lib.rs` 包含实际演示字节和有限步数 runner，供入口与集成测试共用；`main.rs` 负责参数、输出和退出码。runner 从复位向量启动，CPU 逐条写出结果，完成地址和预算都由宿主决定。
@@ -19,16 +19,17 @@
 
 因此新 CPU 首次 reset 得到 SP=`$FD`，重复 reset 继续递减；这不是“RESET 将 SP 固定设成 FD”。演示显式初始化 X、SP 和 D，让计数程序不依赖它们的上电初值；结果摘要中未使用的 Y=`$00` 和 V=0 仍来自模拟器构造约定，并非硬件保证。
 
-`Registers` 为可复制值快照；`from_registers` 是明确的调试／测试状态注入入口，不执行复位。`Status` 保存 C/Z/I/D/V/N 六个 bool；`bits()` 固定位 5 为 1、B 位为 0，`from_bits()` 忽略位 4/5。未来 PHP/BRK/中断压栈时要单独合成 B，不能把这个调试表示直接当作所有压栈状态。
+`Registers` 为可复制值快照；`from_registers` 是明确的调试／测试状态注入入口，不执行复位。`Status` 保存 C/Z/I/D/V/N 六个 bool；`bits()` 固定位 5 为 1、B 位为 0，`from_bits()` 忽略位 4/5。PHP 压栈时单独合成 B；后续 BRK/中断也要区分 B，不能把这个调试表示直接当作所有压栈状态。
 
-## M0 的 NMOS 假设
+## NMOS 假设（M1 进行中）
 
 - 使用常见 NMOS 指令结果与周期规则；不选择某个具体芯片修订，不支持变种切换。
 - 保留 NMOS `JMP ($xxFF)` 从 `$xx00` 获取目标高字节的行为，包括指针 `$FFFF`；不采用 65C02 的修正。
 - 分支从操作数后 PC 加有符号偏移，再比较起点／终点页：不跳 2 周期，同页跳 3，跨页跳 4。跨 `$FFFF` 同样回绕。
 - `STA abs,X` 地址回绕且固定 5 周期。JSR 压入指令最后一字节的地址，高字节先入栈；RTS 先取低再取高并加 1。JSR 的高操作数在栈写入后读取，保留代码与栈重叠时的结果。
-- D 是真实存储标志且 RESET 不清除；M0 只有 CLD，ADC/SBC 连同十进制语义留到 M1。没有把 D 忽略的 NES 2A03 运算混入默认实现。
-- IRQ/NMI/BRK/RTI、RDY/SO、引脚变化、早期 ROR 缺陷及非官方指令均未建模；相关指令未实现时统一报错。
+- D 是真实存储标志且 RESET 不清除；当前已实现 CLD/SED，ADC/SBC 连同十进制语义仍待补齐。没有把 D 忽略的 NES 2A03 运算混入默认实现。
+- 采用常见后期 NMOS 的正确 ROR 行为，不仿真最早芯片的 ROR 缺陷。IRQ/NMI/BRK/RTI、RDY/SO 和非官方指令尚未建模。
+- 内存 RMW 指令先回写旧值再写新值；CLI/SEI/PLP 当前完成寄存器语义，中断采样将在中断功能点补齐。
 
 行为来源与原始测试项目交叉核对范围见 [references.md](references.md)，逐项支持状态见 [opcodes.md](opcodes.md)。
 

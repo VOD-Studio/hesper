@@ -1,41 +1,147 @@
-# M0 opcode 清单
+# NMOS opcode 支持清单
 
-以下 **25 个 opcode 均已实现，并有本地自动化测试**；“已测试”仅指仓库自包含用例，不表示通过完整外部 CPU 测试套件。测试名均位于 [conformance.rs](../crates/cpu6502/tests/conformance.rs)，实际检查记录见 [verification.md](verification.md)。
+M1 进行中：**133 个 opcode 已实现并通过自包含测试**。ADC/SBC 与 BRK/RTI、外部中断将在后续功能点补齐；没有通过完整外部 CPU 套件的声明。
 
-长度单位为字节，周期为每条指令。标志列列出可能改变的位，`—` 表示全部保留。所有条目另由 `every_supported_opcode_preserves_unaffected_flags_when_set_or_clear` 验证未受影响标志在置位／清零时的保留。
+下表逐项对应独立手写的 [测试规格](../crates/cpu6502/tests/data/opcodes.txt)，不从 CPU 解码器产生预期值。[official.rs](../crates/cpu6502/tests/official.rs) 中 `every_documented_opcode_has_independent_result_length_flags_and_cycle_expectations` 对每一行断言结果、PC、标志、周期和写入；M0 的 [回归测试](../crates/cpu6502/tests/conformance.rs) 全部保留。
 
-| opcode | 指令 | 寻址 | 长度 | 周期 | 标志 | 实现 | 已测试：主要用例 |
+寻址缩写：imp 隐含、acc 累加器、imm 立即数、zp 零页、zpx/zpy 零页索引、abs 绝对、abx/aby 绝对索引、ind 间接 JMP、izx `(zp,X)`、izy `(zp),Y`、rel 相对。`+` 为读取跨页时加 1；分支为不跳／同页跳／跨页跳 2/3/4。写入和 RMW 的索引周期固定。标志未列出的位保持不变。
+
+| opcode | 指令 | 寻址 | 长度 | 周期 | 改变的标志 | 实现 | 测试 |
 | --- | --- | --- | ---: | --- | --- | --- | --- |
-| A9 | LDA | 立即数 | 2 | 2 | N Z | 是 | `lda_modes_and_ldx_set_nz_and_preserve_other_flags` |
-| A5 | LDA | 零页 | 2 | 3 | N Z | 是 | 同上 |
-| AD | LDA | 绝对 | 3 | 4 | N Z | 是 | 同上；`operand_and_opcode_fetches_wrap_at_ffff` |
-| A2 | LDX | 立即数 | 2 | 2 | N Z | 是 | `lda_modes_and_ldx_set_nz_and_preserve_other_flags` |
-| 85 | STA | 零页 | 2 | 3 | — | 是 | `sta_modes_preserve_flags_and_absolute_x_always_costs_five_cycles` |
-| 8D | STA | 绝对 | 3 | 4 | — | 是 | 同上；`step_trace_keeps_fetched_opcode_even_if_instruction_overwrites_itself` |
-| 9D | STA | 绝对 X | 3 | 5，跨页不再加 | — | 是 | `sta_modes_preserve_flags_and_absolute_x_always_costs_five_cycles`：不跨页、跨页、16 位回绕 |
-| AA | TAX | 隐含 | 1 | 2 | N Z | 是 | `tax_txa_set_nz_but_txs_preserves_all_flags` |
-| 8A | TXA | 隐含 | 1 | 2 | N Z | 是 | 同上 |
-| 9A | TXS | 隐含 | 1 | 2 | — | 是 | 同上 |
-| E8 | INX | 隐含 | 1 | 2 | N Z | 是 | `inx_dex_wrap_and_update_only_nz` |
-| CA | DEX | 隐含 | 1 | 2 | N Z | 是 | 同上 |
-| E0 | CPX | 立即数 | 2 | 2 | N Z C | 是 | `cpx_is_unsigned_compare_with_wrapped_subtraction_nz` |
-| D0 | BNE | 相对 | 2 | 2／3／4 | — | 是 | `beq_bne_signed_offsets_pages_and_address_wrap` |
-| F0 | BEQ | 相对 | 2 | 2／3／4 | — | 是 | 同上 |
-| 4C | JMP | 绝对 | 3 | 3 | — | 是 | `jmp_absolute_reads_little_endian_and_preserves_flags` |
-| 6C | JMP | 间接 | 3 | 5 | — | 是 | `jmp_indirect_uses_nmos_same_page_high_byte` |
-| 20 | JSR | 绝对 | 3 | 6 | — | 是 | `jsr_rts_return_address_stack_order_and_sp_wrap`；`jsr_late_operand_fetch_handles_code_overlapping_stack` |
-| 60 | RTS | 隐含 | 1 | 6 | — | 是 | 上述 JSR/RTS；`jsr_operand_fetch_and_rts_increment_wrap_program_counter` |
-| 48 | PHA | 隐含 | 1 | 3 | — | 是 | `pha_pla_are_lifo_with_stack_page_and_sp_wrap` |
-| 68 | PLA | 隐含 | 1 | 4 | N Z | 是 | 同上；`pla_sets_and_clears_nz_without_changing_other_flags` |
-| 18 | CLC | 隐含 | 1 | 2 | C=0 | 是 | `clc_sec_cld_and_nop_change_only_their_documented_flags` |
-| 38 | SEC | 隐含 | 1 | 2 | C=1 | 是 | 同上 |
-| D8 | CLD | 隐含 | 1 | 2 | D=0 | 是 | 同上 |
-| EA | NOP | 隐含 | 1 | 2 | — | 是 | 同上；`operand_and_opcode_fetches_wrap_at_ffff` |
+| 01 | ORA | izx | 2 | 6 | NZ | 已实现 | 已测试 |
+| 05 | ORA | zp | 2 | 3 | NZ | 已实现 | 已测试 |
+| 06 | ASL | zp | 2 | 5 | NZC | 已实现 | 已测试 |
+| 08 | PHP | imp | 1 | 3 | — | 已实现 | 已测试 |
+| 09 | ORA | imm | 2 | 2 | NZ | 已实现 | 已测试 |
+| 0A | ASL | acc | 1 | 2 | NZC | 已实现 | 已测试 |
+| 0D | ORA | abs | 3 | 4 | NZ | 已实现 | 已测试 |
+| 0E | ASL | abs | 3 | 6 | NZC | 已实现 | 已测试 |
+| 10 | BPL | rel | 2 | 2/3/4 | — | 已实现 | 已测试 |
+| 11 | ORA | izy | 2 | 5+ | NZ | 已实现 | 已测试 |
+| 15 | ORA | zpx | 2 | 4 | NZ | 已实现 | 已测试 |
+| 16 | ASL | zpx | 2 | 6 | NZC | 已实现 | 已测试 |
+| 18 | CLC | imp | 1 | 2 | C=0 | 已实现 | 已测试 |
+| 19 | ORA | aby | 3 | 4+ | NZ | 已实现 | 已测试 |
+| 1D | ORA | abx | 3 | 4+ | NZ | 已实现 | 已测试 |
+| 1E | ASL | abx | 3 | 7 | NZC | 已实现 | 已测试 |
+| 20 | JSR | abs | 3 | 6 | — | 已实现 | 已测试 |
+| 21 | AND | izx | 2 | 6 | NZ | 已实现 | 已测试 |
+| 24 | BIT | zp | 2 | 3 | NVZ | 已实现 | 已测试 |
+| 25 | AND | zp | 2 | 3 | NZ | 已实现 | 已测试 |
+| 26 | ROL | zp | 2 | 5 | NZC | 已实现 | 已测试 |
+| 28 | PLP | imp | 1 | 4 | NV DIZC | 已实现 | 已测试 |
+| 29 | AND | imm | 2 | 2 | NZ | 已实现 | 已测试 |
+| 2A | ROL | acc | 1 | 2 | NZC | 已实现 | 已测试 |
+| 2C | BIT | abs | 3 | 4 | NVZ | 已实现 | 已测试 |
+| 2D | AND | abs | 3 | 4 | NZ | 已实现 | 已测试 |
+| 2E | ROL | abs | 3 | 6 | NZC | 已实现 | 已测试 |
+| 30 | BMI | rel | 2 | 2/3/4 | — | 已实现 | 已测试 |
+| 31 | AND | izy | 2 | 5+ | NZ | 已实现 | 已测试 |
+| 35 | AND | zpx | 2 | 4 | NZ | 已实现 | 已测试 |
+| 36 | ROL | zpx | 2 | 6 | NZC | 已实现 | 已测试 |
+| 38 | SEC | imp | 1 | 2 | C=1 | 已实现 | 已测试 |
+| 39 | AND | aby | 3 | 4+ | NZ | 已实现 | 已测试 |
+| 3D | AND | abx | 3 | 4+ | NZ | 已实现 | 已测试 |
+| 3E | ROL | abx | 3 | 7 | NZC | 已实现 | 已测试 |
+| 41 | EOR | izx | 2 | 6 | NZ | 已实现 | 已测试 |
+| 45 | EOR | zp | 2 | 3 | NZ | 已实现 | 已测试 |
+| 46 | LSR | zp | 2 | 5 | NZC | 已实现 | 已测试 |
+| 48 | PHA | imp | 1 | 3 | — | 已实现 | 已测试 |
+| 49 | EOR | imm | 2 | 2 | NZ | 已实现 | 已测试 |
+| 4A | LSR | acc | 1 | 2 | NZC | 已实现 | 已测试 |
+| 4C | JMP | abs | 3 | 3 | — | 已实现 | 已测试 |
+| 4D | EOR | abs | 3 | 4 | NZ | 已实现 | 已测试 |
+| 4E | LSR | abs | 3 | 6 | NZC | 已实现 | 已测试 |
+| 50 | BVC | rel | 2 | 2/3/4 | — | 已实现 | 已测试 |
+| 51 | EOR | izy | 2 | 5+ | NZ | 已实现 | 已测试 |
+| 55 | EOR | zpx | 2 | 4 | NZ | 已实现 | 已测试 |
+| 56 | LSR | zpx | 2 | 6 | NZC | 已实现 | 已测试 |
+| 58 | CLI | imp | 1 | 2 | I=0 | 已实现 | 已测试 |
+| 59 | EOR | aby | 3 | 4+ | NZ | 已实现 | 已测试 |
+| 5D | EOR | abx | 3 | 4+ | NZ | 已实现 | 已测试 |
+| 5E | LSR | abx | 3 | 7 | NZC | 已实现 | 已测试 |
+| 60 | RTS | imp | 1 | 6 | — | 已实现 | 已测试 |
+| 66 | ROR | zp | 2 | 5 | NZC | 已实现 | 已测试 |
+| 68 | PLA | imp | 1 | 4 | NZ | 已实现 | 已测试 |
+| 6A | ROR | acc | 1 | 2 | NZC | 已实现 | 已测试 |
+| 6C | JMP | ind | 3 | 5 | — | 已实现 | 已测试 |
+| 6E | ROR | abs | 3 | 6 | NZC | 已实现 | 已测试 |
+| 70 | BVS | rel | 2 | 2/3/4 | — | 已实现 | 已测试 |
+| 76 | ROR | zpx | 2 | 6 | NZC | 已实现 | 已测试 |
+| 78 | SEI | imp | 1 | 2 | I=1 | 已实现 | 已测试 |
+| 7E | ROR | abx | 3 | 7 | NZC | 已实现 | 已测试 |
+| 81 | STA | izx | 2 | 6 | — | 已实现 | 已测试 |
+| 84 | STY | zp | 2 | 3 | — | 已实现 | 已测试 |
+| 85 | STA | zp | 2 | 3 | — | 已实现 | 已测试 |
+| 86 | STX | zp | 2 | 3 | — | 已实现 | 已测试 |
+| 88 | DEY | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| 8A | TXA | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| 8C | STY | abs | 3 | 4 | — | 已实现 | 已测试 |
+| 8D | STA | abs | 3 | 4 | — | 已实现 | 已测试 |
+| 8E | STX | abs | 3 | 4 | — | 已实现 | 已测试 |
+| 90 | BCC | rel | 2 | 2/3/4 | — | 已实现 | 已测试 |
+| 91 | STA | izy | 2 | 6 | — | 已实现 | 已测试 |
+| 94 | STY | zpx | 2 | 4 | — | 已实现 | 已测试 |
+| 95 | STA | zpx | 2 | 4 | — | 已实现 | 已测试 |
+| 96 | STX | zpy | 2 | 4 | — | 已实现 | 已测试 |
+| 98 | TYA | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| 99 | STA | aby | 3 | 5 | — | 已实现 | 已测试 |
+| 9A | TXS | imp | 1 | 2 | — | 已实现 | 已测试 |
+| 9D | STA | abx | 3 | 5 | — | 已实现 | 已测试 |
+| A0 | LDY | imm | 2 | 2 | NZ | 已实现 | 已测试 |
+| A1 | LDA | izx | 2 | 6 | NZ | 已实现 | 已测试 |
+| A2 | LDX | imm | 2 | 2 | NZ | 已实现 | 已测试 |
+| A4 | LDY | zp | 2 | 3 | NZ | 已实现 | 已测试 |
+| A5 | LDA | zp | 2 | 3 | NZ | 已实现 | 已测试 |
+| A6 | LDX | zp | 2 | 3 | NZ | 已实现 | 已测试 |
+| A8 | TAY | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| A9 | LDA | imm | 2 | 2 | NZ | 已实现 | 已测试 |
+| AA | TAX | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| AC | LDY | abs | 3 | 4 | NZ | 已实现 | 已测试 |
+| AD | LDA | abs | 3 | 4 | NZ | 已实现 | 已测试 |
+| AE | LDX | abs | 3 | 4 | NZ | 已实现 | 已测试 |
+| B0 | BCS | rel | 2 | 2/3/4 | — | 已实现 | 已测试 |
+| B1 | LDA | izy | 2 | 5+ | NZ | 已实现 | 已测试 |
+| B4 | LDY | zpx | 2 | 4 | NZ | 已实现 | 已测试 |
+| B5 | LDA | zpx | 2 | 4 | NZ | 已实现 | 已测试 |
+| B6 | LDX | zpy | 2 | 4 | NZ | 已实现 | 已测试 |
+| B8 | CLV | imp | 1 | 2 | V=0 | 已实现 | 已测试 |
+| B9 | LDA | aby | 3 | 4+ | NZ | 已实现 | 已测试 |
+| BA | TSX | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| BC | LDY | abx | 3 | 4+ | NZ | 已实现 | 已测试 |
+| BD | LDA | abx | 3 | 4+ | NZ | 已实现 | 已测试 |
+| BE | LDX | aby | 3 | 4+ | NZ | 已实现 | 已测试 |
+| C0 | CPY | imm | 2 | 2 | NZC | 已实现 | 已测试 |
+| C1 | CMP | izx | 2 | 6 | NZC | 已实现 | 已测试 |
+| C4 | CPY | zp | 2 | 3 | NZC | 已实现 | 已测试 |
+| C5 | CMP | zp | 2 | 3 | NZC | 已实现 | 已测试 |
+| C6 | DEC | zp | 2 | 5 | NZ | 已实现 | 已测试 |
+| C8 | INY | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| C9 | CMP | imm | 2 | 2 | NZC | 已实现 | 已测试 |
+| CA | DEX | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| CC | CPY | abs | 3 | 4 | NZC | 已实现 | 已测试 |
+| CD | CMP | abs | 3 | 4 | NZC | 已实现 | 已测试 |
+| CE | DEC | abs | 3 | 6 | NZ | 已实现 | 已测试 |
+| D0 | BNE | rel | 2 | 2/3/4 | — | 已实现 | 已测试 |
+| D1 | CMP | izy | 2 | 5+ | NZC | 已实现 | 已测试 |
+| D5 | CMP | zpx | 2 | 4 | NZC | 已实现 | 已测试 |
+| D6 | DEC | zpx | 2 | 6 | NZ | 已实现 | 已测试 |
+| D8 | CLD | imp | 1 | 2 | D=0 | 已实现 | 已测试 |
+| D9 | CMP | aby | 3 | 4+ | NZC | 已实现 | 已测试 |
+| DD | CMP | abx | 3 | 4+ | NZC | 已实现 | 已测试 |
+| DE | DEC | abx | 3 | 7 | NZ | 已实现 | 已测试 |
+| E0 | CPX | imm | 2 | 2 | NZC | 已实现 | 已测试 |
+| E4 | CPX | zp | 2 | 3 | NZC | 已实现 | 已测试 |
+| E6 | INC | zp | 2 | 5 | NZ | 已实现 | 已测试 |
+| E8 | INX | imp | 1 | 2 | NZ | 已实现 | 已测试 |
+| EA | NOP | imp | 1 | 2 | — | 已实现 | 已测试 |
+| EC | CPX | abs | 3 | 4 | NZC | 已实现 | 已测试 |
+| EE | INC | abs | 3 | 6 | NZ | 已实现 | 已测试 |
+| F0 | BEQ | rel | 2 | 2/3/4 | — | 已实现 | 已测试 |
+| F6 | INC | zpx | 2 | 6 | NZ | 已实现 | 已测试 |
+| F8 | SED | imp | 1 | 2 | D=1 | 已实现 | 已测试 |
+| FE | INC | abx | 3 | 7 | NZ | 已实现 | 已测试 |
 
-周期及标志依据 [MOS 6500-50A 附录 B](https://lbaeza.neocities.org/mcs6500/6500_appb)。分支的 2／3／4 分别对应不跳、同页跳、跨页跳；页比较以操作数后的 PC 为基准。
+周期与标志来源：[MOS 6500-50A 附录 B](https://lbaeza.neocities.org/mcs6500/6500_appb)。额外测试覆盖所有分支、索引读取跨页与 16 位回绕、零页指针回绕、NMOS RMW 的旧值／新值两次写入，以及原有栈和间接 JMP 边界。
 
-## 未实现
-
-**所有未出现在上表的字节均未实现**，共 231 个。包括官方 BRK `$00`、全部 ADC/SBC、其他官方指令及未列出的寻址方式、非官方 opcode 和 65C02 扩展。它们没有“指令行为测试通过”的状态；`unsupported_opcodes_including_brk_return_context_without_register_changes` 逐一验证其返回错误的契约。
-
-M0 没有额外的 HALT opcode。RESET 是外部操作而非 opcode，单独测试向量、7 周期、状态保留与 SP 递减；宿主演示的完整执行和停止条件由 [demo.rs](../crates/cli/tests/demo.rs) 验证。
+表外 123 个字节仍返回 `UnsupportedOpcode`（当前包括 BRK）；错误契约遍历全部未支持字节。RESET 是外部操作，不属于 opcode。
