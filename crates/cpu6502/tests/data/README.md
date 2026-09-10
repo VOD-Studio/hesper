@@ -55,7 +55,7 @@ Klaus 数据固定为 [`7954e2dbb49c469ea286070bf46cdd71aeb29e4b`](https://githu
 M2.2 历史通过范围见 [verification.md](../../../../docs/verification.md)：指令状态／内存和 SingleStep 周期数量；此时尚未比较逐周期总线序列，也未运行 Klaus 中断程序。
 
 
-## M2.4 引脚与中断程序（进行中）
+## M2.4 引脚与中断程序（本地已验收）
 
 `visual6502/pins.json` 包含本项目原创的 246 个短程序／事件时间表，在 [Visual6502 revD](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) 晶体管模型上实际生成的 24 周期总线观察（共 5904 周期），事件以半周期索引给出 IRQ/NMI/RDY/SO 的低有效断言／释放；覆盖读写等待、等待中断以及 SO 与分支、CLV、ADC、SBC、BIT、PLP、RTI 的相位重叠。初始 RAM 未单列的地址为 `$EA`；引导代码通过真实指令设置寄存器，再停在目标取指。CPU 测试恢复相同状态及 RAM，预期不是由 Hesper 生成。fixture SHA-256：`c2913d4ab2c52af44ae9b69c3647c630215c90485e25f6f254fed6d24d516ac7`。
 
@@ -78,7 +78,7 @@ Klaus 中断源码沿用前述固定版本／GPL-3.0-or-later，采用相同 ca6
 
 **默认 0 延迟没有通过这个外部程序**：NMI 与 BRK 重叠，进入 `$075C` 的 B 位检查陷阱，退出失败。上游 `nmi_trap` 附近的源码明确注明真实 NMOS 也可能在这里失败；revD 场景验证了向量被抢占但 B=1 的行为。因此保留失败和正确 NMOS 行为，不关闭陷阱、修改 B 预期或把此配置报告为通过。延迟 1～3 同样触发该陷阱；5～10 则超出上游另一组响应时序预期，不宣称这些配置通过。
 
-### RESET 参考基线（尚未接入 CPU）
+### 物理 RESET 对照
 
 `visual6502/reset.json` 单独保存 **419 组／26816 个总线周期**的物理 RESET 观察，每组固定 64 周期。参考模型仍为上面的 revD 固定提交；新增预期直接来自原模型，未由 Hesper 生成。原有 `pins.json` 的 246 组观察及哈希保持不变。RESET 夹具 SHA-256：`5b78b26bf4294609d54a5184b34655f3f85c08282b8808a6f9d31697b335d257`，数量及总周期另记于同一 manifest。
 
@@ -92,7 +92,7 @@ Klaus 中断源码沿用前述固定版本／GPL-3.0-or-later，采用相同 ca6
 | RDY 与 NOP／STA／INC 的 RESET 重叠，含两个向量读取周期 | 36 |
 | IRQ／NMI 与 RESET 同步、栈、向量及取指窗口重叠 | 28 |
 
-事件 `[half, pin, asserted]` 中 `res` 是原模型的低有效 RESET 引脚名；`true` 为断言。索引 `2n` 在模型时钟上升前注入，`2n+1` 在下降前注入；总线元组为 `[address, data, read/write, SYNC]`，在上升后采集。初始寄存器由真实引导指令建立；未单列 RAM 仍为 `$EA`。RESET 向量为 `$B134`，处理程序先向 `$2010/$2013/$2014` 写出 A/X/Y，再 PHP 保存尚未被 TSX/INX 改写的 P，计算入口 SP 并写至 `$2011`，最后将 PHP 栈映像写至 `$2012`，进入 `$B147` 自循环。该见证程序是观察工具，不是 CPU 的完成条件或伪 HALT。
+事件 `[half, pin, asserted]` 中 `res` 是原模型的低有效 RESET 引脚名；`true` 为断言，CPU 侧对应 `set_reset_line(true)`。索引 `2n` 在模型时钟上升前注入，`2n+1` 在下降前注入；总线元组为 `[address, data, read/write, SYNC]`，在上升后采集。CPU 比较也执行同一真实引导程序建立寄存器及残留数据通路状态，再恢复记录的完整初始 RAM（未单列字节为 `$EA`），与模型在引导后施加 RAM 覆盖一致；不从寄存器快照伪造内部锁存器。RESET 向量为 `$B134`，处理程序先向 `$2010/$2013/$2014` 写出 A/X/Y，再 PHP 保存尚未被 TSX/INX 改写的 P，计算入口 SP 并写至 `$2011`，最后将 PHP 栈映像写至 `$2012`，进入 `$B147` 自循环。该见证程序是观察工具，不是 CPU 的完成条件或伪 HALT。
 
 ```sh
 # 重现两个完整套件；分别报告 pins 和 reset，不合并成 CPU 通过数
@@ -100,6 +100,8 @@ node tools/verify_visual6502.cjs
 # 只重现 RESET，或精确重放一组观察
 node tools/verify_visual6502.cjs --suite reset
 node tools/verify_visual6502.cjs --suite reset --case reset-registers-stack-wrap
+# 实际 CPU 对照全部 419 组 RESET；普通 workspace 测试也包含它
+cargo test -p hesper-cpu6502 --test pins fixed_visual6502_revd_reset_traces_match_actual_bus_cycles -- --exact
 node tools/verify_visual6502.cjs --suite pins --case nop-irq-0
 # 显式重新生成一整个套件到临时路径，不自动覆盖固定预期
 node tools/verify_visual6502.cjs --suite reset --record /tmp/hesper-reset-reference.json
@@ -107,11 +109,11 @@ node tools/verify_visual6502.cjs --suite reset --record /tmp/hesper-reset-refere
 
 `--case` 按完整场景名选择，零匹配报错；重复／缺值参数、未知套件、未指定单套件的 `--record`、同时使用 `--case` 和 `--record` 均报错。验证先校验夹具哈希再运行模型；缺数据、哈希错误、场景／周期差异均退出 1。差异报告提供首个场景、周期、预期／实际值及单场景重放命令；不更新预期来吞掉失败。
 
-#### 与现有执行器的差异及下一步要求
+#### 已实现并通过的执行器验证点
 
 下表为固定输入下的 **revD 观察**，周期／半周期索引均从 0 开始，不是全部 NMOS 修订或模拟电气脉冲的保证：
 
-| 重放场景 | 固定观察 | 执行器需要表达的状态 |
+| 重放场景 | 固定观察 | 已实现的执行器状态 |
 | --- | --- | --- |
 | `reset-nop-0-8` | h0 断言、h8 释放：c1～5 读 `$8001`，c6 SYNC，c8～10 栈读，c11/12 向量读，c13 取处理程序 opcode | 断言／释放同步和保持状态；不能在释放时立即套用宿主七周期入口 |
 | `reset-pulse-nop-0-1`／`reset-pulse-nop-1-1` | h0→h1 脉冲未触发复位，h1→h2 触发 | 下降相位采样；短脉冲必须跨采样点，而非 setter 调用即触发 |
@@ -124,14 +126,14 @@ node tools/verify_visual6502.cjs --suite reset --record /tmp/hesper-reset-refere
 
 `reset-held-0/1` 在各自 64 周期观察内没有读取 RESET 向量；没有用有限观察宣称无限时长的模拟电气保证。未排除 PHA/JSR/BRK 的暂态异常地址或寄存器影响，也未拿手册中的 don't-care 标记删除这些预期。
 
-本轮按用户选择只完成参考基线。普通 `pins.rs` 对 RESET 数据执行哈希、固定数量、格式、事件范围及唯一性检查，**不调用 CPU，也不宣称物理 RESET 已通过**。下一步接入实际引脚与锁存模型，再将全部 RESET 观察纳入 CPU 对照；在此之前 M2.4／M2 整体验收仍未完成。
+参考基线增量曾按用户选择只固定观察；当前已接入实际物理 RESET。`pins.rs` 保留哈希、固定数量、格式、事件范围及唯一性检查，并在 CPU 上完整重放全部 419 组，逐周期比较总线及处理程序见证写入。同期原有 246 组引脚对照保持通过，没有修改或删减固定预期。M2.4／M2 本地目标范围已验收；这不等于所有 NMOS 修订或全部指令×引脚相位组合均已穷举。
 
 
 ## 快速回归、全量验证与失败诊断
 
-普通 `cargo test --workspace` 使用仓库里的 672 条单步样例、246 组 CPU 已实现引脚观察和本地穷举／边界测试；另对 419 组 RESET 参考数据做离线完整性检查，不读取外部下载缓存、不运行 Node 模型，也不执行 CPU RESET 引脚对照。当前 workspace 共 84 个测试。
+普通 `cargo test --workspace` 使用仓库里的 672 条单步样例、246 组 IRQ/NMI/RDY/SO 观察、419 组物理 RESET 观察和本地穷举／边界测试；两组引脚数据均实际驱动 CPU。不读取外部下载缓存、不运行 Node 模型。当前 workspace 共 91 个测试。
 
-完整官方 JSON、Klaus 镜像与 Visual6502 模型需要显式执行上述准备命令。全量 SingleStep、functional、decimal、interrupt（`--feedback-delay 4`）、`node tools/verify_visual6502.cjs` 及 `cargo test -p hesper-cpu6502 --test pins --release` 分别验证 CPU 已实现范围、原模型参考观察重现及离线夹具完整性；不能用其中一条替代全部，也不能把 RESET 参考重现算成 CPU RESET 对照通过。准备命令验证来源哈希，运行命令缺数据或校验失败直接报错。
+完整官方 JSON、Klaus 镜像与 Visual6502 模型需要显式执行上述准备命令。全量 SingleStep、functional、decimal、interrupt（`--feedback-delay 4`）验证 CPU；`node tools/verify_visual6502.cjs` 验证原模型能重现固定观察；`cargo test -p hesper-cpu6502 --test pins --release` 在检查夹具完整性后实际对照 CPU 的两个引脚套件。不能用 Node 重放替代 CPU 对照，反之也不能省略来源和哈希验证。准备命令验证来源哈希，运行命令缺数据或校验失败直接报错。
 
 [快速 CI](../../../../.github/workflows/ci.yml) 在拉取 Rust 开发依赖后离线运行固定测试；[全量 CI](../../../../.github/workflows/full-cpu.yml) 只在 GitHub Actions 中手动运行 **Full CPU conformance** 时下载和执行外部数据。Node 26、Python 3.12+、make／C 编译器仅用于数据准备和参考模型，不成为 CPU 运行依赖。两份配置尚未远程运行验证。
 
