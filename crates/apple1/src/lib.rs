@@ -16,7 +16,13 @@
 //! (256 bytes, not included in this crate).
 
 pub mod bus;
+pub mod display;
+pub mod keyboard;
+pub mod machine;
 pub mod pia;
 
 pub use bus::{Apple1Bus, RomSizeError};
+pub use display::Display;
+pub use keyboard::Keyboard;
+pub use machine::Apple1;
 pub use pia::Pia6821;

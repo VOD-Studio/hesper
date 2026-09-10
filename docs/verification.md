@@ -232,3 +232,23 @@ RESET 执行器接入前，固定 `reset-registers-stack-wrap` 在 c2 的 SYNC �
 最后一行只证明原模型重放，实际 CPU 通过由 Cargo 引脚套件证明；两项都已执行。最终诊断事件修正后重新运行了格式／编译、debug/release、Clippy、Wasm 目标、三种 CLI 和上述全部 CPU 外部程序。
 
 M2.1～M2.5 的上述本地目标范围已完成，路线图据此勾选；不宣称穷举全部官方指令×引脚相位组合或所有 NMOS 修订。默认 0 延迟 Klaus 中断本轮未重跑，也未将已记录的上游 NMOS 陷阱改判为通过。Apple I／浏览器未启动；未远程运行 CI，未提交、推送或发布，未选择项目许可证。
+
+## M3.1：Apple I 机器总线与 PIA
+
+2026-09-10，macOS aarch64；rustc 1.98.1、Cargo 1.98.1。
+
+新增 `crates/apple1`：MC6821 PIA 寄存器模型与 Apple I 地址译码 Bus。CPU 未修改。
+
+| 命令／范围 | 实际本地结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`、`cargo check --workspace --all-targets` | 通过 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo test --workspace` | **104** 个通过（91 CPU/CLI + 13 apple1），0 失败／忽略 |
+| `cargo test --workspace --release` | **104** 个通过 |
+| `cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown` | 通过 |
+
+新增测试覆盖：PIA 复位状态、DDR/OR 选择、数据读取混合输出与输入引脚、CA1 边沿触发 IRQA1 标志、读数据清除中断标志、控制寄存器只读位保护。Bus 测试覆盖 RAM 读写、ROM 只读、PIA 寄存器访问、开路总线返回最后读取值、RAM 加载超范围错误。
+
+`Apple1Bus` 地址映射：`$0000‑$0FFF` 4 KiB RAM、`$D010‑$D013` PIA、`$FF00‑$FFFF` 256 B ROM、其余开路总线。ROM 由宿主通过 `Apple1Bus::new(&[u8; 256])` 加载，未包含在 crate 中。Woz Monitor hex dump 已从公开仓库核对但未提交。
+
+CPU 已实现功能的完整外部体系（SingleStep 151 万、Klaus 三配置、246+419 pins）本轮未重跑，因为 CPU 未修改。Apple I 未启动。

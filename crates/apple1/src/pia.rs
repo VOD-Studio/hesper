@@ -132,6 +132,28 @@ impl Pia6821 {
         }
     }
 
+    /// Reset to power-on state: all registers zero, all control lines inactive.
+    pub fn reset(&mut self) {
+        self.ora = 0;
+        self.ddra = 0;
+        self.cra = 0;
+        self.pins_a = 0;
+        self.orb = 0;
+        self.ddrb = 0;
+        self.crb = 0;
+        self.pins_b = 0;
+        self.ca1 = false;
+        self._ca2_input = false;
+        self.cb1 = false;
+        self._cb2_input = false;
+    }
+
+    /// Whether writes to Port B go to the Output Register (CRB bit 2 = 1)
+    /// rather than the Data Direction Register.
+    pub fn port_b_or_selected(&self) -> bool {
+        self.crb & 0x04 != 0
+    }
+
     // --- Bus-facing read / write ---
 
     /// Read a PIA register.  `addr` should be in `$D010..$D013`.

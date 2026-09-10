@@ -26,6 +26,15 @@ SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`
 
 今后引入外部数据必须固定完整提交、变种、数据格式版本及运行配置，保存来源和许可证，写明资源取得方式和执行预算。结果应分开报告寄存器／内存、周期数量、总线访问序列；跑过部分用例不等于通过整个套件。
 
+## Apple I
+
+- Apple-1 Operation Manual (1976). Original schematics, memory map, Woz Monitor listing.
+  <https://archive.org/details/Apple-1_Operation_Manual_1976_Apple_a>
+- MC6821 Peripheral Interface Adapter datasheet. PIA register model.
+- Woz Monitor hex dump: 256 bytes at `$FF00‑$FFFF`, RESET vector at `$FFFC/D` points to `$FF00`.
+  Reproducible assembly source at <https://github.com/jefftranter/6502/tree/master/asm/wozmon>
+  Hex dump verified against <https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex>
+
 ## Rust 工程资料
 
 - [Cargo workspace 官方文档](https://doc.rust-lang.org/cargo/reference/workspaces.html)：虚拟 workspace、成员、共享包字段和 lint。
