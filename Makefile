@@ -21,7 +21,7 @@
 
 .NOTPARALLEL:
 
-.PHONY: verify fmt fix check test test-release clippy demo diff wasm \
+.PHONY: verify fmt fix check test test-release clippy demo diff wasm wozmon \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -59,6 +59,11 @@ diff:
 
 wasm:
 	cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
+
+# ---- Woz Monitor ROM ----
+wozmon:
+	python3 tools/extract_wozmon.py wozmon.bin
+	@echo "wozmon.bin ready (256 bytes)"
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 
