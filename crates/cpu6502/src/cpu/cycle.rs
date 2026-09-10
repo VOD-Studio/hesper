@@ -30,7 +30,8 @@ pub struct BusCycle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cycle {
     pub bus: BusCycle,
-    /// RDY held a read: the bus transaction occurred, execution did not advance.
+    /// RDY held a read: the sequencer did not advance. Pending SP transfers
+    /// can still commit; the bus transaction and pin sampling still occur.
     pub stalled: bool,
     /// Present only when this cycle completes an instruction or entry sequence.
     pub completed: Option<Step>,
@@ -69,6 +70,7 @@ pub enum Phase {
     PushStatus,
     VectorLow,
     VectorHigh,
+    ResetHold,
 }
 
 /// Read-only sequencer snapshot. `phase` names the next bus operation.
@@ -82,13 +84,16 @@ pub struct ExecutionState {
     pub effective_address: u16,
     pub low_byte: u8,
     pub data: u8,
+    /// Internal stack address cursor, distinct from the visible SP register.
+    pub stack_address: u16,
 }
 
-/// Logical inputs: IRQ/NMI/SO true means asserted (electrically low).
+/// Logical inputs: IRQ/NMI/RESET/SO true means asserted (electrically low).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputPins {
     pub irq: bool,
     pub nmi: bool,
+    pub reset: bool,
     pub ready: bool,
     pub so: bool,
 }
@@ -101,6 +106,9 @@ pub struct PinLatches {
     pub nmi_sample: bool,
     pub nmi_edge: bool,
     pub nmi_pending: bool,
+    pub reset_sample: bool,
+    pub reset_stop: bool,
+    pub reset_active: bool,
     pub so_sample: bool,
     pub so_pending: bool,
 }
@@ -130,8 +138,19 @@ pub(super) struct Execution {
     value: u8,
     base: u16,
     address: u16,
+    stack: u8,
     branch_irq: bool,
     branch_nmi: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct ResetSequence {
+    before: Registers,
+    cycles: u64,
+    op: Op,
+    phase: Phase,
+    transfers: u64,
+    fetch_stalled: bool,
 }
 
 impl Execution {
@@ -147,6 +166,7 @@ impl Execution {
             value: 0,
             base: 0,
             address: 0,
+            stack: before.sp,
             branch_irq: false,
             branch_nmi: false,
         }
@@ -181,6 +201,10 @@ impl Execution {
         (self.base & 0xff00) | (self.address & 0xff)
     }
 
+    fn stack_address(&self) -> u16 {
+        0x100 | u16::from(self.stack)
+    }
+
     // Only needed when RDY is low. A write returns None and must run normally.
     fn read_address(&self, cpu: &Cpu) -> Option<u16> {
         use Phase::*;
@@ -190,10 +214,14 @@ impl Execution {
             ZeroIndex | PointerLow | BranchTaken => self.base,
             PointerHigh => (self.base & 0xff00) | (self.base.wrapping_add(1) & 0xff),
             Indexed => self.intermediate(),
-            Memory if !self.store() => self.address,
-            StackDummy | JsrDummy | PullRegister | ReturnLow | ReturnHigh => cpu.stack_address(),
-            PushHigh | PushLow | PushStatus if self.kind == StepKind::Reset => cpu.stack_address(),
-            VectorLow => self.address,
+            Memory if !self.store() || cpu.reset_active => self.address,
+            StackDummy | JsrDummy | PullRegister | ReturnLow | ReturnHigh => self.stack_address(),
+            PushHigh | PushLow | PushStatus if self.kind == StepKind::Reset || cpu.reset_active => {
+                self.stack_address()
+            }
+            PushRegister | JsrPushHigh | JsrPushLow if cpu.reset_active => self.stack_address(),
+            RmwOld | RmwNew if cpu.reset_active => self.address,
+            VectorLow | ResetHold => self.address,
             VectorHigh => self.address.wrapping_add(1),
             _ => return None,
         })
@@ -232,11 +260,13 @@ impl Cpu {
                 effective_address: e.address,
                 low_byte: e.low,
                 data: e.value,
+                stack_address: e.stack_address(),
             }),
             fetch_wait_cycles: self.fetch_wait.map_or(0, |(_, cycles)| cycles),
             pins: InputPins {
                 irq: self.irq_line,
                 nmi: self.nmi_line,
+                reset: self.reset_line,
                 ready: !self.not_ready,
                 so: self.so_line,
             },
@@ -246,6 +276,9 @@ impl Cpu {
                 nmi_sample: self.nmi_sample,
                 nmi_edge: self.nmi_edge,
                 nmi_pending: self.nmi_pending,
+                reset_sample: self.reset_sample,
+                reset_stop: self.reset_stop,
+                reset_active: self.reset_active,
                 so_sample: self.so_sample,
                 so_pending: self.so_pending,
             },
@@ -255,14 +288,22 @@ impl Cpu {
 
     /// True when the next cycle starts an instruction or interrupt entry.
     pub fn at_instruction_boundary(&self) -> bool {
-        self.execution.is_none() && self.fetch_wait.is_none() && !self.phi2
+        self.execution.is_none()
+            && self.fetch_wait.is_none()
+            && self.reset_sequence.is_none()
+            && !self.phi2
     }
 
     /// Begin the seven-cycle RESET entry, discarding any unfinished instruction.
-    /// This host request does not yet model the physical RESET pin hold time.
+    /// Starts from the visible registers, not an abandoned stack address latch.
+    /// This host request does not model the physical RESET pin hold time.
     pub fn begin_reset(&mut self) {
         self.phi2 = false;
         self.fetch_wait = None;
+        self.reset_sample = false;
+        self.reset_stop = false;
+        self.reset_active = false;
+        self.reset_sequence = None;
         self.irq_pending = false;
         self.irq_sample = false;
         self.nmi_pending = false;
@@ -332,6 +373,103 @@ impl Cpu {
     }
 
     fn finish_phi2(&mut self, bus: &mut dyn Bus) -> Result<Cycle, CpuError> {
+        // RES is sampled on the falling phase. Its timing-chain stop and write
+        // inhibition take another cycle to reach the already-launched bus phase.
+        if self.reset_sample && !self.reset_stop {
+            let op = self.execution.as_ref().map_or(Op::Brk, |e| {
+                if e.phase == Phase::ResetHold {
+                    Op::Brk
+                } else {
+                    e.op
+                }
+            });
+            if let Some(sequence) = &mut self.reset_sequence {
+                sequence.op = op;
+            } else {
+                self.reset_sequence = Some(ResetSequence {
+                    before: self.registers,
+                    cycles: 0,
+                    op,
+                    phase: Phase::Fetch,
+                    transfers: 0,
+                    fetch_stalled: self.fetch_wait.is_some(),
+                });
+            }
+        }
+        let mut holding = self.reset_stop;
+        if holding {
+            let mut e = self.execution.take().unwrap_or_else(|| {
+                Execution::new(StepKind::Reset, self.registers, Op::Brk, Mode::Imp)
+            });
+            if e.phase != Phase::ResetHold {
+                let sequence = self.reset_sequence.as_mut().expect("sampled RESET");
+                sequence.phase = e.phase;
+                sequence.transfers = 0;
+                e.op = sequence.op;
+                e.before = sequence.before;
+                e.cycles = sequence.cycles;
+                e.address = match e.phase {
+                    Phase::VectorLow => 0xfffc,
+                    Phase::VectorHigh => 0xfffd,
+                    _ => e.read_address(self).expect("RESET inhibits writes"),
+                };
+                e.phase = Phase::ResetHold;
+                e.kind = StepKind::Reset;
+            }
+            self.fetch_wait = None;
+            self.execution = Some(e);
+        } else if let Some(e) = &mut self.execution
+            && e.phase == Phase::ResetHold
+            && !self.not_ready_sample
+        {
+            e.phase = Phase::Fetch;
+            e.op = Op::Brk;
+            e.kind = StepKind::Reset;
+            e.stack = self.registers.sp;
+        }
+        holding |= self
+            .execution
+            .as_ref()
+            .is_some_and(|e| e.phase == Phase::ResetHold);
+        let clearing_nmi = self.reset_active
+            && self
+                .execution
+                .as_ref()
+                .is_none_or(|e| !matches!(e.phase, Phase::VectorLow | Phase::VectorHigh));
+        let result = self.execute_cycle(bus);
+        self.reset_active |= self.reset_sample;
+        self.reset_stop = self.reset_sample;
+        self.reset_sample = self.reset_line;
+        self.not_ready_sample = self.not_ready;
+        let mut cycle = result?;
+        if !holding {
+            self.data_latch = cycle.bus.data;
+        }
+        if clearing_nmi {
+            self.nmi_edge = false;
+            self.nmi_pending = false;
+            self.irq_pending = false;
+        }
+        if let Some(sequence) = &mut self.reset_sequence {
+            sequence.cycles += 1;
+            if !self.reset_sample
+                && !self.reset_stop
+                && let Some(step) = &mut cycle.completed
+                && step.kind == StepKind::Reset
+            {
+                step.before = sequence.before;
+                step.address = sequence.before.pc;
+                step.cycles = sequence.cycles;
+                self.reset_sequence = None;
+                self.reset_active = false;
+            } else {
+                cycle.completed = None;
+            }
+        }
+        Ok(cycle)
+    }
+
+    fn execute_cycle(&mut self, bus: &mut dyn Bus) -> Result<Cycle, CpuError> {
         let sampled_i = self.registers.status.interrupt_disable;
         let polled_irq = self.irq_sample;
         let polled_nmi = self.nmi_edge;
@@ -359,15 +497,30 @@ impl Cpu {
                     completed: None,
                 });
             }
-            let opcode = access.data;
-            let Some((op, mode, _)) = decode(opcode) else {
+            // RESET clears the fetched IR independently of the timing chain.
+            // The actual external byte is still retained in the bus trace.
+            let (kind, op, mode) = if self.reset_sample {
+                (StepKind::Reset, Op::Brk, Mode::Imp)
+            } else if let Some((op, mode, _)) = decode(access.data) {
+                (
+                    StepKind::Instruction {
+                        opcode: access.data,
+                    },
+                    op,
+                    mode,
+                )
+            } else {
                 return Err(CpuError::UnsupportedOpcode {
                     address: access.address,
-                    opcode,
+                    opcode: access.data,
                 });
             };
             let (before, waits) = self.fetch_wait.take().unwrap_or((self.registers, 0));
-            let mut execution = Execution::new(StepKind::Instruction { opcode }, before, op, mode);
+            let mut execution = Execution::new(kind, before, op, mode);
+            if self.alu_double_on_fetch {
+                self.alu_latch = self.alu_latch.wrapping_add(self.alu_latch);
+                self.alu_double_on_fetch = false;
+            }
             self.registers.pc = self.registers.pc.wrapping_add(1);
             execution.cycles = waits + 1;
             execution.phase = execution.first_phase();
@@ -379,6 +532,18 @@ impl Cpu {
                 completed: None,
             });
         };
+        // SP transfers are not gated by RDY. Keep the address cursor unchanged
+        // until its bus phase advances, so a repeated read never increments it
+        // again. These commit points follow fixed revD falling-edge observations.
+        match execution.phase {
+            Phase::StackDummy if matches!(execution.op, Op::Pla | Op::Plp) => {
+                self.registers.sp = execution.stack.wrapping_add(1);
+            }
+            Phase::ReturnLow => self.registers.sp = execution.stack.wrapping_add(1),
+            Phase::PushStatus => self.registers.sp = execution.stack.wrapping_sub(1),
+            Phase::JsrHigh => self.registers.sp = execution.stack,
+            _ => {}
+        }
         if self.not_ready
             && let Some(address) = execution.read_address(self)
         {
@@ -400,6 +565,53 @@ impl Cpu {
         }
         let (access, done) = self.advance(bus, &mut execution);
         execution.cycles += 1;
+        if phase != Phase::ResetHold {
+            match phase {
+                Phase::StackDummy | Phase::ReturnLow => {
+                    self.alu_latch = execution.stack;
+                }
+                Phase::PushRegister
+                | Phase::JsrPushHigh
+                | Phase::JsrPushLow
+                | Phase::PushHigh
+                | Phase::PushLow
+                | Phase::PushStatus => {
+                    self.alu_latch = execution.stack;
+                }
+                _ => {}
+            }
+            if done {
+                self.alu_zero_input = false;
+                self.alu_carry_input = false;
+                self.alu_double_on_fetch = false;
+                match execution.op {
+                    Op::Pha | Op::Php => self.alu_latch = access.data,
+                    Op::Pla | Op::Plp => {
+                        self.alu_latch = access.data.wrapping_add(1);
+                        self.alu_zero_input = true;
+                        self.alu_carry_input = true;
+                    }
+                    _ if execution.modify() => self.alu_latch = self.data_latch,
+                    Op::Rts | Op::Rti => {
+                        self.alu_latch = access.data;
+                        self.alu_zero_input = true;
+                    }
+                    Op::Nop => {
+                        // Undriven internal buses precharge high.
+                        self.alu_latch = u8::MAX.wrapping_add(u8::MAX);
+                    }
+                    Op::Jsr => self.alu_latch = access.data,
+                    Op::Brk => {
+                        self.alu_latch = u8::MAX.wrapping_add(access.data);
+                    }
+                    Op::Jmp => {}
+                    _ => {
+                        self.alu_latch = access.data;
+                        self.alu_double_on_fetch = true;
+                    }
+                }
+            }
+        }
         let completed = if done {
             if matches!(execution.kind, StepKind::Instruction { .. }) {
                 let (irq, nmi) = match phase {
@@ -458,10 +670,6 @@ impl Cpu {
         })
     }
 
-    fn stack_address(&self) -> u16 {
-        0x100 | u16::from(self.registers.sp)
-    }
-
     fn fetch_cycle(&mut self, bus: &mut dyn Bus) -> BusCycle {
         let access = read(bus, self.registers.pc);
         self.registers.pc = self.registers.pc.wrapping_add(1);
@@ -473,7 +681,14 @@ impl Cpu {
         let mut done = false;
         let access = match e.phase {
             Fetch => {
-                let mut access = read(bus, self.registers.pc);
+                // A physical release presents the held address latch at SYNC;
+                // its stored PC can already differ after overlapping transfers.
+                let address = if e.kind == StepKind::Reset && self.reset_sequence.is_some() {
+                    e.address
+                } else {
+                    self.registers.pc
+                };
+                let mut access = read(bus, address);
                 access.sync = true;
                 e.phase = Padding;
                 access
@@ -502,7 +717,12 @@ impl Cpu {
                     Mode::Zp => Memory,
                     Mode::Zpx | Mode::Zpy | Mode::Izx => ZeroIndex,
                     Mode::Izy => PointerLow,
-                    _ if e.op == Op::Jsr => JsrDummy,
+                    _ if e.op == Op::Jsr => {
+                        // JSR borrows SP for the target low byte while its
+                        // original stack address is retained separately.
+                        self.registers.sp = e.low;
+                        JsrDummy
+                    }
                     _ => High,
                 };
                 access
@@ -646,8 +866,8 @@ impl Cpu {
                 access
             }
             StackDummy => {
-                let access = read(bus, self.stack_address());
-                self.registers.sp = self.registers.sp.wrapping_add(1);
+                let access = read(bus, e.stack_address());
+                e.stack = e.stack.wrapping_add(1);
                 e.phase = if e.op == Op::Rts {
                     ReturnLow
                 } else {
@@ -661,13 +881,14 @@ impl Cpu {
                 } else {
                     self.registers.status.bits() | 0x10
                 };
-                let access = write(bus, self.stack_address(), value);
-                self.registers.sp = self.registers.sp.wrapping_sub(1);
+                let access = write(bus, e.stack_address(), value);
+                e.stack = e.stack.wrapping_sub(1);
+                self.registers.sp = e.stack;
                 done = true;
                 access
             }
             PullRegister => {
-                let access = read(bus, self.stack_address());
+                let access = read(bus, e.stack_address());
                 if e.op == Op::Pla {
                     self.load_a(access.data);
                 } else {
@@ -675,7 +896,7 @@ impl Cpu {
                     self.v_write_pending[0] = Some(self.registers.status.overflow);
                 }
                 if e.op == Op::Rti {
-                    self.registers.sp = self.registers.sp.wrapping_add(1);
+                    e.stack = e.stack.wrapping_add(1);
                     e.phase = ReturnLow;
                 } else {
                     done = true;
@@ -683,14 +904,14 @@ impl Cpu {
                 access
             }
             ReturnLow => {
-                let access = read(bus, self.stack_address());
+                let access = read(bus, e.stack_address());
                 e.low = access.data;
-                self.registers.sp = self.registers.sp.wrapping_add(1);
+                e.stack = e.stack.wrapping_add(1);
                 e.phase = ReturnHigh;
                 access
             }
             ReturnHigh => {
-                let access = read(bus, self.stack_address());
+                let access = read(bus, e.stack_address());
                 self.registers.pc = u16::from_le_bytes([e.low, access.data]);
                 if e.op == Op::Rts {
                     e.phase = ReturnDummy;
@@ -705,16 +926,16 @@ impl Cpu {
             }
             JsrDummy => {
                 e.phase = JsrPushHigh;
-                read(bus, self.stack_address())
+                read(bus, e.stack_address())
             }
             JsrPushHigh | JsrPushLow => {
                 let [lo, hi] = self.registers.pc.to_le_bytes();
                 let access = write(
                     bus,
-                    self.stack_address(),
+                    e.stack_address(),
                     if e.phase == JsrPushHigh { hi } else { lo },
                 );
-                self.registers.sp = self.registers.sp.wrapping_sub(1);
+                e.stack = e.stack.wrapping_sub(1);
                 e.phase = if e.phase == JsrPushHigh {
                     JsrPushLow
                 } else {
@@ -752,11 +973,11 @@ impl Cpu {
                     }
                 };
                 let access = if e.kind == StepKind::Reset {
-                    read(bus, self.stack_address())
+                    read(bus, e.stack_address())
                 } else {
-                    write(bus, self.stack_address(), value)
+                    write(bus, e.stack_address(), value)
                 };
-                self.registers.sp = self.registers.sp.wrapping_sub(1);
+                e.stack = e.stack.wrapping_sub(1);
                 e.phase = match e.phase {
                     PushHigh => PushLow,
                     PushLow => PushStatus,
@@ -788,7 +1009,132 @@ impl Cpu {
                 done = true;
                 access
             }
+            ResetHold => {
+                let access = read(bus, e.address);
+                self.reset_transfers(e, access.data);
+                access
+            }
         };
         (access, done)
+    }
+
+    /// The timing chain is quiescent, but the selected instruction's T0
+    /// transfers and the separate RMW tail still drive the live internal buses.
+    fn reset_transfers(&mut self, e: &mut Execution, data: u8) {
+        let sequence = self.reset_sequence.as_mut().expect("RESET transfer");
+        let first = sequence.transfers == 0;
+        let phase = sequence.phase;
+        sequence.transfers += 1;
+        let previous_data = self.data_latch;
+        let mut next_data = data;
+        match e.op {
+            Op::Brk | Op::Rti | Op::Jsr => {
+                let mut high = data;
+                let low = if e.op == Op::Jsr {
+                    let low = self.registers.sp;
+                    self.registers.sp = if first && phase != Phase::Fetch {
+                        if matches!(phase, Phase::JsrPushHigh | Phase::JsrPushLow) {
+                            e.stack.wrapping_sub(1)
+                        } else {
+                            e.stack
+                        }
+                    } else {
+                        previous_data
+                    };
+                    low
+                } else if first {
+                    match phase {
+                        Phase::PushHigh | Phase::PushLow | Phase::PushStatus => {
+                            e.stack.wrapping_sub(1)
+                        }
+                        Phase::StackDummy | Phase::PullRegister | Phase::ReturnLow => {
+                            e.stack.wrapping_add(1)
+                        }
+                        Phase::VectorLow => (e.address as u8).wrapping_add(1),
+                        Phase::Padding => {
+                            let a = if self.alu_zero_input {
+                                0
+                            } else {
+                                self.alu_latch
+                            };
+                            a.wrapping_add(self.alu_latch)
+                                .wrapping_add(u8::from(self.alu_carry_input))
+                        }
+                        Phase::Fetch if sequence.fetch_stalled => {
+                            (self.registers.pc as u8).wrapping_add(1)
+                        }
+                        Phase::Fetch if e.op == Op::Brk => self.alu_latch,
+                        _ => previous_data,
+                    }
+                } else if e.op == Op::Brk && !sequence.fetch_stalled && !self.alu_zero_input {
+                    previous_data.wrapping_sub(1)
+                } else {
+                    previous_data
+                };
+                // Vector-low's zero-source transfer retires one phase later
+                // than the ordinary FF + DB (decrement) feedback path.
+                self.alu_zero_input = first && phase == Phase::VectorLow;
+                if first && matches!(phase, Phase::PushHigh | Phase::JsrPushHigh) {
+                    // PCL/DB and DL/ADH overlap: the external high-address
+                    // latch sees the wired bus, while PCH captures PCL itself.
+                    // A short pulse exposes this distinction at release SYNC.
+                    next_data = self.registers.pc as u8;
+                    high &= next_data;
+                    self.registers.pc = u16::from_le_bytes([low, next_data]);
+                } else {
+                    self.registers.pc = u16::from_le_bytes([low, high]);
+                }
+                e.address = u16::from_le_bytes([low, high]);
+            }
+            Op::Rts => {
+                if first && !matches!(phase, Phase::ReturnDummy | Phase::Fetch) {
+                    self.registers.pc = self.registers.pc.wrapping_add(1);
+                }
+                e.address = self.registers.pc;
+            }
+            Op::Pha | Op::Php => {
+                self.registers.sp = previous_data;
+                e.address = self.registers.pc;
+            }
+            Op::Plp => {
+                self.registers.status = Status::from_bits(data);
+                self.v_write_pending[0] = Some(self.registers.status.overflow);
+                e.address = self.registers.pc;
+            }
+            Op::Pla
+            | Op::Lda
+            | Op::Ldx
+            | Op::Ldy
+            | Op::Adc
+            | Op::Sbc
+            | Op::And
+            | Op::Ora
+            | Op::Eor
+            | Op::Bit
+            | Op::Cmp
+            | Op::Cpx
+            | Op::Cpy => {
+                self.read_operation(if e.op == Op::Pla { Op::Lda } else { e.op }, data);
+                e.address = self.registers.pc;
+            }
+            _ => {
+                e.address = self.registers.pc;
+                if e.modify() {
+                    let sequence = self.reset_sequence.as_mut().expect("RESET RMW tail");
+                    match sequence.phase {
+                        Phase::Memory | Phase::RmwOld => {
+                            e.address = (self.registers.pc & 0xff00) | (e.base & 0xff);
+                            sequence.phase = if sequence.phase == Phase::Memory {
+                                Phase::RmwOld
+                            } else {
+                                Phase::RmwNew
+                            };
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        self.data_latch = next_data;
     }
 }

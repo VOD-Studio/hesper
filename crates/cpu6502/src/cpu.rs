@@ -3,11 +3,11 @@ use std::fmt;
 use crate::instruction::Op;
 
 mod cycle;
-use cycle::Execution;
 pub use cycle::{
     BusCycle, ClockPhase, Cycle, DebugState, Direction, ExecutionState, InputPins,
     Phase as ExecutionPhase, PinLatches,
 };
+use cycle::{Execution, ResetSequence};
 
 /// The six stored NMOS status flags. B is not a persistent hardware flag.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +74,18 @@ pub struct Cpu {
     nmi_sample: bool,
     nmi_edge: bool,
     nmi_pending: bool,
+    reset_line: bool,
+    reset_sample: bool,
+    reset_stop: bool,
+    reset_active: bool,
+    reset_sequence: Option<ResetSequence>,
+    data_latch: u8,
+    alu_latch: u8,
+    alu_double_on_fetch: bool,
+    alu_zero_input: bool,
+    alu_carry_input: bool,
     not_ready: bool,
+    not_ready_sample: bool,
     so_line: bool,
     so_sample: bool,
     so_pending: bool,
@@ -142,6 +153,8 @@ impl Cpu {
         }
     }
 
+    /// Current register values, not a restorable in-flight CPU state. SP follows
+    /// sequencer transfer timing, including JSR's temporary target low byte.
     pub fn registers(&self) -> Registers {
         self.registers
     }
@@ -285,6 +298,13 @@ impl Cpu {
     /// and vector selection consume it; a pulse entirely between cycles is missed.
     pub fn set_nmi_line(&mut self, asserted: bool) {
         self.nmi_line = asserted;
+    }
+
+    /// Set the physical, active-low RESET input (`true` means asserted).
+    /// The falling clock phase samples the input; changing it alone neither
+    /// resets the CPU nor replaces the immediate `begin_reset` host request.
+    pub fn set_reset_line(&mut self, asserted: bool) {
+        self.reset_line = asserted;
     }
 
     /// RDY high allows progress. Low repeats reads; NMOS writes keep progressing.

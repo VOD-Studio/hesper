@@ -107,6 +107,150 @@ fn step_can_finish_any_partial_jsr_and_keeps_original_snapshot_and_cycle_count()
 }
 
 #[test]
+fn stack_register_commits_follow_revd_cycle_boundaries() {
+    // Fixed revD d8ecc129: SP sampled after each falling edge. JSR borrows SP
+    // for its target low byte; BRK/returns do not commit each address increment.
+    let cases: &[(&[u8], &[u16], &[u8])] = &[
+        (
+            &[0x20, 0x34, 0x12],
+            &[0x8000, 0x8001, 0x01fd, 0x01fd, 0x01fc, 0x8002],
+            &[0xfd, 0x34, 0x34, 0x34, 0x34, 0xfb],
+        ),
+        (
+            &[0x00, 0xea],
+            &[0x8000, 0x8001, 0x01fd, 0x01fc, 0x01fb, 0xfffe, 0xffff],
+            &[0xfd, 0xfd, 0xfd, 0xfd, 0xfa, 0xfa, 0xfa],
+        ),
+        (&[0x48], &[0x8000, 0x8001, 0x01fd], &[0xfd, 0xfd, 0xfc]),
+        (
+            &[0x68],
+            &[0x8000, 0x8001, 0x01fd, 0x01fe],
+            &[0xfd, 0xfd, 0xfe, 0xfe],
+        ),
+        (
+            &[0x60],
+            &[0x8000, 0x8001, 0x01fd, 0x01fe, 0x01ff, 0x3428],
+            &[0xfd, 0xfd, 0xfd, 0xff, 0xff, 0xff],
+        ),
+        (
+            &[0x40],
+            &[0x8000, 0x8001, 0x01fd, 0x01fe, 0x01ff, 0x0100],
+            &[0xfd, 0xfd, 0xfd, 0xfd, 0x00, 0x00],
+        ),
+    ];
+    for &(program, addresses, stack_pointers) in cases {
+        let mut cpu = cpu();
+        let mut bus = Device::default();
+        bus.ram.load(0x8000, program).unwrap();
+        bus.ram.load(0x01fe, &[0x28, 0x34]).unwrap();
+        bus.ram.write(0x0100, 0x12);
+        for (index, (&address, &sp)) in addresses.iter().zip(stack_pointers).enumerate() {
+            let cycle = cpu.cycle(&mut bus).unwrap();
+            assert_eq!(cycle.bus.address, address, "{program:02x?} cycle {index}");
+            assert_eq!(cpu.registers().sp, sp, "{program:02x?} cycle {index}");
+        }
+    }
+}
+
+#[test]
+fn rdy_holds_stack_addresses_but_not_pending_sp_commits() {
+    for (program, prefix, before_sp, committed_sp, address, cycles) in [
+        (&[0x20, 0x34, 0x12][..], 5, 0x34, 0xfb, 0x8002, 6),
+        (&[0x68][..], 2, 0xfd, 0xfe, 0x01fd, 4),
+        (&[0x60][..], 3, 0xfd, 0xff, 0x01fe, 6),
+        (&[0x40][..], 4, 0xfd, 0x00, 0x01ff, 6),
+    ] {
+        let mut cpu = cpu();
+        let before = cpu.registers();
+        let mut bus = Device::default();
+        bus.ram.load(0x8000, program).unwrap();
+        bus.ram.load(0x01fe, &[0x28, 0x34]).unwrap();
+        bus.ram.write(0x0100, 0x12);
+        for _ in 0..prefix {
+            cpu.cycle(&mut bus).unwrap();
+        }
+        assert_eq!(cpu.registers().sp, before_sp);
+        cpu.set_ready(false);
+        let start = bus.accesses.len();
+        for _ in 0..2 {
+            assert!(matches!(
+                cpu.step(&mut bus),
+                Err(CpuError::CycleBudgetExceeded { budget: 7, .. })
+            ));
+            assert_eq!(cpu.registers().sp, committed_sp);
+        }
+        assert_eq!(bus.accesses.len() - start, 14);
+        for &(actual, _, direction) in &bus.accesses[start..] {
+            assert_eq!((actual, direction), (address, Direction::Read));
+        }
+        cpu.set_ready(true);
+        let step = cpu.step(&mut bus).unwrap();
+        assert_eq!(step.before, before);
+        assert_eq!(step.cycles, cycles + 14);
+        assert_eq!(step.after.sp, committed_sp);
+    }
+}
+
+#[test]
+fn host_reset_uses_visible_sp_not_an_abandoned_stack_address() {
+    for (program, prefix, sp, writes) in [
+        (&[0x20, 0x34, 0x12][..], 4, 0x34, &[(0x01fd, 0x80)][..]),
+        (
+            &[0x20, 0x34, 0x12][..],
+            5,
+            0x34,
+            &[(0x01fd, 0x80), (0x01fc, 0x02)][..],
+        ),
+        (&[0x00, 0xea][..], 3, 0xfd, &[(0x01fd, 0x80)][..]),
+        (
+            &[0x00, 0xea][..],
+            4,
+            0xfd,
+            &[(0x01fd, 0x80), (0x01fc, 0x02)][..],
+        ),
+    ] {
+        let mut cpu = cpu();
+        let mut bus = Device::default();
+        bus.ram.load(0x8000, program).unwrap();
+        bus.ram.load(0xfffc, &[0x00, 0x90]).unwrap();
+        for _ in 0..prefix {
+            cpu.cycle(&mut bus).unwrap();
+        }
+        assert_eq!(cpu.registers().sp, sp);
+        let before = cpu.registers();
+        let start = bus.accesses.len();
+        let reset = cpu.reset(&mut bus).unwrap();
+        assert_eq!((reset.kind, reset.cycles), (StepKind::Reset, 7));
+        assert_eq!(reset.before, before);
+        assert_eq!(
+            (reset.after.pc, reset.after.sp),
+            (0x9000, sp.wrapping_sub(3))
+        );
+        let reset_accesses = &bus.accesses[start..];
+        assert_eq!(
+            reset_accesses[2..5]
+                .iter()
+                .map(|access| access.0)
+                .collect::<Vec<_>>(),
+            [
+                0x100 | u16::from(sp),
+                0x100 | u16::from(sp.wrapping_sub(1)),
+                0x100 | u16::from(sp.wrapping_sub(2))
+            ]
+        );
+        assert!(
+            reset_accesses
+                .iter()
+                .all(|access| access.2 == Direction::Read)
+        );
+        for &(address, value) in writes {
+            assert_eq!(bus.ram.as_slice()[usize::from(address)], value);
+            assert!(bus.accesses[..start].contains(&(address, value, Direction::Write)));
+        }
+    }
+}
+
+#[test]
 fn rmw_latches_data_and_writes_old_then_modified_value_on_separate_cycles() {
     let mut cpu = cpu();
     let mut bus = Device::default();
@@ -181,6 +325,7 @@ fn reset_is_seven_observable_cycles_with_stack_reads_and_a_separate_event() {
         .enumerate()
     {
         let cycle = cpu.cycle(&mut bus).unwrap();
+        assert_eq!(cpu.registers().sp, if index < 4 { 0 } else { 0xfd });
         assert_eq!(
             (cycle.bus.address, cycle.bus.direction),
             (address, Direction::Read)
