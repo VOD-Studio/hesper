@@ -65,10 +65,17 @@ impl Keyboard {
         !self.pending.is_empty() || self.strobe
     }
 
-    /// Reset keyboard state (clear queue and strobe).
-    pub fn reset(&mut self) {
-        self.pending.clear();
-        self.current = 0;
+    /// Resynchronize the strobe mirror after the PIA's own RESET pin has
+    /// been asserted (which clears its CA1 edge-detect latch and CRA).
+    ///
+    /// Real Apple I hardware ties the PIA's RESET pin to the same system
+    /// reset line as the 6502, but the external keyboard encoder is not
+    /// wired to that line at all — pressing RESET does not erase keys the
+    /// user has already typed ahead. This crate models "typed ahead" as a
+    /// host-side queue standing in for a live keyboard, so `resync` clears
+    /// only the in-flight CA1 strobe pulse (which the now-reset PIA can no
+    /// longer be mid-negotiation over) and leaves `pending` untouched.
+    pub fn resync(&mut self) {
         self.strobe = false;
     }
 }

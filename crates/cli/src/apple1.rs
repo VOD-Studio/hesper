@@ -36,8 +36,9 @@ pub fn run_apple1(
             .map_err(|e| format!("cannot load program: {e}"))?;
     }
 
-    // 3. Reset (triggers 7-cycle RESET sequence, then runs ROM from $FF00)
-    machine.reset();
+    // 3. Physical RESET (assert/hold/release through the real reset
+    // sequence, then runs ROM from $FF00)
+    machine.reset()?;
 
     // 4. Interactive loop
     let stdin = io::stdin();

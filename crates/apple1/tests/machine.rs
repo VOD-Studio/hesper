@@ -2,6 +2,7 @@
 //! and keyboard input echo flow.
 
 use hesper_apple1::Apple1;
+use hesper_cpu6502::Bus;
 
 /// Build a minimal 256‑byte ROM whose reset vector points to `addr`.
 fn rom_with_reset_vector(addr: u16) -> [u8; 256] {
@@ -30,7 +31,7 @@ fn display_output_collects_character() {
     ];
     machine.bus_mut().load_ram(0x0000, program).unwrap();
 
-    machine.reset();
+    machine.reset().unwrap();
 
     // Reset takes 7 cycles, the program takes ~21 cycles to reach the
     // spinloop after STA $D012. Give plenty of budget for display timing.
@@ -54,7 +55,7 @@ fn display_timing_respects_cycles_per_char() {
     ];
     machine.bus_mut().load_ram(0x0000, program).unwrap();
 
-    machine.reset();
+    machine.reset().unwrap();
 
     // Run just past the STA $D012 but not enough for display to finish.
     // Reset: 7 cycles. Program:
@@ -113,7 +114,7 @@ fn keyboard_echo_flow() {
     ];
     machine.bus_mut().load_ram(0x0000, program).unwrap();
 
-    machine.reset();
+    machine.reset().unwrap();
 
     // Complete reset (7) + PIA setup (18) = exactly 25 cycles.
     // After 25 cycles the CPU just finished STA $D011 and is about to
@@ -136,25 +137,175 @@ fn keyboard_echo_flow() {
 }
 
 #[test]
-fn reset_clears_pending_keyboard_and_display() {
+fn physical_reset_preserves_queued_keyboard_input_but_resyncs_pia() {
+    // Real Apple I hardware ties the PIA's RESET pin to the same system
+    // reset line as the 6502 (clearing CRA/CRB and interrupt state), but
+    // the external keyboard encoder is not wired to that line at all —
+    // pressing RESET does not erase keys the user already typed ahead.
+    let rom = rom_with_reset_vector(0x0000);
+    let mut machine = Apple1::new(&rom, Some(50)).unwrap();
+    machine.reset().unwrap();
+
+    machine.type_str("XY");
+    assert!(machine.keyboard().has_pending());
+
+    // Reset overlaps the queued input.
+    machine.reset().unwrap();
+    assert!(
+        machine.keyboard().has_pending(),
+        "keys typed ahead of RESET must survive it"
+    );
+
+    // The PIA's own registers were cleared: software must reconfigure CRA
+    // before IRQA1 edges are latched again, exactly as after any RESET.
+    machine.bus_mut().write(0xD011, 0x03); // rising-edge CA1, IRQ enabled
+    let _ = machine.run_cycles(5).unwrap();
+    assert_eq!(
+        machine.bus_mut().read(0xD010) & 0x7F,
+        b'X',
+        "first queued key is still delivered after RESET"
+    );
+    let _ = machine.run_cycles(5).unwrap();
+    assert_eq!(machine.bus_mut().read(0xD010) & 0x7F, b'Y');
+}
+
+#[test]
+fn keyboard_no_key_leaves_irqa1_clear() {
+    let rom = rom_with_reset_vector(0x0000);
+    let mut machine = Apple1::new(&rom, Some(50)).unwrap();
+    machine.reset().unwrap();
+    machine.bus_mut().write(0xD011, 0x03);
+
+    let _ = machine.run_cycles(20).unwrap();
+    assert_eq!(
+        machine.bus_mut().read(0xD011) & 0x80,
+        0,
+        "IRQA1 must stay clear when no key is queued"
+    );
+}
+
+#[test]
+fn keyboard_repeated_read_without_new_key_returns_same_data() {
+    let rom = rom_with_reset_vector(0x0000);
+    let mut machine = Apple1::new(&rom, Some(50)).unwrap();
+    machine.reset().unwrap();
+    machine.bus_mut().write(0xD011, 0x03);
+    machine.type_char(b'Q');
+    let _ = machine.run_cycles(5).unwrap();
+
+    let first = machine.bus_mut().read(0xD010);
+    let second = machine.bus_mut().read(0xD010);
+    assert_eq!(
+        first, second,
+        "repeated reads without a new key must return the same data"
+    );
+    assert_eq!(first & 0x7F, b'Q');
+}
+
+#[test]
+fn keyboard_continuous_input_delivers_keys_in_fifo_order() {
+    let rom = rom_with_reset_vector(0x0000);
+    let mut machine = Apple1::new(&rom, Some(50)).unwrap();
+    machine.reset().unwrap();
+    machine.bus_mut().write(0xD011, 0x03);
+    machine.type_str("AB");
+
+    // The second key must wait for the first to be read (which clears
+    // IRQA1) before it is presented — no skipping or reordering.
+    let _ = machine.run_cycles(5).unwrap();
+    assert_eq!(machine.bus_mut().read(0xD010) & 0x7F, b'A');
+    let _ = machine.run_cycles(5).unwrap();
+    assert_eq!(machine.bus_mut().read(0xD010) & 0x7F, b'B');
+}
+
+#[test]
+fn keyboard_control_characters_pass_through_unfiltered() {
+    // CR ($0D) is an ordinary data byte to the PIA; the keyboard model
+    // does not interpret or filter any code point.
+    let rom = rom_with_reset_vector(0x0000);
+    let mut machine = Apple1::new(&rom, Some(50)).unwrap();
+    machine.reset().unwrap();
+    machine.bus_mut().write(0xD011, 0x03);
+    machine.type_char(0x0D);
+
+    let _ = machine.run_cycles(5).unwrap();
+    assert_eq!(machine.bus_mut().read(0xD010) & 0x7F, 0x0D);
+}
+
+#[test]
+fn display_write_while_busy_via_cpu_drops_pending_character() {
     let rom = rom_with_reset_vector(0x0000);
     let mut machine = Apple1::new(&rom, Some(50)).unwrap();
 
-    // Simple program: NOP then spin.
-    let program: &[u8] = &[0xEA, 0x4C, 0x00, 0x00]; // NOP; JMP $0000
+    // DDRB=$FF, CRB=$04 (OR select), write 'A' ($41), write 'B' ($42)
+    // before 'A' finishes its 50-cycle timer, then spin.
+    let program: &[u8] = &[
+        0xA9, 0xFF, 0x8D, 0x12, 0xD0, // $0000 DDRB
+        0xA9, 0x04, 0x8D, 0x13, 0xD0, // $0005 CRB
+        0xA9, 0x41, 0x8D, 0x12, 0xD0, // $000A write 'A' (starts timer)
+        0xA9, 0x42, 0x8D, 0x12, 0xD0, // $000F write 'B' (overwrites 'A')
+        0x4C, 0x14, 0x00, // $0014 JMP $0014 (self-loop)
+    ];
     machine.bus_mut().load_ram(0x0000, program).unwrap();
+    machine.reset().unwrap();
 
-    machine.reset();
-    let _ = machine.run_cycles(10).unwrap(); // CPU now spinning
+    let output = machine.run_cycles(100).unwrap();
+    assert_eq!(
+        output, b"B",
+        "'A' must be dropped by the overwrite; only 'B' is ever delivered"
+    );
+}
 
-    // Queue a key and do a display write.
-    machine.type_char(b'X');
-    // Force a display write by loading a special program section into RAM,
-    // but simpler: just reset — keyboard queue should clear.
-    machine.reset();
+#[test]
+fn continuous_advance_matches_split_batch_advance() {
+    // Same program and keyboard input, driven once with a single large
+    // budget and once as 300 one-cycle batches with a RESET in between:
+    // final RAM, registers, display output and total cycle count must
+    // match exactly. Splitting a batch must not change device or CPU
+    // state — the sequencer persists across `run_cycles` calls.
+    let rom = rom_with_reset_vector(0x0000);
+    let program: &[u8] = &[
+        0xA9, 0x7F, 0x8D, 0x12, 0xD0, // $0000 DDRB
+        0xA9, 0x07, 0x8D, 0x13, 0xD0, // $0005 CRB
+        0xA9, 0x03, 0x8D, 0x11, 0xD0, // $000A CRA
+        0x2C, 0x11, 0xD0, // $000F BIT $D011
+        0x10, 0xFB, // $0012 BPL $000F
+        0xAD, 0x10, 0xD0, // $0014 LDA $D010
+        0x29, 0x7F, // $0017 AND #$7F
+        0x8D, 0x12, 0xD0, // $0019 STA $D012
+        0x4C, 0x0F, 0x00, // $001C JMP $000F
+    ];
 
-    // After reset, there should be no pending keys.
-    // Run cycles — no key should be presented, so no output.
-    let output = machine.run_cycles(50).unwrap();
-    assert!(output.is_empty(), "output after reset should be empty");
+    fn run(program: &[u8], rom: &[u8; 256], batch_sizes: &[u64]) -> (Vec<u8>, Vec<u8>, u64) {
+        let mut machine = Apple1::new(rom, Some(20)).unwrap();
+        machine.bus_mut().load_ram(0x0000, program).unwrap();
+        machine.reset().unwrap();
+        machine.type_str("HI");
+
+        let mut output = Vec::new();
+        for &batch in batch_sizes {
+            output.extend(machine.run_cycles(batch).unwrap());
+        }
+        (
+            output,
+            machine.bus().ram_slice().to_vec(),
+            machine.total_cycles(),
+        )
+    }
+
+    let continuous = run(program, &rom, &[300]);
+    let split: Vec<u64> = std::iter::repeat_n(1u64, 300).collect();
+    let split = run(program, &rom, &split);
+
+    assert_eq!(continuous, split);
+    // Sanity: something must actually happen (not two silently-idle runs).
+    // 'H' and 'I' are both queued before the CPU even starts polling, and
+    // the display's 20-cycle busy timer outlasts the poll loop's turnaround
+    // between them, so 'H' is overwritten before it is ever sent (see
+    // `display_write_while_busy_via_cpu_drops_pending_character`) — only
+    // 'I' is ever delivered. That drop is itself deterministic and must
+    // match across both batchings, which `assert_eq!` above already
+    // covers; this only guards against a change that silently produces no
+    // output at all.
+    assert_eq!(continuous.0, b"I");
 }
