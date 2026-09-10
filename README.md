@@ -2,7 +2,7 @@
 
 Hesper 是一个使用 Rust 编写的 NMOS 6502 模拟器项目。目前包含一个机器无关、逐周期执行的 CPU 核心，以及用于演示和验证核心行为的命令行程序。
 
-当前实现聚焦官方 NMOS 6502 指令、总线周期、中断、RDY/SO 和物理 RESET。Apple I、Apple II 与浏览器前端尚未开始。
+当前实现聚焦官方 NMOS 6502 指令、总线周期、中断、RDY/SO 和物理 RESET。Apple I 文本系统（Woz Monitor + PIA 键盘/显示）已完成。Apple II 与浏览器前端尚未开始。
 
 ## 特性
 
@@ -35,12 +35,20 @@ cargo run -p hesper -- --bus-trace --trace-limit 4
 cargo run -p hesper -- --help
 ```
 
+Apple I Woz Monitor 交互（需要合法获取 ROM 后）：
+
+```sh
+make wozmon                                 # 提取 Woz Monitor ROM 到 wozmon.bin
+cargo run -p hesper apple1 --rom wozmon.bin # 启动交互式 Apple I 终端
+```
+
 ## Workspace 结构
 
 ```text
 crates/
 ├── cpu6502/   # NMOS 6502 CPU、Bus/Ram、周期执行器及一致性测试
-└── cli/       # 内置演示、命令行入口与输出
+├── cli/       # 内置演示、Apple I 交互式命令行入口与输出
+└── apple1/    # Apple I 机器模型：MC6821 PIA、地址译码 Bus、显示/键盘设备
 
 tools/         # 固定外部数据准备及 Visual6502 重放工具
 docs/          # 架构、opcode、路线图、来源和验证记录

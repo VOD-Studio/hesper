@@ -1,6 +1,6 @@
 # CPU 本地验证记录
 
-当前：M2.1～M2.5 的本地目标范围已验收，包含物理 RESET 输入同步、中途数据通路和全部固定 CPU 对照。范围限定于官方 NMOS 指令及已记录的固定 revD 引脚窗口，不等同于所有芯片修订／电气窗口认证。下面保留各阶段历史结果，最后一节记录物理 RESET 实现与最终代码复验；远程 CI 未运行，Apple I 未启动。
+当前：M2.1～M2.5 的本地目标范围已验收，包含物理 RESET 输入同步、中途数据通路和全部固定 CPU 对照。范围限定于官方 NMOS 指令及已记录的固定 revD 引脚窗口，不等同于所有芯片修订／电气窗口认证。下面保留各阶段历史结果；CPU 相关的最后一节记录物理 RESET 实现与最终代码复验，Apple I 相关的最后一节记录 CLI 交互式回归。远程 CI 未运行。
 
 ## M1
 
@@ -273,3 +273,24 @@ Woz Monitor 256 字节 ROM 嵌入 `crates/apple1/tests/wozmon.rs` 测试夹具�
 Woz Monitor 的四种基本操作（内存检查、范围转储、写入、运行）均通过实际 CPU 执行验证。没有修改 ROM、拦截 I/O 或伪造设备响应。Apple I 未启动意味着尚未通过 CLI 实时联调，但离线回归已覆盖所有交互路径。
 
 M3 Apple I 文本系统本地目标范围已验收。未远程运行 CI，未提交 ROM，未推送。
+
+## Apple I CLI 交互式回归：Enter 键 CR/LF 处理
+
+2026-09-10，macOS aarch64；rustc 1.98.1、Cargo 1.98.1。
+
+M3.4 记录"Apple I 未启动意味着尚未通过 CLI 实时联调"——本轮首次用真实 PTY 会话跑 `cargo run -p hesper -- apple1 --rom <ROM>` 二进制，发现该缺口不是空白，而是一个实际 bug：`crates/cli/src/apple1.rs` 的交互循环把 `read_line` 得到的整行（含行尾）逐字符原样 `type_char` 进模拟键盘。真实终端处于 canonical 模式时，内核 tty 层的 `ICRNL` 会把用户按下的物理 Enter（CR，`0x0D`）在送达 `read_line` 之前转换成 LF（`0x0A`）；Woz Monitor ROM 只认 `0x0D` 结束一行，从不认 `0x0A`。结果：真实终端里敲 Enter 后 monitor 永远收不到结束信号，命令不会被执行——用非 PTY 管道直接灌入含真实 `\r` 字节的输入可以绕过，这正是此前所有验证（含 `crates/apple1/tests/wozmon.rs`）走的路径，因此从未暴露。
+
+修复：`run_apple1` 在逐字符输入前先剥掉 `read_line` 返回内容的行尾（`\n`、`\r\n` 或 `\r`），逐字符类型化后统一补发一次 `\r`，与既有输出侧的 CR→换行转换（`print_output`）对称。新增 `crates/cli/tests/apple1.rs`：三个测试直接 spawn 构建好的二进制、通过真实管道喂入裸 LF 结尾的命令行（等价于真实终端 ICRNL 转换后到达进程的字节），断言 stdout 里出现预期响应。修复前用 `git stash` 临时还原代码复验：3 个测试里 2 个必然失败（`apple1_cli_boots_to_prompt` 不受影响，因为启动阶段不依赖任何键盘输入）；还原修复后 3 个全部通过。
+
+另外用真实 `hub` PTY 会话手动复验：启动 `cargo run -p hesper -- apple1 --rom wozmon.bin`，敲 `FF00.FF0F` + Enter 正确输出 `FF00: D8 58 A0 7F 8C 12 D0 A9`；敲 `300: AB CD EF` + Enter 再敲 `300.302` + Enter 正确回读出 `0300: AB CD EF`。这是本项目第一次通过真实交互式终端会话（而非库 API 或非 TTY 管道）驱动 Apple I 通过。
+
+| 命令／范围 | 实际本地结果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 通过 |
+| `cargo check --workspace --all-targets` | 通过 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo test --workspace` | **115** 个通过（新增 3 个 `crates/cli/tests/apple1.rs`），0 失败／忽略 |
+| `cargo test --workspace --release` | **115** 个通过 |
+| 真实 PTY 会话：内存检查、写入+回读 | 通过（见上） |
+
+CPU 核心与 `hesper-apple1` 机器模型（`bus.rs`／`pia.rs`／`display.rs`／`keyboard.rs`／`machine.rs`）均未修改，改动仅限 `crates/cli/src/apple1.rs` 的宿主侧终端输入处理。CPU 完整外部体系（SingleStep 151 万、Klaus 三配置、246+419 pins）本轮未重跑，因为 CPU 未修改。未远程运行 CI，未提交、推送或发布。

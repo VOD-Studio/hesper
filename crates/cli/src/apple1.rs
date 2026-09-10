@@ -70,13 +70,21 @@ pub fn run_apple1(
             Ok(_) => {}
         }
 
-        // Feed each character to the machine, running cycles between
-        for ch in line.chars() {
+        // Canonical-mode terminals translate the user's physical Enter key
+        // (CR, 0x0D) to LF (0x0A) before `read_line` sees it (POSIX ICRNL).
+        // Strip whatever line ending arrived and replay it as a single CR —
+        // the byte the Woz Monitor ROM actually expects to terminate a line.
+        let content = line.strip_suffix('\n').unwrap_or(line.as_str());
+        let content = content.strip_suffix('\r').unwrap_or(content);
+        for ch in content.chars() {
             let byte = ch as u8;
             machine.type_char(byte);
             let output = machine.run_cycles(2000)?;
             print_output(&output, &mut stdout)?;
         }
+        machine.type_char(b'\r');
+        let output = machine.run_cycles(2000)?;
+        print_output(&output, &mut stdout)?;
 
         // After the line, run more cycles to allow processing to complete
         // (memory dumps, program execution, etc.)
