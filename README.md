@@ -1,47 +1,76 @@
 # Hesper
 
-用 Rust 编写的复古计算机模拟项目，以独立、可测试、可复用的 **MOS NMOS 6502 CPU 核心**为主体。按 CPU → Apple I → 原版 Apple II → WebAssembly 的顺序推进。
+Hesper 是一个使用 Rust 编写的 NMOS 6502 模拟器项目。目前包含一个机器无关、逐周期执行的 CPU 核心，以及用于演示和验证核心行为的命令行程序。
 
-当前已实现全部 151 个 NMOS 官方 opcode（56 条指令及其寻址方式）、二进制／十进制 ADC/SBC、BRK/RTI 与周期采样 IRQ/NMI。另有 64 KiB RAM Bus、复位、寄存器快照、周期统计、结构化错误和自包含 CLI 演示。具体寻址方式、周期、标志和测试映射见 [opcode 清单](docs/opcodes.md)，其余 opcode 均未实现。
+当前实现聚焦官方 NMOS 6502 指令、总线周期、中断、RDY/SO 和物理 RESET。Apple I、Apple II 与浏览器前端尚未开始。
 
-## 运行
+## 特性
 
-使用 stable Rust；仓库原有的 `hesper` 包名和二进制名保持不变。
+- 151 个官方 NMOS 6502 opcode
+- 单周期与半周期驱动接口
+- 可观察的地址、数据、读写方向与 SYNC 总线事件
+- IRQ、NMI、BRK、RDY、SO 和物理 RESET 时序
+- 二进制及 NMOS 十进制 ADC/SBC
+- 外部 `Bus` 接口；CPU 不持有内存或设备
+- 无第三方运行时依赖，禁止 `unsafe`
+- 有限步数、周期预算和有界诊断 trace
+
+兼容范围不包括非官方 opcode、65C02 或 NES 2A03。Visual6502 对照固定于 revD；通过这些场景不等同于所有 NMOS 修订的硬件认证。
+
+## 快速开始
+
+需要当前稳定版 Rust。仓库中的 `rust-toolchain.toml` 会安装最小工具链及 `rustfmt`、`clippy` 组件。
 
 ```sh
 cargo run -p hesper
+```
+
+内置程序从 RESET 向量启动，将数字 `0..9` 写入 `$0200..$0209`，然后由宿主在完成地址停止。
+
+查看指令或总线 trace：
+
+```sh
 cargo run -p hesper -- --trace
-cargo run -p hesper -- --bus-trace --trace-limit 200
-cargo run -p hesper -- --max-steps 54
+cargo run -p hesper -- --bus-trace --trace-limit 4
 cargo run -p hesper -- --help
 ```
 
-默认执行上限为 1000 条指令；`--max-steps 0` 可验证超限错误（退出码 1）。参数无效也会明确报错。
-
-演示从 `$FFFC/$FFFD` 的复位向量进入 `$8000`，用 6502 循环将 0～9 写入 `$0200`～`$0209`。宿主在 PC 到达 `$800F` 时停止，**不执行该地址的 NOP**，也不把 BRK 当作退出指令。原始汇编及机器码对照在 [examples/count.asm](examples/count.asm)，CLI 内嵌同一组手工编码字节，不需要外部 ROM 或汇编器。
-
-输出：
+## Workspace 结构
 
 ```text
-$0200..$0209: 0 1 2 3 4 5 6 7 8 9
-A=09 X=0A Y=00 SP=FF PC=800F P=27
-Completed: 54 instructions, 147 instruction cycles + 7 reset cycles = 154 total cycles
+crates/
+├── cpu6502/   # NMOS 6502 CPU、Bus/Ram、周期执行器及一致性测试
+└── cli/       # 内置演示、命令行入口与输出
+
+tools/         # 固定外部数据准备及 Visual6502 重放工具
+docs/          # 架构、opcode、路线图、来源和验证记录
 ```
 
-`--trace` 每条记录包含取到的指令地址和 opcode、执行前后 A/X/Y/SP/PC/P、单条周期和累计周期；累计值包含演示的宿主 RESET 7 周期。`--bus-trace` 显示每周期地址、数据、读写、SYNC、等待、下一阶段、引脚和锁存。默认只保留末尾 64 条记录，`--trace-limit 1..4096` 调整上限，两种 trace 可同时启用；结束或超限失败时输出保留记录。trace 使用执行时捕获的数据，不额外读取 Bus。
+根目录 Cargo 默认成员是 `crates/cli`。检查整个仓库时必须显式使用 `--workspace`。
 
-## 结构
+## 架构
+
+依赖方向为：
 
 ```text
-crates/cpu6502/   hesper-cpu6502：Cpu、Registers、Status、Bus、Ram、错误与测试
-crates/cli/       hesper：宿主加载、有限步数演示、trace、参数及集成测试
-examples/        原创演示汇编与机器码说明
-docs/            架构、opcode、资料、路线图与验证记录
+CLI 入口 → 演示宿主 → hesper-cpu6502 → 外部 Bus
 ```
 
-只有两个 crate，CPU 库无第三方运行依赖；外部测试工具使用开发依赖解析 JSON 和校验哈希。CPU 不持有整机或 Bus；调用者通过 `reset(&mut bus)`、`step(&mut bus)`、单周期 `cycle(&mut bus)` 或 `half_cycle(&mut bus)` 驱动它，用 `registers()` 获取寄存器、`debug_state()` 获取只读阶段／锁存快照。`step` 返回 `Result<Step, CpuError>`，其中 `StepKind` 区分实际指令与 IRQ/NMI/RESET 入口；一次调用不会同时执行入口和处理程序指令。`set_reset_line(true)` 断言物理 RESET，其完成事件包含接管、保持和等待周期，不等同于宿主 `reset` 的七周期入口。引脚和事件契约见 [架构文档](docs/architecture.md#物理-reset)。
+CPU 核心不负责程序加载、设备所有权、停止条件、日志或展示。宿主持有 `Bus`，并通过 `Cpu::half_cycle`、`Cpu::cycle` 或 `Cpu::step` 驱动执行。
 
-## 验证
+每个执行阶段对应一次真实总线访问。dummy read、RMW 的两次写入、RDY 重读、引脚采样和 RESET 同步都是可观察契约，不能仅按最终寄存器结果简化。
+
+公共 API 由 [`crates/cpu6502/src/lib.rs`](crates/cpu6502/src/lib.rs) 导出。详细行为边界见 [`docs/architecture.md`](docs/architecture.md)。
+
+## 开发与验证
+
+完整的日常本地检查：
+
+```sh
+make verify
+```
+
+它依次执行格式检查、全目标编译、debug/release 测试、Clippy、CLI smoke run 和 Git 空白检查。也可以单独运行：
 
 ```sh
 cargo fmt --all -- --check
@@ -49,26 +78,40 @@ cargo check --workspace --all-targets
 cargo test --workspace
 cargo test --workspace --release
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p hesper
-cargo run -p hesper -- --trace
 ```
 
-环境已安装 Wasm 目标时还可执行：
+普通 workspace 测试使用仓库内固定夹具，获取 Cargo 依赖后可离线运行。测试包括：
+
+- 本地算术与边界测试
+- 672 条固定 SingleStep 样例
+- 246 组 IRQ/NMI/RDY/SO revD 总线观察
+- 419 组物理 RESET revD 总线观察
+
+## 全量 CPU 一致性验证
+
+全量验证会联网准备固定版本的数据，并运行 151 万条 SingleStep 用例、Klaus 功能/十进制/中断程序、Visual6502 原模型重放和 CPU 引脚对照：
 
 ```sh
-cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
+make data
+make full
 ```
 
-本次实际工具链和检查结果见 [验证记录](docs/verification.md)。测试不联网、不使用外部 ROM；覆盖全部 151 个官方 opcode、105 个非官方字节的错误路径、算术穷举、中断及寻址边界，还有演示实际内存与 CLI 成功／失败路径。[快速 CI](.github/workflows/ci.yml) 运行上述基础验证、Wasm 编译与演示；[全量 CI](.github/workflows/full-cpu.yml) 手动触发数据准备和完整官方用例、Klaus、revD 对照。本轮未远程运行 CI。
+额外需要 Python 3.12+、Node、`make` 和本地 C 编译器。下载及构建结果只写入已忽略的 `.cache/cpu6502/`。
 
-## 限制与后续
+Visual6502 的 Node 重放与 CPU 验证是两项独立证明：
 
-“按指令执行并统计周期”不等于“逐周期总线精确模拟”。M2 已提供真正逐周期的总线接口，`step` 包装同一个引擎；全部 151 万条官方单步用例通过地址、数据和读写序列比较。宿主可按周期或半周期推进设备，并注入 IRQ/NMI/RDY/SO/RESET。
+```sh
+node tools/verify_visual6502.cjs
+cargo test -p hesper-cpu6502 --test pins --release
+```
 
-未实现非官方 opcode、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。IRQ/NMI 采样、分支轮询、向量抢占、RDY 等待及 SO 已通过 246 组固定 revD 引脚 trace。物理 RESET 的同步、保持／释放、中途写入与栈／中断／RDY 窗口，另通过全部 **419 组／26816 周期 CPU 对照**；这不是只重放原模型，也不代表所有 NMOS 修订或任意电气窗口认证。
+前者证明固定上游模型能重现仓库观察，后者证明 Hesper CPU 与这些观察一致。详细数据来源、哈希、许可证、成功条件和单用例重放命令见 [`crates/cpu6502/tests/data/README.md`](crates/cpu6502/tests/data/README.md)。最新本地执行结果见 [`docs/verification.md`](docs/verification.md) 的最后一节。
 
-M2 的本地目标范围已完成验收：**151 个官方 opcode／151 万条 SingleStepTests 用例**的寄存器、内存、周期数量及总线序列通过，Klaus 功能测试、Bruce Clark 全标志十进制穷举和明确采用 4 周期反馈延迟的 Klaus 中断程序通过。672 条原始格式样例及全部固定引脚观察保留为离线回归。数据准备、重放命令和许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)；实际环境及本地／远程状态见 [验证记录](docs/verification.md)。Apple I 为尚未启动的独立 M3，见 [路线图](docs/roadmap.md)。
+## 文档
 
-构造 CPU 时的零寄存器、全零 RAM 是可重复运行的模拟器约定，**不是硬件上电保证**；现有 `reset` 宿主七周期入口保留 D 和通用寄存器，不表示物理 RESET 的任意中途窗口都保持所有寄存器。程序应自行初始化栈并选择运算模式。具体兼容性假设见 [架构](docs/architecture.md)，后续计划见 [路线图](docs/roadmap.md)，行为依据见 [参考资料](docs/references.md)。
-
-仓库尚未选择许可证，待项目所有者确认；两个包暂设 `publish = false`。未添加 Apple ROM、商业软件或第三方模拟器实现。
+- [`docs/architecture.md`](docs/architecture.md)：架构、状态、总线和引脚时序契约
+- [`docs/opcodes.md`](docs/opcodes.md)：官方 opcode 支持与测试矩阵
+- [`docs/roadmap.md`](docs/roadmap.md)：已完成范围与后续里程碑
+- [`docs/references.md`](docs/references.md)：硬件资料及外部测试来源
+- [`docs/verification.md`](docs/verification.md)：按时间记录的本地验证证据
+- [`AGENTS.md`](AGENTS.md)：面向代码助手和贡献者的仓库规则
