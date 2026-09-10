@@ -8,7 +8,7 @@ pub const DEMO_START: u16 = 0x8000;
 pub const DEMO_DONE: u16 = 0x800f;
 pub const DEFAULT_MAX_STEPS: u64 = 1_000;
 
-/// Original hand-encoded program; readable listing in `examples/count.asm`.
+/// Original hand-encoded program; readable listing in `docs/count.asm`.
 pub const DEMO_PROGRAM: &[u8] = &[
     0xd8, // $8000 CLD
     0xa2, 0xff, // $8001 LDX #$FF

@@ -60,6 +60,7 @@ dependencies = [
 name = "hesper"
 version = "0.1.0"
 dependencies = [
+ "hesper-apple1",
  "hesper-cpu6502",
 ]
 
