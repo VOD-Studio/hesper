@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | [Klaus／Bruce Clark](https://github.com/Klaus2m5/6502_65C02_functional_tests/tree/7954e2dbb49c469ea286070bf46cdd71aeb29e4b) | 功能程序、全标志 decimal 全输入和显式 4 周期反馈延迟中断配置已运行；原文件许可分别为 GPL-3.0-or-later／public domain | 默认 0 延迟中断程序会触发上游注明的 NMOS BRK/NMI 陷阱；保留失败，不能声称全部配置通过 |
 | [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02/tree/2f6980a2d95757486c7bee24355c360e40e2a224/6502) | 全部 151 个官方 NMOS opcode／151 万用例已比较结果、周期数量和总线；MIT，哈希见测试数据清单 | 非官方 opcode 未实现，不使用 `nes6502` 或 `65c02` 数据，不宣称整个项目数据集通过 |
-| [Visual6502](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) | revD 模型生成的 246 组 IRQ/NMI/RDY/SO 观察已与 CPU 对照；另建立物理 RESET 参考基线和重放入口，尚未接入 CPU。模型按文件保留 MIT／CC BY-NC-SA 3.0 等声明，仅在缓存内使用 | 参考模型重现 RESET 观察不等于 Hesper 实现了 RESET；不推广为所有 NMOS 修订或全部电气相位窗口认证 |
+| [Visual6502](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) | revD 模型生成的 246 组 IRQ/NMI/RDY/SO 与 419 组物理 RESET 观察均已实际对照 CPU。模型按文件保留 MIT／CC BY-NC-SA 3.0 等声明，仅在缓存内使用 | 原模型重放与 CPU 对照分别执行；不推广为所有 NMOS 修订、全部指令×引脚组合或电气相位窗口认证 |
 
 SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`，文件 [`6502/v1/6c.json`](https://github.com/SingleStepTests/65x02/blob/2f6980a2d95757486c7bee24355c360e40e2a224/6502/v1/6c.json)。临时读取后检查名为 `6c ff 70`、初始 PC=`$2887` 的样例：指针 `$70FF` 的低字节为 `$9D`，高字节来自 `$7000` 的 `$98`，结果 PC=`$989D`，数据列出 5 次读取。这是**资料核对，不是 Hesper 执行外部测试的通过记录**；本地边界测试使用独立编写的地址和预期值。
 
@@ -59,3 +59,9 @@ RDY 的读等待／写继续和 SO 的低有效边沿以 MOS 原始硬件资料�
 CI 的手动触发与步骤语法依据 [GitHub Actions 官方说明](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)，工具安装参数依据 [setup-python](https://github.com/actions/setup-python) 与 [setup-node](https://github.com/actions/setup-node) 的官方 README。配置存在不等于远程任务通过。
 
 2026-09-10：物理 RESET 参考基线同时核对上述编程手册 §9.1～9.3，以及 [MOS 6500-10A Hardware Manual（1976），§1.4.1.2.11 RES](https://archive.org/details/mcs-6500-family-hardware-manual-1976-01/page/n47/mode/2up)。手册给出复位期间禁止写入、释放后向量启动、I 置位和软件初始化要求；启动表将向量前的部分地址列为 `?`／don't-care，没有规定所有断言相位的中间 PC/SP。数据中的同步延迟、过渡地址、暂态寄存器与 RDY／NMI 交叉结果是固定 revD 的数字观察，不提升为手册保证。内部时序／数据通路的具体机制仍需执行器建模验证，不能仅凭观察给硬件节点强加未经核对的解释。
+
+2026-09-10：普通栈序列的 SP 提交时机继续用同一固定 revD 原模型核对。实验沿用 `tools/verify_visual6502.cjs` 的哈希校验、真实引导和总线采集，只在每周期第二次 `halfStep`（下降沿）后额外调用 `readSP()`，不修改模型或以 Hesper 生成预期。观察覆盖 JSR、BRK、PHA/PHP、PLA/PLP、RTS/RTI、IRQ/NMI、已同步 RESET 的七周期入口，以及各个相关读取阶段的 RDY 等待。具体 SP 序列、实际比较范围和与物理 RESET 的区别见 [验证记录](verification.md)。JSR 借用 SP 和等待期间仍可提交 SP 属于这些 revD 观察，不由指令最终结果表推导，也不推广到所有寄存器／芯片修订。
+
+物理 RESET 实现仍以 MOS 原始手册 §9.1～9.3 为外部行为起点，细化同步及暂态来自上述固定模型的实际半周期观察。临时探针只读取未修改模型的 Reset0/C1x5Reset、时序、DL、ALU 及数据通路控制，不复制模拟器／网表进 CPU。独立改变 PC、A、栈数据、操作数和向量后，再将 37 组／2368 周期观察与实际 CPU 比较；预期不由 Hesper 生成。
+
+关键数据通路观察：被抑制的压返回高字节阶段，PCL/DB 与 DL/ADH 重叠，外部高地址为 `DL & PCL`，存储的 PCH 则为 PCL；短脉冲释放可分别暴露两者。例如 PCL=`$47`、DL=`$5C` 时，SYNC 地址为 `$44FC`，随后 dummy read 为 `$47FC`。普通阶段留下的 ALU 输入、进位和反馈决定其他暂态，不能用默认 RAM 的 `$EA` 或指令族乘法公式代替这些传送。资料中的 don't-care 地址没有从固定预期中删除。

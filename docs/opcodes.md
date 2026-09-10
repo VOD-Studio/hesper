@@ -1,6 +1,6 @@
 # NMOS opcode 支持清单
 
-**全部 151 个官方 opcode 已实现并通过自包含测试**（56 条指令），同时通过 M2 的 151 万条官方单步用例结果／周期／总线验证。IRQ/NMI 与引脚采样另有测试；非官方指令和物理 RESET 持续输入仍未实现。
+**全部 151 个官方 opcode 已实现并通过自包含测试**（56 条指令），同时通过 M2 的 151 万条官方单步用例结果／周期／总线验证。IRQ/NMI/RDY/SO 和物理 RESET 另有固定模型引脚对照；非官方指令仍未实现。
 
 下表逐项对应独立手写的 [测试规格](../crates/cpu6502/tests/data/opcodes.txt)，不从 CPU 解码器产生预期值。[official.rs](../crates/cpu6502/tests/official.rs) 中 `every_documented_opcode_has_independent_result_length_flags_and_cycle_expectations` 对每一行断言结果、PC、标志、周期和写入；M0 的 [回归测试](../crates/cpu6502/tests/conformance.rs) 全部保留。
 
@@ -174,4 +174,4 @@ ADC/SBC 的所有模式已有上述矩阵测试；[arithmetic.rs](../crates/cpu6
 M2.3：上表全部 151 个官方 opcode 还通过固定 SingleStepTests NMOS `6502/v1` 每文件 10000 条、共 1510000 条用例的寄存器／内存、周期数量和完整总线序列比较。版本与逐文件哈希见 [数据说明](../crates/cpu6502/tests/data/README.md)。这不包含非官方 opcode 或外部引脚相位；RESET 的七次访问另由 `cycles.rs` 与 `conformance.rs` 验证。
 
 
-M2.4：`pins.rs` 的 246 组固定 revD 场景核对 IRQ/NMI 的采样、分支轮询、向量抢占、RDY 及 SO；SO 扫描覆盖六种写 V 指令。`cycles.rs` 另验证等待、读副作用、栈／地址阶段、中途复位请求及有界恢复。物理 RESET 的独立参考基线另存 `visual6502/reset.json`，已提供模型重放和离线完整性检查，**没有 CPU RESET 引脚对照通过记录**。物理 RESET 实现和全部目标交叉窗口的 CPU 验收仍未完成。
+M2.4：`pins.rs` 的 246 组固定 revD 场景核对 IRQ/NMI 的采样、分支轮询、向量抢占、RDY 及 SO；SO 扫描覆盖六种写 V 指令。另对 `visual6502/reset.json` 的全部 **419 组／26816 周期**实际运行 CPU，比较每次地址／数据／读写／SYNC 和寄存器见证写入，不再只是夹具完整性检查。回归还覆盖物理 RESET 的有限预算恢复、向量高字节完成事件，以及改变 PC／RAM 后短脉冲中存储 PC 与外部地址锁存不同的情况。`cycles.rs` 保留分周期 SP 提交、等待地址和中途宿主 RESET 契约；物理与宿主 RESET 不混用。M2 的本地目标范围已验收，精确范围及修订限制见 [架构](architecture.md#物理-reset) 和 [验证记录](verification.md)。

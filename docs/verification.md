@@ -1,6 +1,6 @@
 # CPU 本地验证记录
 
-当前：M2.1～M2.3 已验收；M2.4 的 IRQ/NMI/RDY/SO 与 M2.5 调试／CI 工程已落地，物理 RESET 已建立独立参考基线，但尚未接入 CPU。下面保留各阶段历史结果，最后一节是本轮基线交付及当前代码的复验。
+当前：M2.1～M2.5 的本地目标范围已验收，包含物理 RESET 输入同步、中途数据通路和全部固定 CPU 对照。范围限定于官方 NMOS 指令及已记录的固定 revD 引脚窗口，不等同于所有芯片修订／电气窗口认证。下面保留各阶段历史结果，最后一节记录物理 RESET 实现与最终代码复验；远程 CI 未运行，Apple I 未启动。
 
 ## M1
 
@@ -126,7 +126,7 @@ CPU 普通依赖树仅包含自身，没有第三方运行依赖。当前物理 
 
 2026-09-10，macOS aarch64；Rust/Cargo 1.98.1、Python 3.14.7、**Node v24.11.1**。本节记录实际本地环境；工作流配置的 Node 26 本轮未远程验证。
 
-按用户明确选择，本轮只落地参考基线及重放入口，**没有修改 CPU 执行器，没有新增物理 RESET API**。固定 revD 新增 **419 组／26816 周期**观察，原有 246 组／5904 周期夹具的字节及 SHA-256 原样保留。新夹具、覆盖表、寄存器见证写入和已发现的同步／PC／SP／RDY／NMI 差异见 [数据说明](../crates/cpu6502/tests/data/README.md#reset-参考基线尚未接入-cpu)。
+按用户明确选择，本轮只落地参考基线及重放入口，**没有修改 CPU 执行器，没有新增物理 RESET API**。固定 revD 新增 **419 组／26816 周期**观察，原有 246 组／5904 周期夹具的字节及 SHA-256 原样保留。新夹具、覆盖表、寄存器见证写入和已发现的同步／PC／SP／RDY／NMI 差异见 [数据说明](../crates/cpu6502/tests/data/README.md#物理-reset-对照)。
 
 | 命令／范围 | 实际本地结果 |
 | --- | --- |
@@ -149,3 +149,86 @@ CPU 普通依赖树仅包含自身，没有第三方运行依赖。当前物理 
 重放工具错误路径实际执行：未知套件、零匹配／跨套件场景、重复参数、未指定单套件的记录、局部记录均退出 1。隔离临时目录内移除／损坏夹具，分别验证缺文件和哈希错误退出 1；故意改动首个总线地址并同步临时哈希后，准确报告 `reset-registers-stack-wrap cycle 0`、预期／实际元组及重放命令。没有改动固定预期来让检查通过；临时错误检查目录已自动清除。
 
 本轮完成的是**有界的独立参考基线**，不等于 CPU 物理 RESET 对照通过。M2.4、M2／M2.5 最终验收仍未完成；下一步须实现输入同步、内部锁存和提交时机，再对照全部 RESET 场景。未远程运行 CI，未提交、推送或发布；未启动 Apple I，也未选择项目许可证。
+
+## M2.4：栈地址锁存与 SP 提交
+
+2026-09-10，macOS aarch64；rustc 1.98.1（48a229cea）、Cargo 1.98.1、Python 3.14.7、Node v24.11.1。本轮实现物理 RESET 所需的一个执行器前置改造：所有栈访问使用独立地址游标，SP 按已观察的提交阶段更新；没有新增物理 RESET API。
+
+### 独立观察与实际 CPU 对照
+
+沿用固定 revD 驱动及源文件哈希，只在宿主实验中额外读取每周期下降沿后的 SP；不修改原模型，不以 Hesper 输出生成预期。初始 SP=`$FD` 时，代表性的逐周期 SP 如下（包含 opcode fetch）：
+
+| 程序 | 固定 revD 观察到的 SP 序列 |
+| --- | --- |
+| `JSR $1234` | FD、34、34、34、34、FB |
+| `BRK` | FD、FD、FD、FD、FA、FA、FA |
+| `PHA` | FD、FD、FC |
+| `PLA` | FD、FD、FE、FE |
+| `RTS` | FD、FD、FD、FF、FF、FF |
+| `RTI` | FD、FD、FD、FD、00、00 |
+
+RDY 相位扫描确认：JSR 的目标低字节等待不会提前写入 SP；最终高字节等待则会提交最终 SP。PLA/PLP 的栈 dummy read、RTS/RTI 的返回低字节读取、入口的第三次栈读取，均可在地址仍等待时更新 SP。因此不能用可见 SP 重新生成等待地址，也不能在每次等待时再次增减它。
+
+实际运行临时 CPU runner，经公共 `half_cycle` 驱动并逐周期比较地址／数据／方向／SYNC 和 SP，**34 组／268 周期全部一致**：28 组普通指令／IRQ/NMI／RDY 场景，另 6 组是从已同步 RESET 观察截取的宿主入口片段。后者明确使用 `begin_reset`，只验证七周期入口及其 RDY 延长，**不验证物理 RESET 的断言／同步／保持／释放**。JSR 运行输出同时显示可见 SP=`$34` 而内部栈游标依次为 `$01FD/$01FC/$01FB`。一次性 runner 源码已移除；SP 提交规则进入常规执行器和永久回归。
+
+新增回归先在旧实现运行，JSR 第 2 个周期实际 SP=`$FD`、预期 `$34`，测试失败；修正后通过。新增 3 个测试保护分周期 SP、两次七周期预算耗尽后的 RDY 重读与恢复，以及中途宿主 RESET 使用当前可见 SP、丢弃旧地址游标但保留已完成写入；已有 RESET 测试补充 SP 回绕及提交周期断言。
+
+### 该阶段代码完整复验
+
+| 命令／范围 | 实际本地结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`、`cargo check --workspace --all-targets` | 通过 |
+| `cargo test --workspace`、`cargo test --workspace --release` | 各 87 个通过，0 失败／忽略 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown` | 通过，仅 CPU 库目标编译 |
+| `cargo run -p hesper`、`-- --trace`、`-- --bus-trace --trace-limit 4` | 三种实际运行通过；54 条指令、147+7=154 周期，结果及有界 trace 保持 |
+| `python3 tools/prepare_singlestep.py --full`、`python3 tools/prepare_klaus.py` | 固定源文件、数量及哈希通过 |
+| `cargo run -p hesper-cpu6502 --example singlestep --release -- --full` | 151 个官方 opcode／1510000 条；寄存器／内存、周期数量、总线序列全部通过 |
+| `cargo run -p hesper-cpu6502 --example functional --release` | `$3469`，30646176 条指令／96241364 周期 |
+| `cargo run -p hesper-cpu6502 --example functional --release -- --decimal` | 全标志及非法 BCD，通过于 `$024B`；17609915 条指令／53953825 周期 |
+| `cargo run -p hesper-cpu6502 --example interrupt --release -- --feedback-delay 4` | `$06F5`，1049 step／3013 周期；顺序计数 `[1,3,2]` |
+| `python3 tools/prepare_visual6502.py`、`node tools/verify_visual6502.cjs` | 固定 7 个源文件哈希通过；原模型精确重现 246 组 pins 和 419 组 reset；本次合计 215.11 秒 |
+
+CPU 已实现引脚的 246 组对照与 RESET 的 419 组参考重现仍是不同范围：前者在 Cargo 回归中执行 CPU，后者在 Node 中执行原模型，Cargo 仅检查 RESET 夹具完整性。默认零延迟 Klaus 中断本轮未重跑，不改变前节失败结论。M2.4／M2 整体验收仍未完成，下一步是实际 RESET 输入同步及中途地址／数据通路；未启动 Apple I。未远程运行 CI，未提交、推送或发布。
+
+## 物理 RESET 实现与 M2 本地整体验收
+
+2026-09-10，macOS aarch64；`rustc 1.98.1 (48a229cea 2026-09-01)`、`cargo 1.98.1 (797e8a9bc 2026-08-05)`、Python 3.14.7、Node v24.11.1。下列结果来自本地实际运行；尚未验证 MSRV，未远程运行工作流配置的 Node 26。
+
+### 执行器与实际 CPU 对照
+
+- 新增 `set_reset_line`，分别保留原始输入、下降相位采样、时序链停止和进行中锁存。断言不会在 setter 中直接调用宿主复位；同步前已经开始的周期与传送仍可发生。
+- 普通执行留下真实数据／ALU 输入及反馈状态，RESET 保持阶段继续表达选中的旧指令传送和 RMW 尾部。内部 PC、外部地址锁存、栈地址及 SP 提交分开，不按默认 `$EA` 数据或固定地址拼接轨迹。
+- 同步释放、短脉冲、再次断言、RDY 等待及 NMI 保留窗口由同一周期引擎处理。向量高字节读完成时只报告一次 `StepKind::Reset`，周期包含接管／保持／等待；已有宿主七周期入口与有限预算恢复契约保留。
+- 两个夹具的字节和哈希均未改变。`pins.rs` 对全部 **246 组／5904 周期**及 **419 组／26816 周期**实际驱动 CPU，核对地址、数据、读写、SYNC 和处理程序寄存器见证写入。RESET 不再只是完整性检查。
+- CPU 比较先运行同一真实引导程序，再恢复引导后的完整 RAM 快照。只注入 `Registers` 会丢失数据通路残留；只执行引导却不恢复 RAM，则与模型引导后施加 RAM 覆盖的顺序不同。两者均不能作为相同起始状态。
+
+RESET 执行器接入前，固定 `reset-registers-stack-wrap` 在 c2 的 SYNC 比较即失败；实现后全部固定观察通过。另在未修改且哈希核对的 revD 上独立改变 PC、A、RAM 和向量，得到 **37 组／2368 周期**，与实际 CPU 全部一致。这是额外交叉验证，不冒充新增固定夹具；一次性 CPU 运行器源文件已移除。
+
+保留的边界回归包括：
+
+- 物理 RESET 保持超过默认七周期预算后，原状态接续，并按固定 NOP 释放延迟完成入口。
+- 仅向量高字节读报告完成，下一周期才取处理程序 opcode；未跨采样点的脉冲不触发。
+- 改变返回 PCL／栈数据后的短脉冲：PCL=`$47`、DL=`$5C`，被抑制压栈后 SYNC 读取 `$44FC`，下一 dummy read 读取 `$47FC`；栈数据没有被写坏。
+- RESET 强制内部 IR 时，外部总线仍保留实际 `$EA`，诊断事件类型为 `Reset`，不能伪造 `Instruction { opcode: 0 }`。此回归先在旧诊断路径实际失败，修正后随最终 debug/release 测试通过。
+
+### 最终代码完整复验
+
+| 命令／范围 | 实际本地结果 |
+| --- | --- |
+| `cargo fmt --all -- --check`、`cargo check --workspace --all-targets` | 通过 |
+| `cargo test --workspace` | 91 个测试通过，含两个完整固定 CPU 引脚套件 |
+| `cargo test --workspace --release` | 同样 91 个测试通过 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown` | 已安装目标，CPU 库目标编译通过；不是浏览器验证 |
+| `cargo run -p hesper`、`cargo run -p hesper -- --trace`、`cargo run -p hesper -- --bus-trace --trace-limit 4` | 三种实际 CLI 运行通过；54 条指令，147 指令周期＋7 宿主 RESET 周期＝154 总周期；bus trace 仅保留最后 4 周期，并显示 RESET 输入／锁存 |
+| `python3 tools/prepare_singlestep.py --full`、`python3 tools/prepare_klaus.py` | 本轮已核对固定来源、文件数量及哈希 |
+| `cargo run -p hesper-cpu6502 --example singlestep --release -- --full` | 151 个官方 opcode／1510000 条；寄存器／内存、周期数量、总线序列全部通过 |
+| `cargo run -p hesper-cpu6502 --example functional --release` | `$3469`，30646176 条指令／96241364 周期 |
+| `cargo run -p hesper-cpu6502 --example functional --release -- --decimal` | 全 A/N/V/Z/C 及非法 BCD，通过于 `$024B`；17609915 条指令／53953825 周期 |
+| `cargo run -p hesper-cpu6502 --example interrupt --release -- --feedback-delay 4` | `$06F5`，1049 step／3013 周期；NMI/IRQ/BRK 顺序计数 `[1,3,2]` |
+| `python3 tools/prepare_visual6502.py`、`node tools/verify_visual6502.cjs` | 固定 7 个源文件哈希通过；原模型分别精确重现 246 组 pins 与 419 组 reset；本次合计 223.29 秒 |
+
+最后一行只证明原模型重放，实际 CPU 通过由 Cargo 引脚套件证明；两项都已执行。最终诊断事件修正后重新运行了格式／编译、debug/release、Clippy、Wasm 目标、三种 CLI 和上述全部 CPU 外部程序。
+
+M2.1～M2.5 的上述本地目标范围已完成，路线图据此勾选；不宣称穷举全部官方指令×引脚相位组合或所有 NMOS 修订。默认 0 延迟 Klaus 中断本轮未重跑，也未将已记录的上游 NMOS 陷阱改判为通过。Apple I／浏览器未启动；未远程运行 CI，未提交、推送或发布，未选择项目许可证。
