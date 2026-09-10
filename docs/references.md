@@ -40,6 +40,7 @@ SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`
   Hex dump verified against <https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex>
 - 内存映射（4 KiB RAM 于 `$0000`、PIA 于 `$D010‑D013`、256 B monitor ROM 于 `$FF00‑$FFFF`、跳线可重新分配 4 KiB 分区）、未映射地址浮空、PIA RESET 引脚与 6502 RES 共用同一系统复位信号、RESET 不清屏（Apple I 没有独立清屏硬件输入）、14.31818 MHz 晶振四分频 NTSC 色副载频再分频出 1.023 MHz CPU 时钟：均来自 2026‑09‑10 网络检索的二级/技术爱好者资料（applefritter.com、apple2history.org、righto.com「Inside Apple‑1's shift register memory」、68kmla.org 等），未逐页核对手册或原理图扫描件原文。40×24 字符、CR 或写满行触发的硬件滚动、影子显示光标闪烁同样来自这批二级资料。这些结论已用于 `crates/apple1/src/lib.rs` 与 `Display` 的固定配置，但**不构成逐页原始手册/原理图核对**；后续如有条件应直接核对 archive.org 扫描件对应页面并在此处补充精确页码引用。
 - Woz Monitor ROM 的版权状态存在公开争议（多个爱好者站点将其视为事实上可自由转载，但 Apple 从未正式以开放许可证发布）；本项目采用保守立场，不下载、不内嵌、不提交该镜像，只记录一个用于完整性校验的 SHA-256 指纹（`e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`，对应上面 alangarf/apple-one 转录）。资源获取与校验方式见 [`crates/apple1/tests/data/README.md`](../crates/apple1/tests/data/README.md)。
+- MC6821 状态标志与中断使能位独立：CA1/CB1 满足有效沿时 CRA/CRB 第 7 位无条件置位，第 0 位（中断使能）只决定是否同时拉低外部 IRQ 输出脚，不影响标志本身——软件可在中断禁用状态下轮询标志，Woz Monitor 自身的 `BIT $D011`/`BPL` 键盘轮询正是如此。2026‑09‑10 网络检索确认该行为（数据表转录性技术资料），修复了 `Pia6821::set_ca1`/`set_cb1` 此前把标志置位错误地绑定在使能位上的 bug（细节与回归测试见 `crates/apple1/src/pia.rs`）。
 
 ## Rust 工程资料
 

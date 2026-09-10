@@ -294,3 +294,49 @@ M3.4 记录"Apple I 未启动意味着尚未通过 CLI 实时联调"——本轮
 | 真实 PTY 会话：内存检查、写入+回读 | 通过（见上） |
 
 CPU 核心与 `hesper-apple1` 机器模型（`bus.rs`／`pia.rs`／`display.rs`／`keyboard.rs`／`machine.rs`）均未修改，改动仅限 `crates/cli/src/apple1.rs` 的宿主侧终端输入处理。CPU 完整外部体系（SingleStep 151 万、Klaus 三配置、246+419 pins）本轮未重跑，因为 CPU 未修改。未远程运行 CI，未提交、推送或发布。
+
+## M3 继续实现：ROM 资源合规、屏幕模型、物理 RESET 与 CLI raw-mode 生命周期
+
+2026-09-10，macOS aarch64；rustc 1.98.1、Cargo 1.98.1。
+
+按 [roadmap.md](roadmap.md#m3apple-i-文本系统部分实现尚未整体验收) 的接续顺序（M3.1 → M3.2 → M3.3 → M3.4）依次关闭如下项：
+
+**M3.1**：移除 `crates/apple1/tests/wozmon.rs`／`crates/cli/tests/apple1.rs` 内嵌的 256 字节 Woz Monitor ROM；改为从调用者提供的 `HESPER_APPLE1_ROM` 路径加载并核对 SHA-256，测试标记 `#[ignore]`。退役 `tools/extract_wozmon.py`／`make wozmon`，新增 `tools/verify_wozmon_hash.py`／`make wozmon-verify`／`make wozmon-tests`。补齐 `crates/apple1/src/lib.rs` 的固定配置文档与 `crates/apple1/tests/data/README.md` 的资源／向量／许可说明。
+
+**M3.2**：`Display` 新增 40×24 屏幕网格与光标（`screen()`/`cursor()`），CR／写满 40 列触发滚动；新增 6 个 `display.rs` 单元测试。`crates/apple1/tests/machine.rs` 新增 5 个键盘握手测试、1 个 CPU 驱动的显示忙时覆写测试、1 个批次一致性测试（`run_cycles(300)` 与 300×`run_cycles(1)` 结果逐字节相同）。过程中发现并修正 `Pia6821::set_ca1`/`set_cb1` 的真实 bug（状态标志错误绑定在中断使能位上，回归测试见 `pia.rs`）。
+
+**M3.3**：`Apple1::reset` 改为通过 `set_reset_line` 断言／保持／释放并复用 `run_cycles` 的每周期设备推进（`tick_one_cycle`），而不是直接调用宿主 `Cpu::begin_reset()`；签名改为 `Result<(), CpuError>`，所有调用点已更新。`Keyboard::reset` 改名为 `resync`，不再清空排队输入（真实键盘编码器不接到系统复位线）。`crates/cli/src/apple1.rs` 按 `std::io::IsTerminal` 分流：真实终端进入 `crossterm` raw mode 逐键事件循环（Ctrl-C／Ctrl-D 退出、Ctrl-R 物理 RESET、Ctrl-L 仅清宿主终端、Ctrl-P 暂停／继续、Ctrl-N 重建机器）；非终端沿用原逐行读取路径。新增 `signal-hook` 处理 SIGTERM/SIGINT/SIGHUP/SIGQUIT，确保外部信号也能触发 `RawMode` 的终端恢复。
+
+**真实 PTY 验证**（Python `pty.fork`，非 `hub` 管道，也非本文档此前的 `hub` PTY 会话）：
+
+| 场景 | 结果 |
+| --- | --- |
+| 启动后 `termios.tcgetattr` 读取的 pty 主端属性 | `ICANON=False, ECHO=False`（raw mode 生效） |
+| Ctrl-R | 输出 `[RESET]`，重新显示 `\` 提示符 |
+| Ctrl-P 两次 | 依次输出 `[PAUSED]`、`[RESUMED]` |
+| Ctrl-L | 输出真实 ANSI 清屏序列 `\x1b[2J\x1b[1;1H` |
+| 输入小写 `ff00.ff0f` + Enter（不经管道，逐键发送） | 被转大写后由 Woz Monitor 执行，正确输出 `FF00: D8 58 A0 7F 8C 12 D0 A9` |
+| Ctrl-N | 输出 `[NEW MACHINE]`，重新显示 `\` 提示符 |
+| Ctrl-C | 输出 `[stopped]`，进程退出码 0，pty termios 恢复为 `ICANON=True, ECHO=True` |
+| 外部 `os.kill(pid, SIGTERM)`（另一独立脚本） | 输出 `[stopped by signal]`，退出码 0，termios 同样恢复为 `ICANON=True, ECHO=True`——修复前用同一脚本复现：SIGTERM 会直接杀死进程，termios 停留在 raw mode |
+| `--max-cycles 60000`（交互模式） | 输出 `[max cycles reached: 60013]`，退出码 0 |
+
+**ROM 复验**：本地缓存一份合法获取的 Woz Monitor ROM 于已忽略的 `.cache/apple1/wozmon.bin`（不提交），设置 `HESPER_APPLE1_ROM` 后：
+
+| 命令 | 结果 |
+| --- | --- |
+| `python3 tools/verify_wozmon_hash.py .cache/apple1/wozmon.bin` | `OK` |
+| `cargo test -p hesper-apple1 --test wozmon -- --ignored` | 4 个通过 |
+| `cargo test -p hesper --test apple1 -- --ignored` | 3 个通过 |
+| 未设置 `HESPER_APPLE1_ROM` 时运行上两条 | 明确 panic 失败（4／3 个），不是静默跳过 |
+
+| 命令／范围 | 实际本地结果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 通过 |
+| `cargo check --workspace --all-targets` | 通过 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo test --workspace` | **121** 个通过，**7** 个 `#[ignore]`（4 个 apple1 wozmon + 3 个 cli apple1，均需 `HESPER_APPLE1_ROM`），0 失败 |
+| `cargo test --workspace --release` | 同上，**121** 个通过 |
+| `cargo run -p hesper` | 演示正常；54 条指令／154 周期 |
+
+CPU 核心（`hesper-cpu6502`）本轮未修改，因此未重跑 SingleStep 151 万／Klaus 三配置／246+419 pins 完整外部一致性范围。仍未关闭的项（详见 [roadmap.md M3.4](roadmap.md#m3apple-i-文本系统部分实现尚未整体验收)）：Apple I 配置依据来自二级技术资料而非逐页手册核对；RDY 在当前 Apple I 基础配置没有实际驱动方；`--trace`／`--bus-trace` 对 apple1 CLI 仍未实现；显示滚动只在单元测试层面证明，未额外用真实 PTY 会话录制填满 24 行的转录。**M3 整体验收因此仍未勾选**。未远程运行 CI，未推送或发布。
