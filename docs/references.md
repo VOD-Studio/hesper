@@ -30,10 +30,16 @@ SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`
 
 - Apple-1 Operation Manual (1976). Original schematics, memory map, Woz Monitor listing.
   <https://archive.org/details/Apple-1_Operation_Manual_1976_Apple_a>
+- Apple-1 Operation Manual (1976), Section I "GETTING THE SYSTEM RUNNING" → "TEST PROGRAM"（原厂整机测试程序，字节 `A9 00 AA 20 EF FF E8 8A 4C 02 03`，见 [`apple1/05-manual-test-program.md`](apple1/05-manual-test-program.md)）。手册 OCR 全文有大量十六进制数字识别错误，逐字节核对时交叉比对了两份独立转录：
+  <https://www.applefritter.com/content/programming-woz-monitor>（Mike Willegal 指出该程序位于手册第 2 页）、
+  <https://obsolescence.wixsite.com/obsolescence/kim-uno-apple-1>（KIM Uno 项目文档给出同一字节序列）。
+  已在 Hesper 上实测运行，输出的连续字节流与手册原文描述一致。
 - MC6821 Peripheral Interface Adapter datasheet. PIA register model.
 - Woz Monitor hex dump: 256 bytes at `$FF00‑$FFFF`, RESET vector at `$FFFC/D` points to `$FF00`.
   Reproducible assembly source at <https://github.com/jefftranter/6502/tree/master/asm/wozmon>
   Hex dump verified against <https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex>
+- 内存映射（4 KiB RAM 于 `$0000`、PIA 于 `$D010‑D013`、256 B monitor ROM 于 `$FF00‑$FFFF`、跳线可重新分配 4 KiB 分区）、未映射地址浮空、PIA RESET 引脚与 6502 RES 共用同一系统复位信号、RESET 不清屏（Apple I 没有独立清屏硬件输入）、14.31818 MHz 晶振四分频 NTSC 色副载频再分频出 1.023 MHz CPU 时钟：均来自 2026‑09‑10 网络检索的二级/技术爱好者资料（applefritter.com、apple2history.org、righto.com「Inside Apple‑1's shift register memory」、68kmla.org 等），未逐页核对手册或原理图扫描件原文。40×24 字符、CR 或写满行触发的硬件滚动、影子显示光标闪烁同样来自这批二级资料。这些结论已用于 `crates/apple1/src/lib.rs` 与 `Display` 的固定配置，但**不构成逐页原始手册/原理图核对**；后续如有条件应直接核对 archive.org 扫描件对应页面并在此处补充精确页码引用。
+- Woz Monitor ROM 的版权状态存在公开争议（多个爱好者站点将其视为事实上可自由转载，但 Apple 从未正式以开放许可证发布）；本项目采用保守立场，不下载、不内嵌、不提交该镜像，只记录一个用于完整性校验的 SHA-256 指纹（`e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`，对应上面 alangarf/apple-one 转录）。资源获取与校验方式见 [`crates/apple1/tests/data/README.md`](../crates/apple1/tests/data/README.md)。
 
 ## Rust 工程资料
 

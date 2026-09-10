@@ -9,5 +9,8 @@ description = "Hesper's bounded NMOS 6502 command-line demo"
 hesper-apple1 = { path = "../apple1" }
 hesper-cpu6502 = { path = "../cpu6502" }
 
+[dev-dependencies]
+sha2 = "0.10"
+
 [lints]
 workspace = true

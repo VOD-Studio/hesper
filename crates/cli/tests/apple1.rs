@@ -9,58 +9,26 @@
 //! line discipline hands the buffered line to `read_line`. Piping a
 //! bare-LF-terminated line reproduces exactly what the CLI sees from a real
 //! terminal session, without needing a PTY in the test harness.
+//!
+//! They require a real Woz Monitor ROM image supplied externally (see
+//! `crates/cli/tests/support/wozmon_rom.rs` and
+//! `crates/apple1/tests/data/README.md`) and are `#[ignore]`d so the
+//! default `cargo test --workspace` stays self-contained and offline. Run
+//! explicitly with the resource present:
+//!
+//! ```sh
+//! HESPER_APPLE1_ROM=/path/to/wozmon.bin cargo test -p hesper --test apple1 -- --ignored
+//! ```
+
+#[path = "support/wozmon_rom.rs"]
+mod wozmon_rom;
 
 use std::{
     io::Write,
-    path::PathBuf,
     process::{Command, Stdio},
 };
 
-/// Woz Monitor 256-byte ROM, Intel HEX from Apple-1 Operation Manual.
-/// Verified against https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex
-/// (same fixture as `crates/apple1/tests/wozmon.rs`).
-const WOZMON: [u8; 256] = [
-    0xD8, 0x58, 0xA0, 0x7F, 0x8C, 0x12, 0xD0, 0xA9, 0xA7, 0x8D, 0x11, 0xD0, 0x8D, 0x13, 0xD0, 0xC9,
-    0xDF, 0xF0, 0x13, 0xC9, 0x9B, 0xF0, 0x03, 0xC8, 0x10, 0x0F, 0xA9, 0xDC, 0x20, 0xEF, 0xFF, 0xA9,
-    0x8D, 0x20, 0xEF, 0xFF, 0xA0, 0x01, 0x88, 0x30, 0xF6, 0xAD, 0x11, 0xD0, 0x10, 0xFB, 0xAD, 0x10,
-    0xD0, 0x99, 0x00, 0x02, 0x20, 0xEF, 0xFF, 0xC9, 0x8D, 0xD0, 0xD4, 0xA0, 0xFF, 0xA9, 0x00, 0xAA,
-    0x0A, 0x85, 0x2B, 0xC8, 0xB9, 0x00, 0x02, 0xC9, 0x8D, 0xF0, 0xD4, 0xC9, 0xAE, 0x90, 0xF4, 0xF0,
-    0xF0, 0xC9, 0xBA, 0xF0, 0xEB, 0xC9, 0xD2, 0xF0, 0x3B, 0x86, 0x28, 0x86, 0x29, 0x84, 0x2A, 0xB9,
-    0x00, 0x02, 0x49, 0xB0, 0xC9, 0x0A, 0x90, 0x06, 0x69, 0x88, 0xC9, 0xFA, 0x90, 0x11, 0x0A, 0x0A,
-    0x0A, 0x0A, 0xA2, 0x04, 0x0A, 0x26, 0x28, 0x26, 0x29, 0xCA, 0xD0, 0xF8, 0xC8, 0xD0, 0xE0, 0xC4,
-    0x2A, 0xF0, 0x97, 0x24, 0x2B, 0x50, 0x10, 0xA5, 0x28, 0x81, 0x26, 0xE6, 0x26, 0xD0, 0xB5, 0xE6,
-    0x27, 0x4C, 0x44, 0xFF, 0x6C, 0x24, 0x00, 0x30, 0x2B, 0xA2, 0x02, 0xB5, 0x27, 0x95, 0x25, 0x95,
-    0x23, 0xCA, 0xD0, 0xF7, 0xD0, 0x14, 0xA9, 0x8D, 0x20, 0xEF, 0xFF, 0xA5, 0x25, 0x20, 0xDC, 0xFF,
-    0xA5, 0x24, 0x20, 0xDC, 0xFF, 0xA9, 0xBA, 0x20, 0xEF, 0xFF, 0xA9, 0xA0, 0x20, 0xEF, 0xFF, 0xA1,
-    0x24, 0x20, 0xDC, 0xFF, 0x86, 0x2B, 0xA5, 0x24, 0xC5, 0x28, 0xA5, 0x25, 0xE5, 0x29, 0xB0, 0xC1,
-    0xE6, 0x24, 0xD0, 0x02, 0xE6, 0x25, 0xA5, 0x24, 0x29, 0x07, 0x10, 0xC8, 0x48, 0x4A, 0x4A, 0x4A,
-    0x4A, 0x20, 0xE5, 0xFF, 0x68, 0x29, 0x0F, 0x09, 0xB0, 0xC9, 0xBA, 0x90, 0x02, 0x69, 0x06, 0x2C,
-    0x12, 0xD0, 0x30, 0xFB, 0x8D, 0x12, 0xD0, 0x60, 0x00, 0x00, 0x00, 0x0F, 0x00, 0xFF, 0x00, 0x00,
-];
-
-/// A ROM fixture written to a unique temp file, removed on drop.
-struct RomFile(PathBuf);
-
-impl RomFile {
-    fn new(tag: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "hesper-apple1-cli-test-{tag}-{}.rom",
-            std::process::id()
-        ));
-        std::fs::write(&path, WOZMON).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &str {
-        self.0.to_str().unwrap()
-    }
-}
-
-impl Drop for RomFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
+use wozmon_rom::RomFile;
 
 /// Run the built `hesper apple1` binary, feed it `stdin_input`, close
 /// stdin (EOF), and return its captured stdout as text.
@@ -71,15 +39,16 @@ fn run_apple1_cli(rom: &RomFile, stdin_input: &[u8]) -> String {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap();
+        .expect("failed to spawn hesper apple1");
     child.stdin.take().unwrap().write_all(stdin_input).unwrap();
     let output = child.wait_with_output().unwrap();
-    String::from_utf8(output.stdout).unwrap()
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 #[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn apple1_cli_boots_to_prompt() {
-    let rom = RomFile::new("boot");
+    let rom = RomFile::from_env("boot");
     let stdout = run_apple1_cli(&rom, b"");
     assert!(
         stdout.contains('\\'),
@@ -88,26 +57,28 @@ fn apple1_cli_boots_to_prompt() {
 }
 
 #[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn apple1_cli_examine_command_terminated_by_bare_lf_is_executed() {
     // Regression test: a bare-LF line ending (what a real canonical
     // terminal actually delivers for Enter) must still be recognized as
     // the Woz Monitor's line terminator, not silently swallowed.
-    let rom = RomFile::new("examine");
+    let rom = RomFile::from_env("examine");
     let stdout = run_apple1_cli(&rom, b"FF00.FF0F\n");
     assert!(
         stdout.contains("FF00: D8 58"),
         "expected a ROM dump starting with the Woz Monitor's own CLD/CLI \
-         bytes after a bare-LF-terminated examine command, got: {stdout:?}"
+         bytes, got: {stdout:?}"
     );
 }
 
 #[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn apple1_cli_write_and_examine_ram_terminated_by_bare_lf() {
-    let rom = RomFile::new("write-examine");
+    let rom = RomFile::from_env("write-examine");
     let stdout = run_apple1_cli(&rom, b"300: AB CD EF\n300.302\n");
     assert!(
         stdout.contains("0300: AB CD EF"),
         "expected the deposited bytes to read back after bare-LF-terminated \
-         commands, got: {stdout:?}"
+         lines, got: {stdout:?}"
     );
 }

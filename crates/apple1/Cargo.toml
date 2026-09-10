@@ -8,3 +8,4 @@ publish.workspace = true
 hesper-cpu6502 = { path = "../cpu6502" }
 
 [dev-dependencies]
+sha2 = "0.10"

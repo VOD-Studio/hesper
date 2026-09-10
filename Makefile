@@ -10,6 +10,9 @@
 #                  cargo fix --allow-dirty 自动修复
 #   make wasm      仅 CPU 库 Wasm 编译检查；需要已安装 wasm32-unknown-unknown 目标
 #                  （未安装时跳过，不在 verify 中强制）
+#   make wozmon-verify ROM=<path>  校验用户自备 Woz Monitor ROM 的大小与哈希
+#   make wozmon-tests ROM=<path>   显式运行需要该 ROM 的 --ignored 集成测试
+#                  （ROM 从不下载或提交，见 crates/apple1/tests/data/README.md）
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Python 3.12+ 与 Node）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -21,7 +24,8 @@
 
 .NOTPARALLEL:
 
-.PHONY: verify fmt fix check test test-release clippy demo diff wasm wozmon \
+.PHONY: verify fmt fix check test test-release clippy demo diff wasm \
+        wozmon-verify wozmon-tests \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -60,10 +64,15 @@ diff:
 wasm:
 	cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
-# ---- Woz Monitor ROM ----
-wozmon:
-	python3 tools/extract_wozmon.py wozmon.bin
-	@echo "wozmon.bin ready (256 bytes)"
+# ---- Woz Monitor ROM (never committed; caller supplies the image) ----
+# make wozmon-verify ROM=/path/to/wozmon.bin
+wozmon-verify:
+	python3 tools/verify_wozmon_hash.py $(ROM)
+
+# make wozmon-tests ROM=/path/to/wozmon.bin
+wozmon-tests:
+	HESPER_APPLE1_ROM=$(ROM) cargo test -p hesper-apple1 --test wozmon -- --ignored
+	HESPER_APPLE1_ROM=$(ROM) cargo test -p hesper --test apple1 -- --ignored
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

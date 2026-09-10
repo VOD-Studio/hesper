@@ -130,12 +130,13 @@ fn run(rom: &[u8; 256]) -> Result<(), Box<dyn std::error::Error>> {
 
 ## 8. 可以手动输入运行的完整程序
 
-第 3～5 节只是单条命令。下面四个文件是完整的、逐字节手抄进 monitor 就能跑的小程序（经典 Apple 1 玩法：拿到一份十六进制清单，用 `addr: byte byte ...` 一行行敲进去，再 `addrR` 跑），每个都在真实 Hesper Apple1 模拟器上实测过，覆盖字符串输出、键盘轮询、子程序+十六进制运算、无限循环四类基础技巧：
+第 3～5 节只是单条命令。下面 1～4 号文件是本项目为演示技巧编写的教学示例，完整的、逐字节手抄进 monitor 就能跑的小程序（拿到一份十六进制清单，用 `addr: byte byte ...` 一行行敲进去，再 `addrR` 跑），每个都在真实 Hesper Apple1 模拟器上实测过，覆盖字符串输出、键盘轮询、子程序+十六进制运算、无限循环四类基础技巧；5 号文件不是本项目编写的，是逐字节复刻自 1976 年原始 *Apple-1 Operation Manual* 的官方 TEST PROGRAM——当年真实买家接好硬件后第一个手敲运行的程序，来源与核对过程见该文档内注明的原始扫描与两份独立转录：
 
 1. [`01-hello-string.md`](01-hello-string.md) — 打印一行字符串
 2. [`02-keyboard-echo.md`](02-keyboard-echo.md) — 绕开 monitor，直接读键盘回显
 3. [`03-hex-adder.md`](03-hex-adder.md) — 两数相加，打印十六进制结果
 4. [`04-counting-loop.md`](04-counting-loop.md) — 无限循环打印 0123456789
+5. [`05-manual-test-program.md`](05-manual-test-program.md) — 1976 官方 Operation Manual 的整机测试程序（历史真实程序，非本项目原创）
 
 ## 参考
 

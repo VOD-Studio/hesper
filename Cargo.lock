@@ -62,6 +62,7 @@ version = "0.1.0"
 dependencies = [
  "hesper-apple1",
  "hesper-cpu6502",
+ "sha2",
 ]
 
 [[package]]
@@ -69,6 +70,7 @@ name = "hesper-apple1"
 version = "0.1.0"
 dependencies = [
  "hesper-cpu6502",
+ "sha2",
 ]
 
 [[package]]
