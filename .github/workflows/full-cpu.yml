@@ -42,7 +42,7 @@ jobs:
         # Zero delay hits the upstream-documented NMOS BRK/NMI B-bit trap.
         # See tests/data/README.md; this job does not claim that configuration passes.
         run: cargo run -p hesper-cpu6502 --example interrupt --release --locked --offline -- --feedback-delay 4
-      - name: Reproduce original revD pin observations
+      - name: Reproduce revD pin and independent RESET reference observations
         run: node tools/verify_visual6502.cjs
-      - name: Compare CPU against pinned pin observations
+      - name: Compare CPU pins and check RESET reference integrity (no CPU RESET comparison)
         run: cargo test -p hesper-cpu6502 --test pins --release --locked --offline

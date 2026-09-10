@@ -67,8 +67,8 @@ cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
 未实现非官方 opcode、物理 RESET 保持／释放时序、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。M2.4 已接入周期中断采样、分支轮询和 NMI 抢占 BRK/IRQ 向量，246 条固定 revD 引脚 trace 交叉验证通过；RDY 读等待、SO 边沿与半周期输入已实现，物理 RESET 保持时序仍待完善。
 
-M2.2 已通过固定版本的 **151 个官方 opcode／151 万条 SingleStepTests 用例**（寄存器、内存和周期数量），以及 Klaus 功能测试、Bruce Clark 全标志十进制穷举；M2.3 同时通过总线序列比较。672 条原始格式样例保留为离线快速回归。数据准备、重放命令和许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。M2 接下来完成物理 RESET 并做整体验收；Apple I 延后到 CPU 验收后的独立 M3，见 [路线图](docs/roadmap.md)。
+M2.2 已通过固定版本的 **151 个官方 opcode／151 万条 SingleStepTests 用例**（寄存器、内存和周期数量），以及 Klaus 功能测试、Bruce Clark 全标志十进制穷举；M2.3 同时通过总线序列比较。672 条原始格式样例保留为离线快速回归。物理 RESET 已建立独立 revD 参考基线及单场景重放入口，**尚未接入 CPU**；它不计入 CPU 引脚对照通过范围。数据准备、重放命令和许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。下一步按参考观察改造 RESET 输入同步和内部锁存，再做 M2 整体验收；Apple I 延后到独立 M3，见 [路线图](docs/roadmap.md)。
 
-构造 CPU 时的零寄存器、全零 RAM 是可重复运行的模拟器约定，**不是硬件上电保证**；NMOS RESET 保留 D 和通用寄存器，程序应自行初始化栈并选择运算模式。具体兼容性假设见 [架构](docs/architecture.md)，后续计划见 [路线图](docs/roadmap.md)，行为依据见 [参考资料](docs/references.md)。
+构造 CPU 时的零寄存器、全零 RAM 是可重复运行的模拟器约定，**不是硬件上电保证**；现有 `reset` 宿主七周期入口保留 D 和通用寄存器，不表示物理 RESET 的任意中途窗口都保持所有寄存器。程序应自行初始化栈并选择运算模式。具体兼容性假设见 [架构](docs/architecture.md)，后续计划见 [路线图](docs/roadmap.md)，行为依据见 [参考资料](docs/references.md)。
 
 仓库尚未选择许可证，待项目所有者确认；两个包暂设 `publish = false`。未添加 Apple ROM、商业软件或第三方模拟器实现。

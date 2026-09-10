@@ -64,7 +64,7 @@ M2.2 历史通过范围见 [verification.md](../../../../docs/verification.md)�
 cargo test -p hesper-cpu6502 --test pins
 # 显式准备外部模型，随后 Node 本地重新运行并核对固定 trace
 python3 tools/prepare_visual6502.py
-node tools/verify_visual6502.cjs
+node tools/verify_visual6502.cjs --suite pins
 # 构建保留全部 505 条原指令语句的 Klaus 中断程序，运行明确延迟配置
 python3 tools/prepare_klaus.py
 cargo run -p hesper-cpu6502 --example interrupt --release -- --feedback-delay 4
@@ -78,12 +78,60 @@ Klaus 中断源码沿用前述固定版本／GPL-3.0-or-later，采用相同 ca6
 
 **默认 0 延迟没有通过这个外部程序**：NMI 与 BRK 重叠，进入 `$075C` 的 B 位检查陷阱，退出失败。上游 `nmi_trap` 附近的源码明确注明真实 NMOS 也可能在这里失败；revD 场景验证了向量被抢占但 B=1 的行为。因此保留失败和正确 NMOS 行为，不关闭陷阱、修改 B 预期或把此配置报告为通过。延迟 1～3 同样触发该陷阱；5～10 则超出上游另一组响应时序预期，不宣称这些配置通过。
 
+### RESET 参考基线（尚未接入 CPU）
+
+`visual6502/reset.json` 单独保存 **419 组／26816 个总线周期**的物理 RESET 观察，每组固定 64 周期。参考模型仍为上面的 revD 固定提交；新增预期直接来自原模型，未由 Hesper 生成。原有 `pins.json` 的 246 组观察及哈希保持不变。RESET 夹具 SHA-256：`5b78b26bf4294609d54a5184b34655f3f85c08282b8808a6f9d31697b335d257`，数量及总周期另记于同一 manifest。
+
+| 扫描范围 | 场景数 |
+| --- | ---: |
+| NOP、LDA/STA abs、INC abs、PHA、JSR、PLA/PLP、RTS/RTI、BRK、IRQ/NMI 入口；逐半周期断言，分别保持 8／9 个半周期以覆盖两种释放相位 | 280 |
+| 非零 A/X/Y、D/C 置位及 SP=`$01` 的回绕 | 1 |
+| 持续断言及较晚释放 | 6 |
+| NOP／STA／INC／BRK 开始和结束位置的 1～3 半周期短脉冲 | 48 |
+| 释放同步、栈读取、向量读取及取指期间再次断言 | 20 |
+| RDY 与 NOP／STA／INC 的 RESET 重叠，含两个向量读取周期 | 36 |
+| IRQ／NMI 与 RESET 同步、栈、向量及取指窗口重叠 | 28 |
+
+事件 `[half, pin, asserted]` 中 `res` 是原模型的低有效 RESET 引脚名；`true` 为断言。索引 `2n` 在模型时钟上升前注入，`2n+1` 在下降前注入；总线元组为 `[address, data, read/write, SYNC]`，在上升后采集。初始寄存器由真实引导指令建立；未单列 RAM 仍为 `$EA`。RESET 向量为 `$B134`，处理程序先向 `$2010/$2013/$2014` 写出 A/X/Y，再 PHP 保存尚未被 TSX/INX 改写的 P，计算入口 SP 并写至 `$2011`，最后将 PHP 栈映像写至 `$2012`，进入 `$B147` 自循环。该见证程序是观察工具，不是 CPU 的完成条件或伪 HALT。
+
+```sh
+# 重现两个完整套件；分别报告 pins 和 reset，不合并成 CPU 通过数
+node tools/verify_visual6502.cjs
+# 只重现 RESET，或精确重放一组观察
+node tools/verify_visual6502.cjs --suite reset
+node tools/verify_visual6502.cjs --suite reset --case reset-registers-stack-wrap
+node tools/verify_visual6502.cjs --suite pins --case nop-irq-0
+# 显式重新生成一整个套件到临时路径，不自动覆盖固定预期
+node tools/verify_visual6502.cjs --suite reset --record /tmp/hesper-reset-reference.json
+```
+
+`--case` 按完整场景名选择，零匹配报错；重复／缺值参数、未知套件、未指定单套件的 `--record`、同时使用 `--case` 和 `--record` 均报错。验证先校验夹具哈希再运行模型；缺数据、哈希错误、场景／周期差异均退出 1。差异报告提供首个场景、周期、预期／实际值及单场景重放命令；不更新预期来吞掉失败。
+
+#### 与现有执行器的差异及下一步要求
+
+下表为固定输入下的 **revD 观察**，周期／半周期索引均从 0 开始，不是全部 NMOS 修订或模拟电气脉冲的保证：
+
+| 重放场景 | 固定观察 | 执行器需要表达的状态 |
+| --- | --- | --- |
+| `reset-nop-0-8` | h0 断言、h8 释放：c1～5 读 `$8001`，c6 SYNC，c8～10 栈读，c11/12 向量读，c13 取处理程序 opcode | 断言／释放同步和保持状态；不能在释放时立即套用宿主七周期入口 |
+| `reset-pulse-nop-0-1`／`reset-pulse-nop-1-1` | h0→h1 脉冲未触发复位，h1→h2 触发 | 下降相位采样；短脉冲必须跨采样点，而非 setter 调用即触发 |
+| `reset-store-2-8`／`reset-store-4-8` | 前者 c3 对 `$2000` 的写被变为读；后者 c3 写仍发生 | 写抑制有同步延迟；已发生写入不能撤销 |
+| `reset-store-6-8`／`reset-jsr-4-8` | 分别出现 `$EA00→$EAE9` 与 `$EA00→$EAFB→$EAEA` 的过渡读取 | 中间 PC／地址锁存不能简单冻结；这些具体地址不是程序特判常量 |
+| `reset-pha-2-8`／`reset-brk-4-8` | PHA 已写栈，但 RESET 从 `$01EA` 开始栈读，见证 SP=`$E7`；BRK 已写 `$01FD/$01FC`，RESET 却重新从 `$01FD` 读，见证 SP=`$FA` | 内部栈地址、SP 寄存器和提交时机必须分开；不能把每次栈访问后的软件 SP 当作全部硬件状态 |
+| `reset-rdy-nop-0`／`reset-rdy-nop-24` | 前者出现 `$8000→$EA01→$EAEA`；后者 c12～16 重读向量高字节 `$FFFD` | RDY、RESET 同步和向量锁存的组合状态 |
+| `reset-nmi-overlap-20`／`reset-nmi-overlap-22` | h20 的 NMI 未在观察期服务；h22 的 NMI 保留至 RESET 后，经 `$FFFA/B` 进入。RESET 均使用 `$FFFC/D` | 分阶段的 NMI 消费／保留窗口，不能一律清空或抢占 RESET 向量 |
+| `reset-registers-stack-wrap` | A/X/Y=`$12/$34/$56` 保留；栈读 `$0101/$0100/$01FF`，入口 SP=`$FE`；PHP 见证 `$3D`（含 B，实际 P=`$2D`） | 保留 NMOS 的 D/C，设置 I，显式处理 8 位栈回绕 |
+
+`reset-held-0/1` 在各自 64 周期观察内没有读取 RESET 向量；没有用有限观察宣称无限时长的模拟电气保证。未排除 PHA/JSR/BRK 的暂态异常地址或寄存器影响，也未拿手册中的 don't-care 标记删除这些预期。
+
+本轮按用户选择只完成参考基线。普通 `pins.rs` 对 RESET 数据执行哈希、固定数量、格式、事件范围及唯一性检查，**不调用 CPU，也不宣称物理 RESET 已通过**。下一步接入实际引脚与锁存模型，再将全部 RESET 观察纳入 CPU 对照；在此之前 M2.4／M2 整体验收仍未完成。
+
 
 ## 快速回归、全量验证与失败诊断
 
-普通 `cargo test --workspace` 使用仓库里的 672 条单步样例、246 组 revD 引脚观察和本地穷举／边界测试，不读取外部下载缓存。当前 workspace 共 83 个测试；本机热缓存 debug 约 1.7 秒、release 约 1.6 秒，不作为其他环境的性能保证。
+普通 `cargo test --workspace` 使用仓库里的 672 条单步样例、246 组 CPU 已实现引脚观察和本地穷举／边界测试；另对 419 组 RESET 参考数据做离线完整性检查，不读取外部下载缓存、不运行 Node 模型，也不执行 CPU RESET 引脚对照。当前 workspace 共 84 个测试。
 
-完整官方 JSON、Klaus 镜像与 Visual6502 模型需要显式执行上述准备命令。全量 SingleStep、functional、decimal、interrupt（`--feedback-delay 4`）、`node tools/verify_visual6502.cjs` 及 `cargo test -p hesper-cpu6502 --test pins --release` 合起来才覆盖当前已实现范围；不能用其中一条替代全部。准备命令验证来源哈希，运行命令缺数据或校验失败直接报错。
+完整官方 JSON、Klaus 镜像与 Visual6502 模型需要显式执行上述准备命令。全量 SingleStep、functional、decimal、interrupt（`--feedback-delay 4`）、`node tools/verify_visual6502.cjs` 及 `cargo test -p hesper-cpu6502 --test pins --release` 分别验证 CPU 已实现范围、原模型参考观察重现及离线夹具完整性；不能用其中一条替代全部，也不能把 RESET 参考重现算成 CPU RESET 对照通过。准备命令验证来源哈希，运行命令缺数据或校验失败直接报错。
 
 [快速 CI](../../../../.github/workflows/ci.yml) 在拉取 Rust 开发依赖后离线运行固定测试；[全量 CI](../../../../.github/workflows/full-cpu.yml) 只在 GitHub Actions 中手动运行 **Full CPU conformance** 时下载和执行外部数据。Node 26、Python 3.12+、make／C 编译器仅用于数据准备和参考模型，不成为 CPU 运行依赖。两份配置尚未远程运行验证。
 

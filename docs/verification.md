@@ -1,6 +1,6 @@
 # CPU 本地验证记录
 
-当前：M2.1～M2.3 已验收；M2.4 的 IRQ/NMI/RDY/SO 与 M2.5 调试／CI 工程已落地，物理 RESET 持续输入仍未完成。下面保留各阶段历史结果，最后一节是当前代码的复验。
+当前：M2.1～M2.3 已验收；M2.4 的 IRQ/NMI/RDY/SO 与 M2.5 调试／CI 工程已落地，物理 RESET 已建立独立参考基线，但尚未接入 CPU。下面保留各阶段历史结果，最后一节是本轮基线交付及当前代码的复验。
 
 ## M1
 
@@ -121,3 +121,31 @@ Klaus 中断 4 周期反馈延迟：1049 个 step／3013 周期，成功 `$06F5`
 CI 分为每次变更的固定小样例回归，以及手动触发的完整外部验证（45 分钟上限）；后者显式准备数据，缺失／损坏／零匹配不跳过。两份 YAML 在本地解析与步骤结构检查通过，Python／Node 工具语法检查通过；Actions v7 标签已核对存在。**未远程运行 CI，未验证 Linux 工作流执行结果**。当前仓库已有 origin 配置；本节不沿用早期阶段“未配置远程”的状态描述。
 
 CPU 普通依赖树仅包含自身，没有第三方运行依赖。当前物理 RESET 断言／保持／释放及其中途窗口仍未实现，因此 M2 整体验收和 M2.5 最终验收继续保留未完成，下一功能点见路线图；Apple I 未启动。
+
+## M2.4：物理 RESET 独立参考基线
+
+2026-09-10，macOS aarch64；Rust/Cargo 1.98.1、Python 3.14.7、**Node v24.11.1**。本节记录实际本地环境；工作流配置的 Node 26 本轮未远程验证。
+
+按用户明确选择，本轮只落地参考基线及重放入口，**没有修改 CPU 执行器，没有新增物理 RESET API**。固定 revD 新增 **419 组／26816 周期**观察，原有 246 组／5904 周期夹具的字节及 SHA-256 原样保留。新夹具、覆盖表、寄存器见证写入和已发现的同步／PC／SP／RDY／NMI 差异见 [数据说明](../crates/cpu6502/tests/data/README.md#reset-参考基线尚未接入-cpu)。
+
+| 命令／范围 | 实际本地结果 |
+| --- | --- |
+| `python3 tools/prepare_singlestep.py --full` | 固定 151 个官方文件／1510000 条，哈希和数量通过 |
+| `python3 tools/prepare_klaus.py` | 固定源码、镜像、汇编产物及哈希通过 |
+| `python3 tools/prepare_visual6502.py` | 固定 revD 的 7 个源文件哈希通过 |
+| `node tools/verify_visual6502.cjs` | 原模型实际重跑：246 组 pins、419 组 reset 分别精确重现；本机本次 214.66 秒 |
+| `node tools/verify_visual6502.cjs --suite reset --case reset-registers-stack-wrap` | 精确单场景重放通过；非零 A/X/Y、SP 回绕和 D/C/I 见证符合固定观察 |
+| `node tools/verify_visual6502.cjs --suite pins --case nop-irq-0` | 原有套件单场景重放通过 |
+| `cargo test -p hesper-cpu6502 --test pins` | 7 个通过；其中 RESET 项仅做离线数据完整性检查，不执行 CPU RESET 引脚 |
+| `cargo fmt --all -- --check`、`cargo check --workspace --all-targets` | 通过 |
+| `cargo test --workspace`、`cargo test --workspace --release` | 各 84 个通过，0 失败／忽略 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown` | 通过，仅 CPU 库目标编译 |
+| `cargo run -p hesper`、`-- --trace`、`-- --bus-trace --trace-limit 4` | 三种实际运行均输出正确结果；54 条指令、147+7=154 周期；分别输出 54 条指令记录和最后 4 个总线周期 |
+| `node --check tools/verify_visual6502.cjs` | 通过 |
+
+全量 CPU 已实现范围重新运行：官方 SingleStep **1510000 条**寄存器／内存、周期数量、总线序列全部通过；Klaus functional 到 `$3469`，30646176 条／96241364 周期；Bruce Clark 全标志 decimal 到 `$024B` 且 ERROR=0，17609915 条／53953825 周期；Klaus 中断明确采用 `--feedback-delay 4`，到 `$06F5`，1049 step／3013 周期、顺序计数 `[1,3,2]`。默认 0 延迟本轮未重跑，不改变前节记录的上游 NMOS 陷阱失败结论。
+
+重放工具错误路径实际执行：未知套件、零匹配／跨套件场景、重复参数、未指定单套件的记录、局部记录均退出 1。隔离临时目录内移除／损坏夹具，分别验证缺文件和哈希错误退出 1；故意改动首个总线地址并同步临时哈希后，准确报告 `reset-registers-stack-wrap cycle 0`、预期／实际元组及重放命令。没有改动固定预期来让检查通过；临时错误检查目录已自动清除。
+
+本轮完成的是**有界的独立参考基线**，不等于 CPU 物理 RESET 对照通过。M2.4、M2／M2.5 最终验收仍未完成；下一步须实现输入同步、内部锁存和提交时机，再对照全部 RESET 场景。未远程运行 CI，未提交、推送或发布；未启动 Apple I，也未选择项目许可证。

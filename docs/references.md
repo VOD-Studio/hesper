@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | [Klaus／Bruce Clark](https://github.com/Klaus2m5/6502_65C02_functional_tests/tree/7954e2dbb49c469ea286070bf46cdd71aeb29e4b) | 功能程序、全标志 decimal 全输入和显式 4 周期反馈延迟中断配置已运行；原文件许可分别为 GPL-3.0-or-later／public domain | 默认 0 延迟中断程序会触发上游注明的 NMOS BRK/NMI 陷阱；保留失败，不能声称全部配置通过 |
 | [SingleStepTests/65x02](https://github.com/SingleStepTests/65x02/tree/2f6980a2d95757486c7bee24355c360e40e2a224/6502) | 全部 151 个官方 NMOS opcode／151 万用例已比较结果、周期数量和总线；MIT，哈希见测试数据清单 | 非官方 opcode 未实现，不使用 `nes6502` 或 `65c02` 数据，不宣称整个项目数据集通过 |
-| [Visual6502](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) | revD 模型实际生成并重现 246 组／5904 周期的 IRQ/NMI/RDY/SO 观察；模型按文件保留 MIT／CC BY-NC-SA 3.0 等声明，仅在缓存内使用 | 没有完成物理 RESET 持续输入或全部电气相位窗口，不推广为所有 NMOS 修订认证 |
+| [Visual6502](https://github.com/trebonian/visual6502/tree/d8ecc129b34e0eaf320e0400fcf33329475bdb1e) | revD 模型生成的 246 组 IRQ/NMI/RDY/SO 观察已与 CPU 对照；另建立物理 RESET 参考基线和重放入口，尚未接入 CPU。模型按文件保留 MIT／CC BY-NC-SA 3.0 等声明，仅在缓存内使用 | 参考模型重现 RESET 观察不等于 Hesper 实现了 RESET；不推广为所有 NMOS 修订或全部电气相位窗口认证 |
 
 SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`，文件 [`6502/v1/6c.json`](https://github.com/SingleStepTests/65x02/blob/2f6980a2d95757486c7bee24355c360e40e2a224/6502/v1/6c.json)。临时读取后检查名为 `6c ff 70`、初始 PC=`$2887` 的样例：指针 `$70FF` 的低字节为 `$9D`，高字节来自 `$7000` 的 `$98`，结果 PC=`$989D`，数据列出 5 次读取。这是**资料核对，不是 Hesper 执行外部测试的通过记录**；本地边界测试使用独立编写的地址和预期值。
 
@@ -57,3 +57,5 @@ M2.4 已实际运行 [Visual6502 revD 固定模型](https://github.com/trebonian
 RDY 的读等待／写继续和 SO 的低有效边沿以 MOS 原始硬件资料为起点，细化窗口由固定 revD 模型的原创程序相位扫描交叉核对。V 写入延续规则属于对这些原始观察的数字归纳；[编程手册 §3.6](https://lbaeza.neocities.org/mcs6500/6500_ch03) 给出 SO 与 V 以及 ADC/BIT/CLV/PLP/RTI/SBC 的关系，不能单凭指令表推导完整相位优先级。
 
 CI 的手动触发与步骤语法依据 [GitHub Actions 官方说明](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)，工具安装参数依据 [setup-python](https://github.com/actions/setup-python) 与 [setup-node](https://github.com/actions/setup-node) 的官方 README。配置存在不等于远程任务通过。
+
+2026-09-10：物理 RESET 参考基线同时核对上述编程手册 §9.1～9.3，以及 [MOS 6500-10A Hardware Manual（1976），§1.4.1.2.11 RES](https://archive.org/details/mcs-6500-family-hardware-manual-1976-01/page/n47/mode/2up)。手册给出复位期间禁止写入、释放后向量启动、I 置位和软件初始化要求；启动表将向量前的部分地址列为 `?`／don't-care，没有规定所有断言相位的中间 PC/SP。数据中的同步延迟、过渡地址、暂态寄存器与 RDY／NMI 交叉结果是固定 revD 的数字观察，不提升为手册保证。内部时序／数据通路的具体机制仍需执行器建模验证，不能仅凭观察给硬件节点强加未经核对的解释。

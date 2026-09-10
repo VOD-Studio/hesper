@@ -174,4 +174,4 @@ ADC/SBC 的所有模式已有上述矩阵测试；[arithmetic.rs](../crates/cpu6
 M2.3：上表全部 151 个官方 opcode 还通过固定 SingleStepTests NMOS `6502/v1` 每文件 10000 条、共 1510000 条用例的寄存器／内存、周期数量和完整总线序列比较。版本与逐文件哈希见 [数据说明](../crates/cpu6502/tests/data/README.md)。这不包含非官方 opcode 或外部引脚相位；RESET 的七次访问另由 `cycles.rs` 与 `conformance.rs` 验证。
 
 
-M2.4：`pins.rs` 的 246 组固定 revD 场景核对 IRQ/NMI 的采样、分支轮询、向量抢占、RDY 及 SO；SO 扫描覆盖六种写 V 指令。`cycles.rs` 另验证等待、读副作用、栈／地址阶段、中途复位请求及有界恢复。这些是明确场景的验证，物理 RESET 保持／释放和所有引脚交叉窗口尚未完成。
+M2.4：`pins.rs` 的 246 组固定 revD 场景核对 IRQ/NMI 的采样、分支轮询、向量抢占、RDY 及 SO；SO 扫描覆盖六种写 V 指令。`cycles.rs` 另验证等待、读副作用、栈／地址阶段、中途复位请求及有界恢复。物理 RESET 的独立参考基线另存 `visual6502/reset.json`，已提供模型重放和离线完整性检查，**没有 CPU RESET 引脚对照通过记录**。物理 RESET 实现和全部目标交叉窗口的 CPU 验收仍未完成。

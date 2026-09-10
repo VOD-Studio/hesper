@@ -85,6 +85,53 @@ fn fixed_visual6502_revd_pin_traces_match_actual_bus_cycles() {
     }
 }
 
+/// This validates the independent oracle data, NOT Hesper RESET conformance.
+/// Physical RESET has no CPU input API yet; never silently skip its events in
+/// the CPU comparison above.
+#[test]
+fn reset_reference_corpus_is_pinned_and_well_formed_without_running_cpu() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("data/visual6502/manifest.json")).unwrap();
+    let bytes = include_bytes!("data/visual6502/reset.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        manifest["reset_fixture_sha256"].as_str().unwrap()
+    );
+    let cases: Vec<Reference> = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(
+        cases.len(),
+        manifest["reset_cases"].as_u64().unwrap() as usize
+    );
+    assert_eq!(
+        cases.len(),
+        419,
+        "the RESET reference corpus must not shrink"
+    );
+    let mut names = std::collections::HashSet::new();
+    let mut cycles = 0;
+    for case in &cases {
+        assert!(case.name.starts_with("reset-"));
+        assert!(names.insert(&case.name), "duplicate case {}", case.name);
+        assert_eq!(case.cycles.len(), 64, "{}", case.name);
+        cycles += case.cycles.len();
+        let mut events = std::collections::HashSet::new();
+        assert!(case.events.iter().any(|(_, pin, low)| pin == "res" && *low));
+        for (half, pin, _) in &case.events {
+            assert!(*half < case.cycles.len() * 2, "{}", case.name);
+            assert!(matches!(pin.as_str(), "res" | "irq" | "nmi" | "rdy" | "so"));
+            assert!(events.insert((half, pin)), "ambiguous event {}", case.name);
+        }
+        let mut addresses = std::collections::HashSet::new();
+        for (address, _) in &case.initial.ram {
+            assert!(addresses.insert(address), "duplicate RAM {}", case.name);
+        }
+        for (_, _, direction, _) in &case.cycles {
+            assert!(matches!(direction.as_str(), "read" | "write"));
+        }
+    }
+    assert_eq!(cycles, manifest["reset_cycles"].as_u64().unwrap() as usize);
+}
+
 fn setup(pc: u16, program: &[u8], p: u8) -> (Cpu, Ram) {
     let mut ram = Ram::new();
     ram.load(0, &[0xea; 65536]).unwrap();
