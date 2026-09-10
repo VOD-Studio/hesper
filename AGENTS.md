@@ -4,7 +4,7 @@
 
 - 先阅读 README、相关代码、docs/architecture.md、docs/opcodes.md 和 Git 状态；保留用户未提交的修改。
 - 项目名为 Hesper，现有 CLI 包／二进制名为 `hesper`，CPU 库为 `hesper-cpu6502`。不要擅自重命名项目。
-- 当前已完成 M2.1～M2.3 的外部一致性与逐周期总线，继续按 docs/roadmap.md 的 M2 收尾物理 RESET 和完整验收；Apple I 延后至独立 M3。路线图是计划，收到实现任务后按对应阶段执行，不因完成规划自动启动后续实现；不提前创建空机器 crate、Web 项目或框架。
+- 当前 M2 CPU 的本地目标范围已验收，包含官方指令全量外部一致性、逐周期总线及 246＋419 组固定引脚对照；精确范围见 docs/roadmap.md 与 docs/verification.md。Apple I 为尚未启动的独立 M3。路线图是计划，收到实现任务后按对应阶段执行，不因完成规划自动启动后续实现；不提前创建空机器 crate、Web 项目或框架。
 - 未经用户明确授权，不 commit、push、发布包或执行破坏性 Git 操作。不擅自选择／更改许可证。
 - 用户授权自主提交后，每完成一个可独立验证的功能点就提交一次，包含相应测试；保持每次提交可构建，不混入其他工作。提交授权不代表推送授权。
 
@@ -19,7 +19,7 @@
 - 所有模拟的 8 位／16 位回绕显式使用 wrapping 运算；宿主加载必须检查范围、错误时不得部分写入。
 - 所有未支持 opcode 返回地址及字节的结构化错误；M1 的 BRK 已实现为软件中断。不得静默 NOP、假 HALT 或宿主 panic。
 - IRQ 电平与 NMI 边沿的宿主采样约定见架构文档；改变采样模型时同时补边界测试，区分指令级近似和逐相位硬件时序。NMOS 的中断入口保留 D，不能混入 CMOS 的清 D 行为。
-- `half_cycle` 区分 Phi1/Phi2；`step`/`reset` 使用七周期预算，RDY 超限后以 step/cycle 接续，不重置中间状态。需要延长等待时由宿主显式给有限预算。debug_state 是只读诊断，不能冒充可恢复存档。
+- `half_cycle` 区分 Phi1/Phi2；`step`/`reset` 使用七周期预算，RDY 或物理 RESET 保持超限后以 step/cycle 接续，不重置中间状态。物理 `set_reset_line` 与立即宿主 `begin_reset` 不混用；物理复位完成事件包含接管和等待周期。需要延长等待时由宿主显式给有限预算。debug_state 是只读诊断，不能冒充可恢复存档。
 - trace 只能用执行中捕获的数据或明确无副作用的 RAM 宿主检查接口，禁止为日志额外 `Bus::read`。
 - 使用安全、惯用 Rust，禁止 `unsafe`；优先标准库。未经需求证明不引入依赖、异步运行时、GUI、JIT、插件或通用 CPU 框架。
 - 不用 `todo!`、`unimplemented!`、假返回值或全局 warning 抑制掩盖缺失实现。不复制其他模拟器实现。

@@ -28,7 +28,7 @@ A=09 X=0A Y=00 SP=FF PC=800F P=27
 Completed: 54 instructions, 147 instruction cycles + 7 reset cycles = 154 total cycles
 ```
 
-`--trace` 每条记录包含取到的指令地址和 opcode、执行前后 A/X/Y/SP/PC/P、单条周期和累计周期；累计值包含 RESET 的 7 周期。`--bus-trace` 显示每周期地址、数据、读写、SYNC、等待、下一阶段、引脚和锁存。默认只保留末尾 64 条记录，`--trace-limit 1..4096` 调整上限，两种 trace 可同时启用；结束或超限失败时输出保留记录。trace 使用执行时捕获的数据，不额外读取 Bus。
+`--trace` 每条记录包含取到的指令地址和 opcode、执行前后 A/X/Y/SP/PC/P、单条周期和累计周期；累计值包含演示的宿主 RESET 7 周期。`--bus-trace` 显示每周期地址、数据、读写、SYNC、等待、下一阶段、引脚和锁存。默认只保留末尾 64 条记录，`--trace-limit 1..4096` 调整上限，两种 trace 可同时启用；结束或超限失败时输出保留记录。trace 使用执行时捕获的数据，不额外读取 Bus。
 
 ## 结构
 
@@ -39,7 +39,7 @@ examples/        原创演示汇编与机器码说明
 docs/            架构、opcode、资料、路线图与验证记录
 ```
 
-只有两个 crate，CPU 库无第三方运行依赖；外部测试工具使用开发依赖解析 JSON 和校验哈希。CPU 不持有整机或 Bus；调用者通过 `reset(&mut bus)`、`step(&mut bus)` 、单周期 `cycle(&mut bus)` 或 `half_cycle(&mut bus)` 驱动它，用 `registers()` 获取寄存器、`debug_state()` 获取只读阶段／锁存快照。`step` 返回 `Result<Step, CpuError>`，其中 `StepKind` 区分实际指令与 7 周期的 IRQ/NMI/RESET 入口；一次调用不会同时执行中断入口和处理程序指令。中断输入 API 和采样约定见 [架构文档](docs/architecture.md#中断输入与执行事件)。
+只有两个 crate，CPU 库无第三方运行依赖；外部测试工具使用开发依赖解析 JSON 和校验哈希。CPU 不持有整机或 Bus；调用者通过 `reset(&mut bus)`、`step(&mut bus)`、单周期 `cycle(&mut bus)` 或 `half_cycle(&mut bus)` 驱动它，用 `registers()` 获取寄存器、`debug_state()` 获取只读阶段／锁存快照。`step` 返回 `Result<Step, CpuError>`，其中 `StepKind` 区分实际指令与 IRQ/NMI/RESET 入口；一次调用不会同时执行入口和处理程序指令。`set_reset_line(true)` 断言物理 RESET，其完成事件包含接管、保持和等待周期，不等同于宿主 `reset` 的七周期入口。引脚和事件契约见 [架构文档](docs/architecture.md#物理-reset)。
 
 ## 验证
 
@@ -63,11 +63,11 @@ cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
 ## 限制与后续
 
-“按指令执行并统计周期”不等于“逐周期总线精确模拟”。M2.3 已提供真正逐周期的总线接口，`step` 包装同一个引擎；全部 151 万条官方单步用例通过地址、数据和读写序列比较。宿主可按周期或半周期推进设备；物理 RESET 持续输入仍待 M2.4 完善。
+“按指令执行并统计周期”不等于“逐周期总线精确模拟”。M2 已提供真正逐周期的总线接口，`step` 包装同一个引擎；全部 151 万条官方单步用例通过地址、数据和读写序列比较。宿主可按周期或半周期推进设备，并注入 IRQ/NMI/RDY/SO/RESET。
 
-未实现非官方 opcode、物理 RESET 保持／释放时序、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。M2.4 已接入周期中断采样、分支轮询和 NMI 抢占 BRK/IRQ 向量，246 条固定 revD 引脚 trace 交叉验证通过；RDY 读等待、SO 边沿与半周期输入已实现，物理 RESET 保持时序仍待完善。
+未实现非官方 opcode、机器系统或浏览器前端。非官方字节返回 `UnsupportedOpcode { address, opcode }`；BRK `$00` 是真实软件中断。IRQ/NMI 采样、分支轮询、向量抢占、RDY 等待及 SO 已通过 246 组固定 revD 引脚 trace。物理 RESET 的同步、保持／释放、中途写入与栈／中断／RDY 窗口，另通过全部 **419 组／26816 周期 CPU 对照**；这不是只重放原模型，也不代表所有 NMOS 修订或任意电气窗口认证。
 
-M2.2 已通过固定版本的 **151 个官方 opcode／151 万条 SingleStepTests 用例**（寄存器、内存和周期数量），以及 Klaus 功能测试、Bruce Clark 全标志十进制穷举；M2.3 同时通过总线序列比较。672 条原始格式样例保留为离线快速回归。物理 RESET 已建立独立 revD 参考基线及单场景重放入口，**尚未接入 CPU**；它不计入 CPU 引脚对照通过范围。数据准备、重放命令和许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)。下一步按参考观察改造 RESET 输入同步和内部锁存，再做 M2 整体验收；Apple I 延后到独立 M3，见 [路线图](docs/roadmap.md)。
+M2 的本地目标范围已完成验收：**151 个官方 opcode／151 万条 SingleStepTests 用例**的寄存器、内存、周期数量及总线序列通过，Klaus 功能测试、Bruce Clark 全标志十进制穷举和明确采用 4 周期反馈延迟的 Klaus 中断程序通过。672 条原始格式样例及全部固定引脚观察保留为离线回归。数据准备、重放命令和许可证见 [测试数据说明](crates/cpu6502/tests/data/README.md)；实际环境及本地／远程状态见 [验证记录](docs/verification.md)。Apple I 为尚未启动的独立 M3，见 [路线图](docs/roadmap.md)。
 
 构造 CPU 时的零寄存器、全零 RAM 是可重复运行的模拟器约定，**不是硬件上电保证**；现有 `reset` 宿主七周期入口保留 D 和通用寄存器，不表示物理 RESET 的任意中途窗口都保持所有寄存器。程序应自行初始化栈并选择运算模式。具体兼容性假设见 [架构](docs/architecture.md)，后续计划见 [路线图](docs/roadmap.md)，行为依据见 [参考资料](docs/references.md)。
 
