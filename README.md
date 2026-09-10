@@ -1,5 +1,9 @@
 # Hesper
 
+<p align="center">
+  <img src="assets/hesper-logo.png" alt="Hesper logo" width="360">
+</p>
+
 Hesper 是一个使用 Rust 编写的 NMOS 6502 模拟器项目。目前包含一个机器无关、逐周期执行的 CPU 核心，以及用于演示和验证核心行为的命令行程序。
 
 当前实现聚焦官方 NMOS 6502 指令、总线周期、中断、RDY/SO 和物理 RESET。Apple I 文本系统（Woz Monitor + PIA 键盘/显示）已完成。Apple II 与浏览器前端尚未开始。
@@ -122,4 +126,5 @@ cargo test -p hesper-cpu6502 --test pins --release
 - [`docs/roadmap.md`](docs/roadmap.md)：已完成范围与后续里程碑
 - [`docs/references.md`](docs/references.md)：硬件资料及外部测试来源
 - [`docs/verification.md`](docs/verification.md)：按时间记录的本地验证证据
+- [`docs/apple1/examples.md`](docs/apple1/examples.md)：Apple I CLI 与库 API 使用示例
 - [`AGENTS.md`](AGENTS.md)：面向代码助手和贡献者的仓库规则
