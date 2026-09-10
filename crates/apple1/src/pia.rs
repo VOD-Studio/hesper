@@ -94,17 +94,23 @@ impl Pia6821 {
     }
 
     /// Set the CA1 input pin.  A rising or falling edge (per CRA bits 1,0)
-    /// sets IRQA1 (bit 7 of CRA) if the interrupt is enabled.
+    /// sets IRQA1 (bit 7 of CRA) — per the MC6821 datasheet the status flag
+    /// latches on the qualifying transition regardless of the interrupt
+    /// enable bit (CRA bit 0); that bit only gates whether the flag would
+    /// also assert the PIA's external IRQ output pin, which this crate
+    /// does not model (the base Apple I configuration does not wire the
+    /// PIA's IRQ output to the 6502's IRQ input either). Software can
+    /// therefore always poll the flag, enabled or not — this is how the
+    /// Woz Monitor itself reads it (`BIT`/`BPL`, no interrupt handler).
     pub fn set_ca1(&mut self, asserted: bool) {
         let prev = self.ca1;
         self.ca1 = asserted;
         let rising = asserted && !prev;
         let falling = !asserted && prev;
-        let irq_enabled = self.cra & 0x01 != 0;
         let active_high = self.cra & 0x02 != 0;
 
         let edge = if active_high { rising } else { falling };
-        if edge && irq_enabled {
+        if edge {
             self.cra |= 0x80; // set IRQA1
         }
     }
@@ -117,17 +123,18 @@ impl Pia6821 {
         self.pins_b = value;
     }
 
-    /// Set the CB1 input pin (Display Acknowledge on Apple I).
+    /// Set the CB1 input pin (Display Acknowledge on Apple I). See
+    /// [`Pia6821::set_ca1`]: the flag sets on the qualifying edge
+    /// regardless of the interrupt enable bit.
     pub fn set_cb1(&mut self, asserted: bool) {
         let prev = self.cb1;
         self.cb1 = asserted;
         let rising = asserted && !prev;
         let falling = !asserted && prev;
-        let irq_enabled = self.crb & 0x01 != 0;
         let active_high = self.crb & 0x02 != 0;
 
         let edge = if active_high { rising } else { falling };
-        if edge && irq_enabled {
+        if edge {
             self.crb |= 0x80; // set IRQB1
         }
     }
@@ -329,6 +336,27 @@ mod tests {
         // L→H edge: flag set.
         pia.set_ca1(true);
         assert_eq!(pia.cra & 0x80, 0x80);
+    }
+
+    #[test]
+    fn ca1_edge_sets_irqa1_flag_even_when_interrupt_disabled() {
+        // MC6821 datasheet: the status flag latches on the qualifying
+        // transition regardless of the interrupt-enable bit; the enable
+        // bit only gates the (unmodeled) external IRQ output pin. A
+        // regression for a prior bug where this crate gated the flag
+        // itself on the enable bit, silently losing status edges whenever
+        // software polled without enabling interrupts — as the Woz
+        // Monitor and this crate's `Keyboard`/`Display` models do.
+        let mut pia = Pia6821::new();
+        // CRA: bit1=1 (active on rising edge), bit0=0 (IRQ disabled).
+        pia.write(0xD011, 0x02);
+
+        pia.set_ca1(true);
+        assert_eq!(
+            pia.cra & 0x80,
+            0x80,
+            "flag must set on the edge even with interrupts disabled"
+        );
     }
 
     #[test]
