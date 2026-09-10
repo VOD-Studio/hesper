@@ -75,11 +75,7 @@ fn display_timing_respects_cycles_per_char() {
 
     // Run more — character should now be collected.
     let output2 = machine.run_cycles(50).unwrap();
-    assert_eq!(
-        output2,
-        b"A",
-        "character should appear after timer expires"
-    );
+    assert_eq!(output2, b"A", "character should appear after timer expires");
 }
 
 #[test]
@@ -134,8 +130,7 @@ fn keyboard_echo_flow() {
     let output = machine.run_cycles(50).unwrap();
 
     assert_eq!(
-        output,
-        b"H",
+        output, b"H",
         "echoed character 'H' should appear in display output, got {output:?}"
     );
 }
