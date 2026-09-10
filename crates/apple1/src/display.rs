@@ -43,7 +43,7 @@ impl Display {
         self.cycles_remaining -= 1;
         if self.cycles_remaining == 0 {
             self.busy = false;
-            self.output.push(self.latch);
+            self.output.push(self.latch & 0x7F);
             // Rising edge on CB1 → sets IRQB1 if enabled.
             pia.set_cb1(true);
             pia.set_cb1(false);

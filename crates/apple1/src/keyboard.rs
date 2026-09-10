@@ -7,11 +7,13 @@
 //! The CPU reads `$D010` to get the character; this read also clears
 //! IRQA1 automatically (already handled by the PIA register model).
 
+use std::collections::VecDeque;
+
 use crate::pia::Pia6821;
 
 /// Keyboard input model.
 pub struct Keyboard {
-    pending: Vec<u8>,
+    pending: VecDeque<u8>,
     current: u8,
     strobe: bool,
 }
@@ -19,7 +21,7 @@ pub struct Keyboard {
 impl Keyboard {
     pub fn new() -> Self {
         Self {
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             current: 0,
             strobe: false,
         }
@@ -27,7 +29,7 @@ impl Keyboard {
 
     /// Queue a character to be "typed" to the emulated machine.
     pub fn type_char(&mut self, c: u8) {
-        self.pending.push(c);
+        self.pending.push_back(c);
     }
 
     /// Called before each CPU cycle.  Presents pending key data on Port A
@@ -42,7 +44,12 @@ impl Keyboard {
             self.strobe = false;
             return;
         }
-        if let Some(c) = self.pending.pop() {
+        // Don't present next character until the previous one has been read
+        // (IRQA1 is cleared when the CPU reads Port A data).
+        if pia.irqa1_active() {
+            return;
+        }
+        if let Some(c) = self.pending.pop_front() {
             self.current = c;
             // Apple I keyboard: bit 7 = 1 (always).
             pia.set_port_a_inputs(c | 0x80);

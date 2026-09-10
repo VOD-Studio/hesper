@@ -252,3 +252,24 @@ M2.1～M2.5 的上述本地目标范围已完成，路线图据此勾选；不�
 `Apple1Bus` 地址映射：`$0000‑$0FFF` 4 KiB RAM、`$D010‑$D013` PIA、`$FF00‑$FFFF` 256 B ROM、其余开路总线。ROM 由宿主通过 `Apple1Bus::new(&[u8; 256])` 加载，未包含在 crate 中。Woz Monitor hex dump 已从公开仓库核对但未提交。
 
 CPU 已实现功能的完整外部体系（SingleStep 151 万、Klaus 三配置、246+419 pins）本轮未重跑，因为 CPU 未修改。Apple I 未启动。
+
+## M3.4：Woz Monitor 联调与 M3 整体验收
+
+2026-09-10，macOS aarch64；rustc 1.98.1、Cargo 1.98.1。
+
+Woz Monitor 256 字节 ROM 嵌入 `crates/apple1/tests/wozmon.rs` 测试夹具。修复键盘输入队列为 FIFO（原为 LIFO），Display 输出屏蔽 bit 7 以匹配 Apple I 7 位 ASCII 终端行为。CPU 核心未修改。
+
+| 命令／范围 | 实际本地结果 |
+| --- | --- |
+| `cargo test --workspace` | **112** 个通过（91 CPU/CLI + 21 apple1），0 失败／忽略 |
+| `cargo test --workspace --release` | **112** 个通过 |
+| `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` | 通过 |
+| `cargo run -p hesper` | 演示正常；54 条指令／154 周期 |
+| Woz Monitor 启动 | 提示符输出正确 |
+| 内存检查 | FF00.FF0F 转储含 D8 58 等 ROM 字节 |
+| 内存写入+运行 | $0300 短程序写入后运行，输出 `*` |
+| 写入+回读 | $0300 写入 AB CD EF 后回读一致 |
+
+Woz Monitor 的四种基本操作（内存检查、范围转储、写入、运行）均通过实际 CPU 执行验证。没有修改 ROM、拦截 I/O 或伪造设备响应。Apple I 未启动意味着尚未通过 CLI 实时联调，但离线回归已覆盖所有交互路径。
+
+M3 Apple I 文本系统本地目标范围已验收。未远程运行 CI，未提交 ROM，未推送。

@@ -132,6 +132,19 @@ impl Pia6821 {
         }
     }
 
+    /// Whether Port A input pins are currently driven (bit 7 of all inputs).
+    /// On Apple I the keyboard sets bit 7; this returns true when keyboard
+    /// data has been set on the pins.
+    pub fn port_a_bit7(&self) -> bool {
+        self.pins_a & 0x80 != 0
+    }
+
+    /// Whether the IRQA1 interrupt flag (CRA bit 7) is currently set.
+    /// This is cleared when the CPU reads Port A data.
+    pub fn irqa1_active(&self) -> bool {
+        self.cra & 0x80 != 0
+    }
+
     /// Reset to power-on state: all registers zero, all control lines inactive.
     pub fn reset(&mut self) {
         self.ora = 0;
