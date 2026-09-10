@@ -1,0 +1,10 @@
+[package]
+name = "hesper-apple1"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+hesper-cpu6502 = { path = "../cpu6502" }
+
+[dev-dependencies]

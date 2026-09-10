@@ -64,6 +64,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hesper-apple1"
+version = "0.1.0"
+dependencies = [
+ "hesper-cpu6502",
+]
+
+[[package]]
 name = "hesper-cpu6502"
 version = "0.1.0"
 dependencies = [

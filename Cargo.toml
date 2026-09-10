@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cpu6502", "crates/cli"]
+members = ["crates/cpu6502", "crates/cli", "crates/apple1"]
 default-members = ["crates/cli"]
 resolver = "3"
 
