@@ -22,14 +22,18 @@ use std::{
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    execute, terminal,
+    execute, queue,
+    style::Print,
+    terminal,
 };
 use hesper_apple1::{
     Apple1, Apple1Bus,
+    display::{COLUMNS, Display, ROWS},
     machine::{RESET_COMPLETION_BUDGET, RESET_HOLD_CYCLES},
 };
 use hesper_cpu6502::{CpuError, Cycle, StepKind};
 use sha2::{Digest, Sha256};
+use signal_hook::SigId;
 
 use crate::{format_bus_trace, format_instruction_trace};
 
@@ -59,6 +63,10 @@ const WOZMON_SHA256: [u8; 32] = [
 
 /// Inclusive bounds on `--trace-limit`, matching the demo host's.
 const TRACE_LIMIT_RANGE: std::ops::RangeInclusive<usize> = 1..=4096;
+
+/// Width of the status field drawn below the machine's 24 rows, wide enough
+/// for the longest marker (`[NEW MACHINE]`) so a shorter one overwrites it.
+const STATUS_WIDTH: usize = 16;
 
 /// Why the run loop stopped. Distinguishes a normal, expected yield from a
 /// user-requested stop, a budget limit, and a real error — `run_apple1`
@@ -446,22 +454,177 @@ fn advance_and_print(
     Ok(stop)
 }
 
-/// RAII guard: restores the terminal's cooked mode on every exit path
-/// (normal return, `?` early return, or panic), matching the
-/// `enable_raw_mode`/`disable_raw_mode` pairing crossterm expects.
-struct RawMode;
+/// How the host presents the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    /// A fixed 40x24 grid drawn from the machine's own screen model.
+    /// Requires a real terminal on both stdin and stdout.
+    Grid,
+    /// The raw stream of characters the display finished, CR expanded to
+    /// CRLF. Used whenever stdout is not a terminal, so no cursor or
+    /// screen-control sequence is ever written into a file or a pipe.
+    Stream,
+}
 
-impl RawMode {
-    fn enable() -> io::Result<Self> {
+/// RAII guard for everything this host changes about the real terminal,
+/// plus the signal handlers it installs.
+///
+/// Signals are registered *before* raw mode and before any emulated cycle
+/// runs: a signal delivered during the boot batch must still unwind through
+/// this guard instead of leaving the terminal in raw mode. Each field
+/// records only what actually succeeded, so a partial failure rolls back
+/// exactly what was applied; `Drop` undoes it in reverse order.
+struct TerminalGuard {
+    raw: bool,
+    paste: bool,
+    alternate: bool,
+    wrap_disabled: bool,
+    signals: Vec<SigId>,
+}
+
+impl TerminalGuard {
+    fn enter(view: View, terminated: &Arc<AtomicBool>) -> io::Result<Self> {
+        let mut guard = Self {
+            raw: false,
+            paste: false,
+            alternate: false,
+            wrap_disabled: false,
+            signals: Vec::new(),
+        };
+        for signal in [
+            signal_hook::consts::SIGTERM,
+            signal_hook::consts::SIGINT,
+            signal_hook::consts::SIGHUP,
+            signal_hook::consts::SIGQUIT,
+        ] {
+            // On error `guard` is dropped here, unregistering whatever was
+            // already installed.
+            guard
+                .signals
+                .push(signal_hook::flag::register(signal, Arc::clone(terminated))?);
+        }
+
         terminal::enable_raw_mode()?;
-        Ok(Self)
+        guard.raw = true;
+
+        if view == View::Grid {
+            let mut stdout = io::stdout();
+            // Every sequence below goes to stdout, so it is only ever sent
+            // when stdout really is the terminal: a redirected stdout must
+            // stay a clean character stream. Bracketed paste makes a paste
+            // arrive as one event instead of a burst of keystrokes.
+            execute!(stdout, event::EnableBracketedPaste)?;
+            guard.paste = true;
+            execute!(stdout, terminal::EnterAlternateScreen)?;
+            guard.alternate = true;
+            // The machine wraps at its own 40th column; the host terminal
+            // must not wrap on top of that.
+            execute!(stdout, terminal::DisableLineWrap)?;
+            guard.wrap_disabled = true;
+            execute!(
+                stdout,
+                terminal::Clear(terminal::ClearType::All),
+                cursor::MoveTo(0, 0)
+            )?;
+        }
+        Ok(guard)
     }
 }
 
-impl Drop for RawMode {
+impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
+        // Exact reverse of `enter`: wrap, alternate screen, bracketed
+        // paste, raw mode, then the signal handlers.
+        let mut stdout = io::stdout();
+        if self.alternate {
+            // The renderer hides the cursor whenever the machine's cursor
+            // falls outside a small window.
+            let _ = execute!(stdout, cursor::Show);
+        }
+        if self.wrap_disabled {
+            let _ = execute!(stdout, terminal::EnableLineWrap);
+        }
+        if self.alternate {
+            let _ = execute!(stdout, terminal::LeaveAlternateScreen);
+        }
+        if self.paste {
+            let _ = execute!(stdout, event::DisableBracketedPaste);
+        }
+        if self.raw {
+            let _ = terminal::disable_raw_mode();
+        }
+        for id in self.signals.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
     }
+}
+
+/// Project one machine screen byte for a host terminal: printable ASCII as
+/// itself, everything else as a blank cell.
+///
+/// The machine's grid holds whatever bytes software wrote, including ESC
+/// and other control codes. Handing those to the host terminal would let
+/// emulated software drive the real terminal; they still occupy their cell.
+/// This is a safe projection, not an original character-ROM emulation.
+fn projected(byte: u8) -> char {
+    if (0x20..=0x7E).contains(&byte) {
+        char::from(byte)
+    } else {
+        ' '
+    }
+}
+
+/// Draw the machine's screen at the terminal's top-left corner.
+///
+/// Reads only `screen()`/`cursor()` — never the bus — and writes one
+/// buffered frame with a single flush. The grid is fixed at 40x24: a wider
+/// terminal does not reflow it. A window smaller than that shows the
+/// visible rectangle only and hides the machine cursor when it falls
+/// outside; machine state is never changed to fit the window. `status` is
+/// drawn on the 25th row when the window has one.
+fn draw_screen(
+    display: &Display,
+    status: &str,
+    size: (u16, u16),
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let (width, height) = size;
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let columns = usize::from(width).min(COLUMNS);
+    let rows = usize::from(height).min(ROWS);
+
+    let mut frame = Vec::with_capacity(rows * (columns + 8) + 64);
+    for (row, line) in display.screen().iter().take(rows).enumerate() {
+        let text: String = line[..columns].iter().copied().map(projected).collect();
+        queue!(frame, cursor::MoveTo(0, row as u16), Print(text))?;
+    }
+    if usize::from(height) > ROWS {
+        // Padded to a fixed field instead of clearing the line, so one
+        // write both shows the new marker and erases the previous one.
+        let room = usize::from(width).min(STATUS_WIDTH);
+        let marker: String = status
+            .chars()
+            .chain(std::iter::repeat(' '))
+            .take(room)
+            .collect();
+        queue!(frame, cursor::MoveTo(0, ROWS as u16), Print(marker))?;
+    }
+
+    let (cursor_row, cursor_column) = display.cursor();
+    if cursor_row < rows && cursor_column < columns {
+        queue!(
+            frame,
+            cursor::MoveTo(cursor_column as u16, cursor_row as u16),
+            cursor::Show
+        )?;
+    } else {
+        queue!(frame, cursor::Hide)?;
+    }
+
+    out.write_all(&frame)?;
+    out.flush()
 }
 
 /// A single keypress translated into what the CLI does with it. Host
@@ -520,12 +683,18 @@ fn classify_key(key: KeyEvent) -> Action {
 /// bounded CPU batch, so a stream of keystrokes, pastes, or resize events
 /// can never starve the emulated machine.
 ///
+/// With a real terminal on stdout the machine is presented as its own fixed
+/// 40x24 screen ([`draw_screen`]); with stdout redirected the same session
+/// writes the plain character stream instead, so nothing puts screen
+/// control sequences into a file or a pipe.
+///
 /// Host commands:
 /// - Ctrl-C / Ctrl-D: quit.
-/// - Ctrl-R: physical RESET (preserves RAM and queued input; see
-///   `Apple1::set_reset_line`), run under the session budget.
-/// - Ctrl-L: clear the *terminal's* visible screen (host presentation
-///   only, no machine state and no cycle).
+/// - Ctrl-R: physical RESET (preserves RAM, the screen, and queued input;
+///   see `Apple1::set_reset_line`), run under the session budget.
+/// - Ctrl-L: CLEAR SCREEN — the Apple I keyboard's second pushbutton. It
+///   blanks the machine's own screen and runs no cycle (see
+///   `Apple1::clear_screen`).
 /// - Ctrl-P: pause/resume. While paused no CPU batch runs, but keystrokes
 ///   are still queued and delivered once resumed — nothing is dropped, it
 ///   is only delayed. Explicit control commands still act while paused:
@@ -533,38 +702,39 @@ fn classify_key(key: KeyEvent) -> Action {
 ///   paused afterwards; pause suppresses free-running, not commands the
 ///   user explicitly asked for.
 /// - Ctrl-N: recreate the machine from the original ROM/program bytes
-///   (fresh RAM, fresh devices, then RESET) and reboot — distinct from
-///   RESET, which preserves RAM. The session's cycle budget and counter
-///   carry over; only the machine is new.
+///   (fresh RAM, fresh devices, blank screen, then RESET) and reboot —
+///   distinct from RESET, which preserves RAM and the screen. The session's
+///   cycle budget and counter carry over; only the machine is new.
 ///
 /// Raw mode disables the terminal's own ISIG processing, so Ctrl-C/Ctrl-D
 /// arrive here as ordinary keystrokes (handled above), never as a
 /// delivered `SIGINT`. An externally delivered signal — `kill`, a
-/// supervisor, or a closed terminal window sending `SIGHUP` — is
-/// unrelated to that and is registered for before raw mode is enabled, so
-/// even a signal during the boot batch still unwinds through `RawMode`
-/// instead of leaving the real terminal stuck in raw mode.
+/// supervisor, or a closed terminal window sending `SIGHUP` — is unrelated
+/// to that and is registered for before raw mode is enabled, so even a
+/// signal during the boot batch still unwinds through [`TerminalGuard`].
 fn run_interactive(
     session: &mut Session,
     rom: &[u8; 256],
     program: Option<&[u8]>,
     cycles_per_char: NonZeroU64,
 ) -> Result<StopReason, Box<dyn Error>> {
+    let view = if io::stdout().is_terminal() {
+        View::Grid
+    } else {
+        View::Stream
+    };
     let terminated = Arc::new(AtomicBool::new(false));
-    for signal in [
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGINT,
-        signal_hook::consts::SIGHUP,
-        signal_hook::consts::SIGQUIT,
-    ] {
-        signal_hook::flag::register(signal, Arc::clone(&terminated))?;
-    }
-
-    let _raw = RawMode::enable()?;
+    let _guard = TerminalGuard::enter(view, &terminated)?;
     let mut stdout = io::stdout();
     let mut paused = false;
+    let mut status = String::new();
+    // The first frame always draws: the boot screen is new information.
+    let mut redraw = true;
 
-    if let Some(stop) = advance_and_print(session, Boot::Yes, &mut stdout)? {
+    let stop = session.boot()?;
+    present(view, session, &mut redraw, &mut stdout)?;
+    if let Some(stop) = stop {
+        draw_if_needed(view, session, &status, &mut redraw, &mut stdout)?;
         return Ok(stop);
     }
 
@@ -579,39 +749,54 @@ fn run_interactive(
                     Action::Quit => return Ok(StopReason::UserOrEof),
                     Action::Reset => {
                         let stop = session.reset()?;
-                        let output = session.machine.drain_output();
-                        print_output(&output, &mut stdout)?;
-                        write!(stdout, "\r\n[RESET]\r\n")?;
-                        stdout.flush()?;
+                        present(view, session, &mut redraw, &mut stdout)?;
+                        announce(view, "[RESET]", &mut status, &mut redraw, &mut stdout)?;
                         if let Some(stop) = stop {
+                            draw_if_needed(view, session, &status, &mut redraw, &mut stdout)?;
                             return Ok(stop);
                         }
                     }
                     Action::ClearScreen => {
-                        execute!(
-                            stdout,
-                            terminal::Clear(terminal::ClearType::All),
-                            cursor::MoveTo(0, 0)
-                        )?;
+                        session.machine.clear_screen();
+                        redraw = true;
+                        if view == View::Stream {
+                            // Nothing redraws a byte stream, so clear the
+                            // host's own screen to match the machine's.
+                            execute!(
+                                stdout,
+                                terminal::Clear(terminal::ClearType::All),
+                                cursor::MoveTo(0, 0)
+                            )?;
+                        }
                     }
                     Action::TogglePause => {
                         paused = !paused;
-                        let label = if paused { "PAUSED" } else { "RESUMED" };
-                        write!(stdout, "\r\n[{label}]\r\n")?;
-                        stdout.flush()?;
+                        let label = if paused { "[PAUSED]" } else { "[RESUMED]" };
+                        announce(view, label, &mut status, &mut redraw, &mut stdout)?;
                     }
                     Action::Recreate => {
                         session.machine = create_machine(rom, program, cycles_per_char)?;
-                        write!(stdout, "\r\n[NEW MACHINE]\r\n")?;
-                        stdout.flush()?;
-                        if let Some(stop) = advance_and_print(session, Boot::Yes, &mut stdout)? {
+                        announce(view, "[NEW MACHINE]", &mut status, &mut redraw, &mut stdout)?;
+                        let stop = session.boot()?;
+                        present(view, session, &mut redraw, &mut stdout)?;
+                        redraw = true;
+                        if let Some(stop) = stop {
+                            draw_if_needed(view, session, &status, &mut redraw, &mut stdout)?;
                             return Ok(stop);
                         }
                     }
                     Action::Key(byte) => session.machine.type_char(byte),
                     Action::None => {}
                 },
-                Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {}
+                Event::Resize(_, _) => {
+                    if view == View::Grid {
+                        // Drop whatever the old layout left behind, then
+                        // redraw the machine's unchanged screen.
+                        execute!(stdout, terminal::Clear(terminal::ClearType::All))?;
+                        redraw = true;
+                    }
+                }
+                Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {}
                 Event::Paste(text) => {
                     for ch in text.chars().filter(char::is_ascii) {
                         session.machine.type_char(ch.to_ascii_uppercase() as u8);
@@ -620,13 +805,73 @@ fn run_interactive(
             }
         }
 
-        if !paused
-            && let Some(stop) =
-                advance_and_print(session, Boot::No(IDLE_BATCH_CYCLES), &mut stdout)?
-        {
+        let mut stop = None;
+        if !paused {
+            stop = session.advance(IDLE_BATCH_CYCLES)?;
+            present(view, session, &mut redraw, &mut stdout)?;
+        }
+        draw_if_needed(view, session, &status, &mut redraw, &mut stdout)?;
+        if let Some(stop) = stop {
             return Ok(stop);
         }
     }
+}
+
+/// Take this batch's finished characters. The stream view writes them; the
+/// grid view only notes that the machine's screen changed, since the screen
+/// itself is the authoritative content.
+fn present(
+    view: View,
+    session: &mut Session,
+    redraw: &mut bool,
+    stdout: &mut impl Write,
+) -> io::Result<()> {
+    let output = session.machine.drain_output();
+    match view {
+        View::Grid => *redraw |= !output.is_empty(),
+        View::Stream => print_output(&output, stdout)?,
+    }
+    Ok(())
+}
+
+/// Report a host command: the grid view puts it on the status row, the
+/// stream view prints it inline.
+fn announce(
+    view: View,
+    label: &str,
+    status: &mut String,
+    redraw: &mut bool,
+    stdout: &mut impl Write,
+) -> io::Result<()> {
+    match view {
+        View::Grid => {
+            status.clear();
+            status.push_str(label);
+            *redraw = true;
+            Ok(())
+        }
+        View::Stream => {
+            write!(stdout, "\r\n{label}\r\n")?;
+            stdout.flush()
+        }
+    }
+}
+
+/// Redraw the grid only when something actually changed; an idle batch with
+/// no finished characters and no status change draws nothing.
+fn draw_if_needed(
+    view: View,
+    session: &Session,
+    status: &str,
+    redraw: &mut bool,
+    stdout: &mut impl Write,
+) -> io::Result<()> {
+    if view != View::Grid || !*redraw {
+        return Ok(());
+    }
+    draw_screen(session.machine.display(), status, terminal::size()?, stdout)?;
+    *redraw = false;
+    Ok(())
 }
 
 fn print_output(output: &[u8], stdout: &mut impl Write) -> io::Result<()> {
@@ -642,6 +887,8 @@ fn print_output(output: &[u8], stdout: &mut impl Write) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use hesper_apple1::Pia6821;
+
     use super::*;
 
     /// Minimal original ROM whose reset vector points at RAM $0000; the
@@ -784,5 +1031,144 @@ mod tests {
         assert!(session.advance(500).unwrap().is_none());
         assert!(session.recent.is_empty());
         assert!(!session.trace.enabled());
+    }
+
+    /// A display whose screen holds `text`, one character per completed
+    /// shift-out (CR moves to the next line, as on real hardware).
+    fn display_showing(text: &[u8]) -> Display {
+        let mut display = Display::new(NonZeroU64::new(1).unwrap());
+        let mut pia = Pia6821::new();
+        for &byte in text {
+            display.on_write(byte);
+            display.tick(&mut pia);
+        }
+        display
+    }
+
+    /// The text a frame wrote at each absolute position, as
+    /// `(row, column, text)`; cursor show/hide sequences are not cells.
+    fn frame_cells(frame: &[u8]) -> Vec<(u16, u16, String)> {
+        let text = String::from_utf8(frame.to_vec()).expect("utf-8 frame");
+        let mut cells = Vec::new();
+        for chunk in text.split('\u{1b}').skip(1) {
+            let Some(body) = chunk.strip_prefix('[') else {
+                continue;
+            };
+            let Some((coordinates, rest)) = body.split_once('H') else {
+                continue;
+            };
+            let Some((row, column)) = coordinates.split_once(';') else {
+                continue;
+            };
+            if let (Ok(row), Ok(column)) = (row.parse::<u16>(), column.parse::<u16>()) {
+                cells.push((row - 1, column - 1, rest.to_owned()));
+            }
+        }
+        cells
+    }
+
+    const SHOW_CURSOR: &str = "\u{1b}[?25h";
+    const HIDE_CURSOR: &str = "\u{1b}[?25l";
+
+    #[test]
+    fn a_wide_terminal_does_not_reflow_the_forty_column_grid() {
+        let display = display_showing(b"AB\rC");
+        let mut frame = Vec::new();
+        draw_screen(&display, "[PAUSED]", (80, 30), &mut frame).unwrap();
+        let cells = frame_cells(&frame);
+
+        let rows: Vec<u16> = cells.iter().map(|&(row, _, _)| row).collect();
+        assert_eq!(
+            rows,
+            (0..=24).chain(std::iter::once(1)).collect::<Vec<u16>>(),
+            "24 screen rows, the status row, then the cursor move"
+        );
+        for &(row, column, ref text) in &cells[..ROWS] {
+            assert_eq!(column, 0, "row {row} must start at the left edge");
+            assert_eq!(
+                text.chars().count(),
+                COLUMNS,
+                "row {row} must be exactly 40 cells wide, not the host width"
+            );
+        }
+        assert!(cells[0].2.starts_with("AB "));
+        assert!(cells[1].2.starts_with("C "));
+        assert_eq!(cells[ROWS].2.trim_end(), "[PAUSED]");
+        // The machine cursor sits after 'C' on the second line.
+        assert_eq!((cells[ROWS + 1].0, cells[ROWS + 1].1), (1, 1));
+        let text = String::from_utf8(frame).unwrap();
+        assert!(text.ends_with(SHOW_CURSOR));
+    }
+
+    #[test]
+    fn a_twenty_four_row_window_draws_no_status_row() {
+        let display = display_showing(b"A");
+        let mut frame = Vec::new();
+        draw_screen(&display, "[RESET]", (40, 24), &mut frame).unwrap();
+        let cells = frame_cells(&frame);
+        assert!(
+            cells.iter().all(|&(row, _, _)| usize::from(row) < ROWS),
+            "nothing may be drawn outside the machine's own 24 rows"
+        );
+        assert!(
+            !String::from_utf8(frame).unwrap().contains("[RESET]"),
+            "a 24-row window has no room for a status marker"
+        );
+    }
+
+    #[test]
+    fn a_small_window_clips_the_grid_and_hides_an_offscreen_cursor() {
+        // Cursor ends at row 1, column 1 — outside a 1x1 window.
+        let display = display_showing(b"AB\rC");
+        let mut frame = Vec::new();
+        draw_screen(&display, "[PAUSED]", (20, 10), &mut frame).unwrap();
+        let cells = frame_cells(&frame);
+        assert_eq!(cells.len(), 10 + 1, "10 visible rows plus the cursor move");
+        for (_, _, text) in &cells[..10] {
+            assert_eq!(text.chars().count(), 20, "rows are clipped, not reflowed");
+        }
+
+        let mut tiny = Vec::new();
+        draw_screen(&display, "", (1, 1), &mut tiny).unwrap();
+        let tiny = String::from_utf8(tiny).unwrap();
+        assert!(
+            tiny.ends_with(HIDE_CURSOR),
+            "a cursor outside the window must be hidden, got: {tiny:?}"
+        );
+        assert_eq!(
+            frame_cells(tiny.as_bytes()).len(),
+            1,
+            "one visible cell row"
+        );
+    }
+
+    #[test]
+    fn a_zero_sized_window_emits_nothing() {
+        let display = display_showing(b"A");
+        for size in [(0, 24), (40, 0), (0, 0)] {
+            let mut frame = Vec::new();
+            draw_screen(&display, "[RESET]", size, &mut frame).unwrap();
+            assert!(
+                frame.is_empty(),
+                "size {size:?} must not emit any coordinate command"
+            );
+        }
+    }
+
+    #[test]
+    fn control_bytes_on_the_machine_screen_are_drawn_as_blanks() {
+        // ESC and a bell byte are ordinary screen cells to the machine; the
+        // host terminal must never receive them.
+        let display = display_showing(&[b'A', 0x1B, 0x07, b'B']);
+        let mut frame = Vec::new();
+        draw_screen(&display, "", (40, 24), &mut frame).unwrap();
+        let cells = frame_cells(&frame);
+        assert_eq!(&cells[0].2[..4], "A  B", "control bytes still take a cell");
+        assert!(
+            !cells
+                .iter()
+                .any(|(_, _, text)| text.contains('\u{1b}') || text.contains('\u{7}')),
+            "no emulated control byte may reach the terminal"
+        );
     }
 }
