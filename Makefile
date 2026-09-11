@@ -8,6 +8,7 @@
 #   make fmt-write 直接运行 cargo fmt --all 改写代码（fmt 只检查不修改）
 #   make fix       运行 cargo fmt --all 后，再对 workspace 全部 crate（含全部 target）
 #                  cargo fix --allow-dirty 自动修复
+#   make build     cargo build --workspace（debug）或 --release
 #   make wasm      仅 CPU 库 Wasm 编译检查；需要已安装 wasm32-unknown-unknown 目标
 #                  （未安装时跳过，不在 verify 中强制）
 #   make wozmon [ROM=<path>]      用 Bun 下载并校验 ROM（默认 .cache/apple1/wozmon.bin）
@@ -27,7 +28,7 @@
 
 .NOTPARALLEL:
 
-.PHONY: verify fmt fix check test test-release clippy demo diff wasm \
+.PHONY: verify fmt fix check test test-release clippy demo diff build build-release wasm \
         tools-test wozmon wozmon-verify wozmon-tests \
         data singlestep functional decimal interrupt visual6502 pins full
 
@@ -63,6 +64,12 @@ demo:
 diff:
 	git diff --check
 	git diff --cached --check
+
+build:
+	cargo build --workspace
+
+build-release:
+	cargo build --workspace --release
 
 wasm:
 	cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown

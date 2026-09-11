@@ -10,9 +10,10 @@
 //! | `$D014–$FEFF`     | open bus          |
 //! | `$FF00–$FFFF`     | 256-byte Woz Monitor ROM |
 //!
-//! Open bus returns the last value driven on the data bus (the high byte
-//! of the address if nothing was driven since the last opcode fetch).
-//! ROM writes are silently ignored.  The 4 KiB RAM is not mirrored.
+//! Open bus deterministically returns the last value driven on the data bus
+//! (initialised to zero). This is a **simulation convention** for
+//! reproducibility; real unmapped Apple I addresses float and can return
+//! noise. ROM writes are silently ignored.  The 4 KiB RAM is not mirrored.
 
 use std::fmt;
 

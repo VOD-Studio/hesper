@@ -1,7 +1,10 @@
-//! MC6821 Peripheral Interface Adapter (PIA) device model.
+//! MC6820/6821 Peripheral Interface Adapter (PIA) device model.
 //!
-//! Apple I uses a single PIA for keyboard input (Port A) and video output
-//! (Port B).  The register select lines (RS0, RS1) come from A0 and A1:
+//! Apple I uses a single PIA (MC6820 on the original board; this model
+//! follows the register behaviour documented in the MC6821 datasheet,
+//! which is compatible at the register level) for keyboard input (Port A)
+//! and video output (Port B).  The register select lines (RS0, RS1) come
+//! from A0 and A1:
 //!
 //! | Address  | RS1 | RS0 | Register                |
 //! |----------|-----|-----|-------------------------|
@@ -9,6 +12,17 @@
 //! | `$D011`  | 0   | 1   | Control Register A (CRA)|
 //! | `$D012`  | 1   | 0   | Port B Data / DDR       |
 //! | `$D013`  | 1   | 1   | Control Register B (CRB)|
+//!
+//! ## Port A vs Port B readback
+//!
+//! The MC6820/MC6821 datasheets specify different readback behaviour:
+//! reading Port A always reads the actual pin level; reading Port B in
+//! output mode reads the output latch, not the pin.  The current
+//! implementation uses a symmetric `(OR & DDR) | (pins & !DDR)` formula
+//! for both ports — this happens to match the Apple I configuration
+//! (Port A = input, Port B bits 6–0 = output, bit 7 = input) but is not
+//! a correct model of the two ports' distinct read paths.  See
+//! `docs/apple1/hardware-evidence.md` H12.
 //!
 //! ## Control register bits
 //!
