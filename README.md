@@ -134,5 +134,6 @@ cargo test -p hesper-cpu6502 --test pins --release
 - [`docs/roadmap.md`](docs/roadmap.md)：已完成范围与后续里程碑
 - [`docs/references.md`](docs/references.md)：硬件资料及外部测试来源
 - [`docs/verification.md`](docs/verification.md)：按时间记录的本地验证证据
+- [`docs/apple1/apple-1-overview.md`](docs/apple1/apple-1-overview.md)：Apple I 硬件、Woz Monitor 与历史背景全面介绍
 - [`docs/apple1/examples.md`](docs/apple1/examples.md)：Apple I CLI 与库 API 使用示例
 - [`AGENTS.md`](AGENTS.md)：面向代码助手和贡献者的仓库规则

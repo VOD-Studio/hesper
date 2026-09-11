@@ -1,6 +1,6 @@
 # Apple I 使用示例
 
-本文档给出 `crates/apple1`（`hesper-apple1`）机器模型与 `hesper apple1` CLI 子命令的可复现使用示例。机器模型与地址映射见 [`crates/apple1/src/lib.rs`](../../crates/apple1/src/lib.rs)；CLI 交互循环见 [`crates/cli/src/apple1.rs`](../../crates/cli/src/apple1.rs)；来源与许可证见 [`references.md`](../references.md#apple-i)。
+Apple I 的硬件架构、历史背景和 Woz Monitor 全面介绍见 [`apple-1-overview.md`](apple-1-overview.md)。本文档给出 `crates/apple1`（`hesper-apple1`）机器模型与 `hesper apple1` CLI 子命令的可复现使用示例。机器模型与地址映射见 [`crates/apple1/src/lib.rs`](../../crates/apple1/src/lib.rs)；CLI 交互循环见 [`crates/cli/src/apple1.rs`](../../crates/cli/src/apple1.rs)；来源与许可证见 [`references.md`](../references.md#apple-i)。
 
 所有输出片段均为本地实际运行结果，不是编造的示意输出。
 
@@ -59,6 +59,8 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
 | Ctrl-N | 用原始 ROM／程序字节重建机器（新 RAM、空屏），会话周期计数与预算保留 |
 
 **stdout 被重定向时**（`> file`、管道）仍是纯字符流，绝不写入光标／清屏等控制序列。
+
+**仿真机输入输出固定大写**：键盘入队先取七位，再将 ASCII `a–z` 转为 `A–Z`；显示完成时对七位字符做同样转换，屏幕与输出流一致。库 API、管道、逐键输入和 bracketed paste 共用设备层规则，因此可输入小写 `300r`。数字、标点和控制字符的既有行为不变；这不是 Unicode 大写转换或完整字符 ROM 仿真，也不转换 CPU 写总线、PIA 显示读回、ROM、路径或宿主日志。
 
 ## 3. 交互示例：内存检查（examine）
 

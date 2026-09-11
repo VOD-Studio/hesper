@@ -538,3 +538,19 @@ alternate-screen／line-wrap／清屏／光标定位／bracketed-paste 序列并
   M3 整体验收仍未勾选（缺口见 `docs/roadmap.md`）。
 - CPU 执行语义未改动，因此未重跑 SingleStep 151 万／Klaus 三配置／246+419 pins 的完整外部
   一致性范围。未远程运行 CI，未推送或发布。
+
+## Apple I 输入输出固定大写
+
+键盘入队采用 `(c & 0x7F).to_ascii_uppercase()`；显示仅在计时完成的提交点大写化，输出队列与屏幕使用同一个字节，锁存器及 Port B 引脚读回保持原字符语义。CLI 删除按键与粘贴的重复转换，保留既有 bracketed-paste 生命周期。
+
+本地验证：
+
+- `cargo test --locked -p hesper-apple1 --test machine`：18 项通过，覆盖小写重复读取、混合大小写 FIFO、高位字母及标点/控制字符、CPU 独立写入小写后的输出与屏幕。
+- `cargo test --locked -p hesper-apple1 --lib`：31 项通过，包括忙/就绪 Port B 分别读回 `0xE1` / `0x61` 而完成显示为 `A`、计时、折行及标点/CR。
+- `cargo test --locked -p hesper --lib`：12 项通过；`make verify` 通过（debug/release workspace、fmt/check/Clippy、demo）。
+- `make wozmon-verify ROM=.cache/apple1/wozmon.bin`：256 字节，SHA-256 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`；未下载。`make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试、10 项真实 CLI 测试通过，包括 `300: aB cD eF` 的大写回显与 RAM 回读。首次单独用相对 `HESPER_APPLE1_ROM` 路径运行时因测试工作目录不同找不到文件；Makefile 的绝对路径解决了该运行前置问题。
+- 真实管道：`--cycles-per-char 1 --max-cycles 2000000`，输入 `300: a9 61 20 ef ff 4c 05 03` 与 `300r` 后 EOF，十秒限时内退出码 0；stdout 包含 `300R`、`0300: A9A` 且无 ASCII 小写。
+- 真实 PTY：临时 Python 驱动在 80×25 终端解析实际 ANSI 帧恢复 40×24 网格。逐键输入上述命令，随后 Ctrl-R 回 monitor、Ctrl-L 清屏，再分别发送 `ESC[200~`/`ESC[201~` 包裹的无换行命令并单独按 Enter；两条命令间等待回显。两种输入均显示大写命令与 `0300: A9A`，不是只回显而未执行。
+- PTY 确认启动 `ESC[?2004h`、raw 模式及 alternate screen；Ctrl-C 退出码 0，确认 `ESC[?2004l`、离开 alternate screen、恢复自动换行，完整 termios 恢复。初版驱动在会话首领退出后查询 slave 触发 macOS `ENOTTY`；改由仍存活的 PTY 会话包装进程在 CLI 退出后检查 termios，最终完整场景通过。临时驱动已移除。
+
+仅验证本次字符规范化契约；未运行远程 CI，不扩大 Apple I 硬件兼容性声明。
