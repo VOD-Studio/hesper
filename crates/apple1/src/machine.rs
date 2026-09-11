@@ -92,11 +92,12 @@ impl Apple1 {
     /// Each cycle runs [`Apple1::cycle`]. Returns any display characters
     /// that completed during this batch (`run_cycles(0)` runs no cycle and
     /// only collects what was already complete). Splitting the same total
-    /// budget across several calls (mid-instruction, mid-RDY-wait, or mid
-    /// physical RESET hold) yields the same device and CPU state as one
-    /// call with the combined budget: the CPU's own sequencer state
-    /// persists across calls, and every device is ticked exactly once per
-    /// cycle regardless of batch boundaries.
+    /// budget across several calls (mid-instruction,
+    /// during keyboard/display handshakes, or mid physical RESET hold) yields
+    /// the same device and CPU state when input events occur at the same
+    /// absolute cycles. The CPU's sequencer state persists across calls,
+    /// and every device is ticked exactly once per cycle regardless of batch
+    /// boundaries. This fixed configuration does not drive CPU RDY.
     ///
     /// On error the completed-output queue is preserved; the caller can
     /// still take it with [`Apple1::drain_output`].

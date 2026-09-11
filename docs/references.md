@@ -28,23 +28,35 @@ SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`
 
 ## Apple I
 
-- Apple-1 Operation Manual (1976). Original schematics, memory map, Woz Monitor listing.
-  <https://archive.org/details/Apple-1_Operation_Manual_1976_Apple_a>
-- Apple-1 Operation Manual (1976), Section I "GETTING THE SYSTEM RUNNING" → "TEST PROGRAM"（原厂整机测试程序，字节 `A9 00 AA 20 EF FF E8 8A 4C 02 03`，见 [`apple1/05-manual-test-program.md`](apple1/05-manual-test-program.md)）。手册 OCR 全文有大量十六进制数字识别错误，逐字节核对时交叉比对了两份独立转录：
-  <https://www.applefritter.com/content/programming-woz-monitor>（Mike Willegal 指出该程序位于手册第 2 页）、
-  <https://obsolescence.wixsite.com/obsolescence/kim-uno-apple-1>（KIM Uno 项目文档给出同一字节序列）。
-  已在 Hesper 上实测运行，输出的连续字节流与手册原文描述一致。
-- MC6821 Peripheral Interface Adapter datasheet. PIA register model.
-- Woz Monitor hex dump: 256 bytes at `$FF00‑$FFFF`, RESET vector at `$FFFC/D` points to `$FF00`.
-  Reproducible assembly source at <https://github.com/jefftranter/6502/tree/master/asm/wozmon>
-  Hex dump verified against <https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex>
-- 内存映射（4 KiB RAM 于 `$0000`、PIA 于 `$D010‑D013`、256 B monitor ROM 于 `$FF00‑$FFFF`、跳线可重新分配 4 KiB 分区）、未映射地址浮空、PIA RESET 引脚与 6502 RES 共用同一系统复位信号、RESET 不清屏（复位线不接视频板移位寄存器存储，也不接键盘编码器）、14.31818 MHz 晶振四分频 NTSC 色副载频再分频出 1.023 MHz CPU 时钟：均来自 2026‑09‑10 网络检索的二级/技术爱好者资料（applefritter.com、apple2history.org、righto.com「Inside Apple‑1's shift register memory」、68kmla.org 等），未逐页核对手册或原理图扫描件原文。40×24 字符、CR 或写满行触发的硬件滚动、影子显示光标闪烁同样来自这批二级资料。这些结论已用于 `crates/apple1/src/lib.rs` 与 `Display` 的固定配置，但**不构成逐页原始手册/原理图核对**；后续如有条件应直接核对 archive.org 扫描件对应页面并在此处补充精确页码引用。
-- Apple-1 Operation Manual (1976) OCR 全文（<https://archive.org/download/Apple-1_Operation_Manual_1976_Apple_a/Apple-1_Operation_Manual_1976_Apple_a_djvu.txt>）：
-  - Section I / "KEYBOARD" 明确列出键盘上的两个按钮 **RESET** 与 **CLEAR SCREEN**，二者是独立硬件输入。据此纠正了此前"Apple I 没有独立清屏硬件输入"的错误结论：RESET 仍然不清屏，但清屏本身是真实的视频板输入，`Apple1::clear_screen` 就是它的功能级模型（一次性动作，不建模按钮脉冲宽度）。
-  - Section III / "REFRESH" 说明每 65 个时钟中有 4 个用于 DRAM 刷新并在此期间抑制 Φ2。本项目**明确不建模**该刷新时钟：`Apple1` 的每个 cycle 都是一次真实 CPU 周期，没有被刷新占用的周期。这是本轮用户选定保留的近似，不是"RDY 未接线"这种接线缺口，也不能被当作整机逐周期准确。
-- MC6821 寄存器参考（Leiden University，<https://www.eld.leidenuniv.nl/~moene/software/rdl/html/group__rdl__pia.html>）：控制寄存器第 2 位对**读写双方**选择 DDR 还是外设数据寄存器；只有读取外设数据寄存器（或硬件 RESET）清除该端口的中断标志。据此修正了 `Pia6821::read` 此前无论第 2 位为何都返回数据寄存器并清标志的 bug（写 `DDRB=$7F` 后读回 `$00`、写输出寄存器也清标志、键盘被非数据访问"消费"）。Motorola 原始数据表 PDF 镜像已定位但本轮提取失败，因此**没有**逐页核对原厂数据表全文。
-- Woz Monitor ROM 的版权状态存在公开争议（多个爱好者站点将其视为事实上可自由转载，但 Apple 从未正式以开放许可证发布）；本项目不内嵌、不提交该镜像。用户可显式运行 Bun 工具下载公开转录并校验 SHA-256（`e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`，对应上面 alangarf/apple-one 转录），默认保存到忽略缓存；普通构建和测试不下载。公开可下载不代表使用或再分发授权。资源获取与校验方式见 [`crates/apple1/tests/data/README.md`](../crates/apple1/tests/data/README.md)。
-- MC6821 状态标志与中断使能位独立：CA1/CB1 满足有效沿时 CRA/CRB 第 7 位无条件置位，第 0 位（中断使能）只决定是否同时拉低外部 IRQ 输出脚，不影响标志本身——软件可在中断禁用状态下轮询标志，Woz Monitor 自身的 `BIT $D011`/`BPL` 键盘轮询正是如此。2026‑09‑10 网络检索确认该行为（数据表转录性技术资料），修复了 `Pia6821::set_ca1`/`set_cb1` 此前把标志置位错误地绑定在使能位上的 bug（细节与回归测试见 `crates/apple1/src/pia.rs`）。
+一本一手资料（手册+原理图）、两份原厂 PIA 数据表均已逐页核对指定页。完整的逐项主张—证据—实现矩阵见 [`docs/apple1/hardware-evidence.md`](apple1/hardware-evidence.md)；此处仅保留原件索引及关键页码。
+
+### 一手原件索引
+
+| 标识 | 原件 | 馆藏／URL | 核对日期 |
+|------|------|-----------|----------|
+| M76 | *Apple-1 Operation Manual* (1976)，含三张原理图（Dwg 00101 Rev A Sheet 1–3/3）与 Woz Monitor 完整清单 | [Internet Archive](https://archive.org/details/Apple-1_Operation_Manual_1976_Apple_a)，核对 scan leaf 1/8/9/10/13/14 | 2026-09-11 |
+| P20 | Motorola *M6800 Microcomputer System Design Data*, Second Printing, ©1976，MC6820 章（PDF 第 41–50 页） | [bitsavers](http://bitsavers.trailing-edge.com/components/motorola/6800/MC6800_Microcomputer_System_Design_Data_1976.pdf)，[IA 馆藏](https://archive.org/details/bitsavers_motorola68erSystemDesignData1976_23834957) | 2026-09-11 |
+| P21 | Motorola *MC6821 Peripheral Interface Adapter (PIA)*, DS9435R5, ©1985（末页标注 1994 印刷） | [Internet Archive](https://archive.org/details/Motorola_MC6821_NMOS_Peripheral_Interface_Adapter_1985_Motorola) | 2026-09-11 |
+
+### 关键页码（印刷页）
+
+- M76 规格页（leaf 1）：40×24、自动滚动、1.023/0.960 MHz 时钟、4096 DRAM
+- M76 印刷页 7 HARDWARE NOTES（leaf 8）：PIA 的 RS0←A0/RS1←A1/CS0←A4/CS1←+5V/CS2←$DXXX 译码；CB2 反相成 DA→PB7 反馈；RDA 经 74123 3.5 μs→CB1
+- M76 印刷页 8（leaf 9）：REFRESH（每 65 周期 4 周期刷新、Φ2 抑制≠RDY）、SOFTWARE CONSIDERATIONS（含 PB7 极性矛盾——正文说 "1=ready" 但 monitor 代码 `BIT DSP / BMI ECHO` 实际为 PB7=1=busy）
+- M76 Section III / HOW TO EXPAND THE APPLE SYSTEM：扩展连接器提供 RDY；DMA 段落说明 RDY 用于单步或慢速 ROM。当前固定文本配置没有此类扩展，也没有设备驱动 CPU RDY，因此将机器级 RDY 保持验收判为不适用。该结论限定于所选模拟配置，不声称原板不存在 RDY、不推断所有板型的 RDY 物理接线，也不替代原理图逐页核对。REFRESH 中的 Φ2 抑制仍是独立、未建模的时钟行为。
+- M76 Sheet 2/3 PROCESSOR SECTION（leaf 14）：6502+PIA(6820@A4)+PROM(MMI 6301)+RAM+跳线；RESET 接 CPU/PIA/B4-11
+- M76 Sheet 1/3 TERMINAL SECTION（leaf 13）：2513 字符发生器、2504 移位寄存器、CLEAR SCREEN
+- M76 Sheet 3/3 POWER SUPPLY（leaf 10）：RESET 按钮接地、CLEAR SCREEN 按钮接 +5V
+- P20 印刷页 45–50：MC6820 MPU 接口、内部寄存器选择、控制字、中断/握手表
+- P21 印刷页 8–10：Table 1 内部寻址（bit 2 对读写双方选择 DDR/数据寄存器）、Port A/B 硬件差异（A 读引脚、B 输出模式读锁存）、控制字格式
+
+### 测试程序
+
+原厂整机测试程序（M76 Section I "TEST PROGRAM"，字节 `A9 00 AA 20 EF FF E8 8A 4C 02 03`，见 [`apple1/05-manual-test-program.md`](apple1/05-manual-test-program.md)）。已在 Hesper 上实测运行，输出的连续字节流与手册原文描述一致。
+
+### Woz Monitor ROM
+
+256 字节，`$FF00–$FFFF`，RESET 向量 `$FFFC/D` → `$FF00`。汇编源码见 [jefftranter/6502](https://github.com/jefftranter/6502/tree/master/asm/wozmon)，SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`。本项目不内嵌、不提交该镜像；资源获取与校验见 [`crates/apple1/tests/data/README.md`](../crates/apple1/tests/data/README.md)。
 
 ## Rust 工程资料
 

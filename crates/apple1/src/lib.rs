@@ -15,12 +15,17 @@
 //!
 //! This is the commonly documented Apple I baseline (first 4 KiB RAM bank
 //! at `$0000`, PIA at `$D010–$D013`, 256‑byte monitor ROM at `$FF00–$FFFF`
-//! with the reset vector at `$FFFC/D` pointing to `$FF00`); see
-//! `docs/references.md#apple-i` in this repository for the secondary
-//! sources consulted. A from‑schematic primary‑source page citation has
-//! not been completed; treat the specific addresses as a documented,
-//! reproducible convention rather than a from‑schematic guarantee for
-//! every board revision.
+//! with the reset vector at `$FFFC/D` pointing to `$FF00`). The original
+//! Operation Manual schematics and printed pages have been page‑checked for
+//! the address decode, RESET/CLEAR SCREEN wiring, and PIA register selection;
+//! see `docs/references.md#apple-i` and `docs/apple1/hardware-evidence.md`
+//! for the full source‑to‑implementation correlation matrix. The specific
+//! four‑address PIA range omits documented address aliases (e.g. `$D014`
+//! selects Port A on real hardware but returns open bus here — see H04).
+//! Treat the RAM/ROM/PIA address ranges as a documented, reproducible
+//! configuration; the PIA alias gap and open‑bus convention are known
+//! simulation differences, not from‑schematic guarantees for every board
+//! revision.
 //!
 //! ROM writes are silently ignored (read‑only ROM). Open bus deterministically
 //! returns the last byte driven on the data bus — a **simulation
@@ -57,8 +62,24 @@
 //! register's data‑dependent ready timing with a fixed cycle count rather
 //! than modeling the shift‑register position directly.
 //!
-//! The PIA model is a correct register file; external I/O (keyboard data,
-//! display timing) is wired in by the host through `Pia6821` setter methods.
+//! # RDY scope
+//!
+//! This fixed text-system configuration has no single-step or slow-ROM
+//! expansion driving RDY. The CPU therefore stays ready; keyboard and
+//! display waits are PIA handshakes polled by software, not CPU RDY stalls.
+//!
+//! The Apple-1 Operation Manual, Section III (DMA), documents RDY for
+//! single-stepping and slow ROM applications. Its REFRESH section instead
+//! describes suppressing Phi2 while holding Phi1. That refresh clock
+//! gating is not modeled here and must not be replaced by RDY stalls.
+//!
+//! The PIA model implements the register file (DDR, control, data, and interrupt
+//! flags) per the MC6820/MC6821 datasheets; Port A and Port B readback currently
+//! use a symmetric `(OR & DDR) | (pins & !DDR)` formula where the datasheets
+//! specify Port A reads actual pins always and Port B reads the output latch in
+//! output mode (see [`docs/apple1/hardware-evidence.md`] H12). External I/O
+//! (keyboard data, display timing) is wired in by the host through `Pia6821`
+//! setter methods; CA2/CB2 output-level handshaking is not yet modelled.
 //!
 //! The host is responsible for acquiring and loading the Woz Monitor ROM.
 //! This crate never downloads, embeds, or ships that 256‑byte image; see
