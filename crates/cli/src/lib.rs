@@ -206,3 +206,7 @@ pub fn run_demo_with_trace(
 }
 
 pub mod apple1;
+pub(crate) mod config;
+pub(crate) mod terminal;
+#[doc(hidden)]
+pub mod tui;

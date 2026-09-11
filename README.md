@@ -8,7 +8,7 @@ Hesper 是一个使用 Rust 编写的 NMOS 6502 模拟器项目。目前包含�
 
 当前实现聚焦官方 NMOS 6502 指令、总线周期、中断、RDY/SO 和物理 RESET。Apple I 文本系统（Woz Monitor + PIA 键盘/显示、40×24 屏幕、真实终端网格视图）可实际交互使用，但**整体验收尚未勾选**：视频板 DRAM 刷新时钟不建模、显示忙时延时是固定近似、配置资料未逐页核对原始手册（见 [`docs/roadmap.md`](docs/roadmap.md) 的 M3 已知缺口）。Apple II 与浏览器前端尚未开始。
 
-Apple I 交互命令行的按键约定见 [`docs/apple1/examples.md`](docs/apple1/examples.md)：Ctrl-R 是物理 RESET，Ctrl-L 是键盘上的 CLEAR SCREEN 按钮，Ctrl-P 暂停/继续，Ctrl-N 重建机器，Ctrl-C/Ctrl-D 退出。
+无参数在 stdin/stdout 都是终端时进入中文 TUI 启动中心；重定向任一流时仍运行可脚本化的内置演示。Apple I 的 TUI 按键约定见 [`docs/apple1/examples.md`](docs/apple1/examples.md)：Ctrl-R 是物理 RESET，Ctrl-L 是键盘上的 CLEAR SCREEN 按钮，Ctrl-P 暂停/继续，Ctrl-N 重建机器，Ctrl-C/Ctrl-D 退出。
 
 ## 特性
 
@@ -28,7 +28,8 @@ Apple I 交互命令行的按键约定见 [`docs/apple1/examples.md`](docs/apple
 需要当前稳定版 Rust。仓库中的 `rust-toolchain.toml` 会安装最小工具链及 `rustfmt`、`clippy` 组件。
 
 ```sh
-cargo run -p hesper
+cargo run -p hesper                 # 终端中打开 TUI 启动中心
+cargo run -p hesper -- demo         # 显式运行内置演示（适合脚本）
 ```
 
 内置程序从 RESET 向量启动，将数字 `0..9` 写入 `$0200..$0209`，然后由宿主在完成地址停止。
@@ -36,9 +37,9 @@ cargo run -p hesper
 查看指令或总线 trace：
 
 ```sh
-cargo run -p hesper -- --trace
-cargo run -p hesper -- --bus-trace --trace-limit 4
-cargo run -p hesper -- --help
+cargo run -p hesper -- demo --trace
+cargo run -p hesper -- demo --bus-trace --trace-limit 4
+cargo run -p hesper -- demo --help
 ```
 
 Apple I Woz Monitor 交互（需安装 Bun，并自行确认 ROM 使用权限）：
@@ -47,6 +48,8 @@ Apple I Woz Monitor 交互（需安装 Bun，并自行确认 ROM 使用权限）
 make wozmon                               # 下载并校验到 .cache/apple1/wozmon.bin
 cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin
 ```
+
+也可以先运行 `cargo run -p hesper`，在启动中心选择 Apple-1；首次使用在配置页输入 ROM 路径并校验。TUI 配置只保存 ROM 路径和显示偏好，不保存机器内存或会话。
 
 ## Workspace 结构
 

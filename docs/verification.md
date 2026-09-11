@@ -599,3 +599,22 @@ alternate-screen／line-wrap／清屏／光标定位／bracketed-paste 序列并
 - PIA 地址别名（H04）与 Port A/B 读回差异（H12）仍未实现。
 - CPU 执行语义未改动，因此未重跑 SingleStep 151 万／Klaus 三配置／246+419 pins 的完整外部一致性范围；`hesper-cpu6502` 自身的 workspace 测试（conformance/cycles/interrupts/pins/official/arithmetic/external）在本轮 `make verify` 中全绿。
 - 局部数字模型通过不等于实板示波器对照、模拟电气认证或远程 CI 通过；本轮未运行远程 CI，未提交或推送。
+
+## 2026-09-11 TUI 首版实现（本地 review 交付）
+
+基线为 `c5e14dc`，开始时工作区干净；本节的改动限于 CLI 宿主、自动化入口、测试和说明文档，没有修改 CPU、PIA 或 Apple-1 机器时序。新增 Ratatui 0.30.2（复用既有 Crossterm 0.29）实现中文启动中心、Apple-1 40×24 投影运行页、会话/顶栏菜单、配置页、显示设置、帮助、确认与错误弹窗。配置只保存经校验的绝对 ROM 路径和显示偏好；无参数双 TTY 进入中心，`demo` 固定保留脚本化演示，管道/重定向和 `TERM=dumb` 保留文本宿主。
+
+**实际命令与结果**
+
+- `cargo test --locked -p hesper --lib`：17 项通过。新增覆盖配置 roundtrip（含中文/空格路径）、极小 TestBackend、终端显示宽度截断、粘贴 CR/LF 归一化以及临时菜单和主动暂停的独立性。
+- `cargo test --locked -p hesper --test demo`：9 项通过。确认非 TTY 的无参数输出仍与 `demo` 完全一致，显式 `tui` 在管道下失败且不输出控制序列。
+- `cargo test --locked -p hesper --test apple1`：5 项通过，10 项真实 ROM 用例按原约定忽略。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：Apple-1 机器 4 项和 CLI 管道 10 项真实 ROM 测试通过；使用既有本地 ROM，未下载。SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`。
+- `make verify`：通过（fmt、workspace debug/release 测试、Clippy、显式 `demo` 和 diff 检查）。另执行 `cargo build --locked -p hesper --release`，通过。
+
+**真实终端记录**
+
+- macOS PTY，`120×40`：`target/debug/hesper` 实际进入备用屏并渲染 `HESPER` 中文启动中心；外部 `SIGTERM` 后观测到 `[stopped by signal]`，且 bracketed-paste、自动换行和备用屏退出序列完整出现。ANSI 转录保存在忽略目录 `.cache/tui-qa/center-120x40.ansi`，未提交。
+- P01 的“启动中心出现”和 P14 的“外部信号清理”已实测；P02–P13、P15–P16 的完整人工键盘/ROM/resize 矩阵尚未逐项在桌面终端实测。自动化覆盖了其中的入口、配置、粘贴、暂停、极小尺寸、预算和文本流回归，但不替代人工视觉验收。
+
+未执行 commit、push、MR、远程 CI 或发布。未验证 Linux/Windows，也没有把上述未测 PTY 流程标为通过。

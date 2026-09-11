@@ -23,8 +23,8 @@ jobs:
       - run: cargo test --workspace --locked --offline
       - run: cargo test --workspace --release --locked --offline
       - run: cargo clippy --workspace --all-targets --locked --offline -- -D warnings
-      - run: cargo run -p hesper
-      - run: cargo run -p hesper -- --trace
-      - run: cargo run -p hesper -- --bus-trace --trace-limit 4
+      - run: cargo run -p hesper -- demo
+      - run: cargo run -p hesper -- demo --trace
+      - run: cargo run -p hesper -- demo --bus-trace --trace-limit 4
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown --locked

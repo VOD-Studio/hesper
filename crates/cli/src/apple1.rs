@@ -21,6 +21,10 @@ use std::{
     time::Duration,
 };
 
+use crate::{
+    format_bus_trace, format_instruction_trace,
+    terminal::{TerminalGuard, TerminalMode},
+};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -35,9 +39,6 @@ use hesper_apple1::{
 };
 use hesper_cpu6502::{CpuError, StepKind};
 use sha2::{Digest, Sha256};
-use signal_hook::SigId;
-
-use crate::{format_bus_trace, format_instruction_trace};
 
 /// Real CPU cycles to run per idle tick while nothing new has arrived (a
 /// keystroke in the interactive loop, or after a line in the batch loop)
@@ -76,7 +77,7 @@ const STATUS_WIDTH: usize = 16;
 /// reports each with its own message and (for `Error`) a non-zero exit via
 /// `main`'s existing `Err` handling; the other three are graceful (exit 0).
 #[derive(Debug)]
-enum StopReason {
+pub(crate) enum StopReason {
     /// The user quit interactively (Ctrl-C/Ctrl-D) or stdin hit EOF.
     UserOrEof,
     /// `--max-cycles` was reached.
@@ -105,13 +106,21 @@ impl fmt::Display for StopReason {
 ///
 /// Both kinds share one bounded queue: `--trace-limit` caps total records,
 /// so diagnostics stay bounded no matter how long the machine runs.
-struct TraceOptions {
+pub(crate) struct TraceOptions {
     instructions: bool,
     bus: bool,
     limit: usize,
 }
 
 impl TraceOptions {
+    pub(crate) fn new(instructions: bool, bus: bool, limit: usize) -> Self {
+        Self {
+            instructions,
+            bus,
+            limit,
+        }
+    }
+
     fn enabled(&self) -> bool {
         self.instructions || self.bus
     }
@@ -125,7 +134,7 @@ impl TraceOptions {
 /// ceiling and its trace keep going. `total_master_ticks` (session board
 /// time, the trace's `M=` marker) and `total_frames` (completed video
 /// frames, the batch drain's quiet measure) carry over the same way.
-struct Session {
+pub(crate) struct Session {
     machine: Apple1,
     total_cpu_cycles: u64,
     total_master_ticks: u64,
@@ -136,7 +145,7 @@ struct Session {
 }
 
 impl Session {
-    fn new(machine: Apple1, max_cycles: Option<u64>, trace: TraceOptions) -> Self {
+    pub(crate) fn new(machine: Apple1, max_cycles: Option<u64>, trace: TraceOptions) -> Self {
         Self {
             machine,
             total_cpu_cycles: 0,
@@ -150,7 +159,7 @@ impl Session {
 
     /// Real CPU cycles left in the session budget, or `None` when
     /// unlimited.
-    fn remaining(&self) -> Option<u64> {
+    pub(crate) fn remaining(&self) -> Option<u64> {
         self.max_cycles
             .map(|max| max.saturating_sub(self.total_cpu_cycles))
     }
@@ -208,7 +217,7 @@ impl Session {
 
     /// Write the retained records. Called only after the terminal has been
     /// restored, so diagnostics never land inside the machine's screen.
-    fn write_trace(&self, out: &mut impl Write) -> io::Result<()> {
+    pub(crate) fn write_trace(&self, out: &mut impl Write) -> io::Result<()> {
         for line in &self.recent {
             writeln!(out, "{line}")?;
         }
@@ -221,7 +230,10 @@ impl Session {
     /// exhausted — including exactly at the end of the batch, so the host
     /// never accepts one more input or runs "one last batch" past the
     /// ceiling.
-    fn advance(&mut self, requested_cpu_cycles: u64) -> Result<Option<StopReason>, CpuError> {
+    pub(crate) fn advance(
+        &mut self,
+        requested_cpu_cycles: u64,
+    ) -> Result<Option<StopReason>, CpuError> {
         let mut completed = 0u64;
         while completed < requested_cpu_cycles {
             match self.tick()? {
@@ -249,7 +261,7 @@ impl Session {
     /// it has and the sequence resumes if the host is given more budget.
     /// `CycleBudgetExceeded` is reserved for a CPU that never completes a
     /// fixed-length reset with budget to spare.
-    fn reset(&mut self) -> Result<Option<StopReason>, CpuError> {
+    pub(crate) fn reset(&mut self) -> Result<Option<StopReason>, CpuError> {
         self.machine.set_reset_line(true);
         let mut held = 0u64;
         while held < RESET_HOLD_CYCLES {
@@ -287,11 +299,27 @@ impl Session {
 
     /// RESET plus the boot batch that carries the machine to its first
     /// prompt. Used for the initial start and for Ctrl-N.
-    fn boot(&mut self) -> Result<Option<StopReason>, CpuError> {
+    pub(crate) fn boot(&mut self) -> Result<Option<StopReason>, CpuError> {
         match self.reset()? {
             Some(stop) => Ok(Some(stop)),
             None => self.advance(BOOT_BATCH_CPU_CYCLES),
         }
+    }
+
+    pub(crate) fn machine(&self) -> &Apple1 {
+        &self.machine
+    }
+
+    pub(crate) fn machine_mut(&mut self) -> &mut Apple1 {
+        &mut self.machine
+    }
+
+    pub(crate) fn total_cpu_cycles(&self) -> u64 {
+        self.total_cpu_cycles
+    }
+
+    pub(crate) fn recreate(&mut self, machine: Apple1) {
+        self.machine = machine;
     }
 }
 
@@ -348,7 +376,7 @@ pub fn run_apple1(
 
 /// Read the Woz Monitor ROM: exactly 256 bytes and exactly the pinned
 /// image (see [`WOZMON_SHA256`]). No download, no way to skip the check.
-fn load_rom(path: &str) -> Result<[u8; 256], Box<dyn Error>> {
+pub(crate) fn load_rom(path: &str) -> Result<[u8; 256], Box<dyn Error>> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read ROM file '{path}': {e}"))?;
     if bytes.len() != Apple1Bus::ROM_SIZE {
         return Err(format!(
@@ -374,7 +402,7 @@ fn load_rom(path: &str) -> Result<[u8; 256], Box<dyn Error>> {
 
 /// Read an optional raw program image loaded at `$0000`. Any length that
 /// fits the Apple I's 4 KiB RAM is accepted, including empty.
-fn load_program(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+pub(crate) fn load_program(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read program file '{path}': {e}"))?;
     if bytes.len() > Apple1Bus::RAM_SIZE {
         return Err(format!(
@@ -399,7 +427,10 @@ fn hex(bytes: &[u8]) -> String {
 /// RESET is the session's job, so it stays inside the cycle budget. Shared
 /// by the initial start and by the interactive loop's "recreate machine"
 /// command.
-fn create_machine(rom: &[u8; 256], program: Option<&[u8]>) -> Result<Apple1, Box<dyn Error>> {
+pub(crate) fn create_machine(
+    rom: &[u8; 256],
+    program: Option<&[u8]>,
+) -> Result<Apple1, Box<dyn Error>> {
     let mut machine = Apple1::new(rom)?;
     if let Some(bytes) = program {
         machine
@@ -516,99 +547,6 @@ enum View {
     /// CRLF. Used whenever stdout is not a terminal, so no cursor or
     /// screen-control sequence is ever written into a file or a pipe.
     Stream,
-}
-
-/// RAII guard for everything this host changes about the real terminal,
-/// plus the signal handlers it installs.
-///
-/// Signals are registered *before* raw mode and before any emulated cycle
-/// runs: a signal delivered during the boot batch must still unwind through
-/// this guard instead of leaving the terminal in raw mode. Each field
-/// records only what actually succeeded, so a partial failure rolls back
-/// exactly what was applied; `Drop` undoes it in reverse order.
-struct TerminalGuard {
-    raw: bool,
-    paste: bool,
-    alternate: bool,
-    wrap_disabled: bool,
-    signals: Vec<SigId>,
-}
-
-impl TerminalGuard {
-    fn enter(view: View, terminated: &Arc<AtomicBool>) -> io::Result<Self> {
-        let mut guard = Self {
-            raw: false,
-            paste: false,
-            alternate: false,
-            wrap_disabled: false,
-            signals: Vec::new(),
-        };
-        for signal in [
-            signal_hook::consts::SIGTERM,
-            signal_hook::consts::SIGINT,
-            signal_hook::consts::SIGHUP,
-            signal_hook::consts::SIGQUIT,
-        ] {
-            // On error `guard` is dropped here, unregistering whatever was
-            // already installed.
-            guard
-                .signals
-                .push(signal_hook::flag::register(signal, Arc::clone(terminated))?);
-        }
-
-        terminal::enable_raw_mode()?;
-        guard.raw = true;
-
-        if view == View::Grid {
-            let mut stdout = io::stdout();
-            // Every sequence below goes to stdout, so it is only ever sent
-            // when stdout really is the terminal: a redirected stdout must
-            // stay a clean character stream. Bracketed paste makes a paste
-            // arrive as one event instead of a burst of keystrokes.
-            execute!(stdout, event::EnableBracketedPaste)?;
-            guard.paste = true;
-            execute!(stdout, terminal::EnterAlternateScreen)?;
-            guard.alternate = true;
-            // The machine wraps at its own 40th column; the host terminal
-            // must not wrap on top of that.
-            execute!(stdout, terminal::DisableLineWrap)?;
-            guard.wrap_disabled = true;
-            execute!(
-                stdout,
-                terminal::Clear(terminal::ClearType::All),
-                cursor::MoveTo(0, 0)
-            )?;
-        }
-        Ok(guard)
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        // Exact reverse of `enter`: wrap, alternate screen, bracketed
-        // paste, raw mode, then the signal handlers.
-        let mut stdout = io::stdout();
-        if self.alternate {
-            // The renderer hides the cursor whenever the machine's cursor
-            // falls outside a small window.
-            let _ = execute!(stdout, cursor::Show);
-        }
-        if self.wrap_disabled {
-            let _ = execute!(stdout, terminal::EnableLineWrap);
-        }
-        if self.alternate {
-            let _ = execute!(stdout, terminal::LeaveAlternateScreen);
-        }
-        if self.paste {
-            let _ = execute!(stdout, event::DisableBracketedPaste);
-        }
-        if self.raw {
-            let _ = terminal::disable_raw_mode();
-        }
-        for id in self.signals.drain(..) {
-            signal_hook::low_level::unregister(id);
-        }
-    }
 }
 
 /// Project one machine screen byte for a host terminal: printable ASCII as
@@ -771,7 +709,14 @@ fn run_interactive(
         View::Stream
     };
     let terminated = Arc::new(AtomicBool::new(false));
-    let _guard = TerminalGuard::enter(view, &terminated)?;
+    let _guard = TerminalGuard::enter(
+        if view == View::Grid {
+            TerminalMode::Tui
+        } else {
+            TerminalMode::RawStream
+        },
+        &terminated,
+    )?;
     let mut stdout = io::stdout();
     let mut paused = false;
     let mut status = String::new();

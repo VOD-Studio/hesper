@@ -85,6 +85,27 @@ fn cli_prints_cpu_results() {
 }
 
 #[test]
+fn explicit_demo_keeps_the_non_interactive_default_output() {
+    let default = cli(&[]);
+    let explicit = cli(&["demo"]);
+    assert!(default.status.success());
+    assert!(explicit.status.success());
+    assert_eq!(default.stdout, explicit.stdout);
+    assert_eq!(default.stderr, explicit.stderr);
+}
+
+#[test]
+fn explicit_tui_rejects_a_piped_process_without_control_sequences() {
+    let result = cli(&["tui"]);
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(result.stderr).unwrap(),
+        "hesper: TUI requires a non-dumb terminal on both stdin and stdout\n"
+    );
+}
+
+#[test]
 fn cli_trace_has_before_after_and_instruction_and_running_total() {
     let result = cli(&["--trace", "--max-steps", "54"]);
     assert!(result.status.success());

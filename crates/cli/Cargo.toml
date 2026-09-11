@@ -7,10 +7,15 @@ description = "Hesper's bounded NMOS 6502 command-line demo"
 
 [dependencies]
 crossterm = "0.29.0"
+directories = "6.0"
 hesper-apple1 = { path = "../apple1" }
 hesper-cpu6502 = { path = "../cpu6502" }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }
+serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 signal-hook = { version = "0.3", default-features = false }
+toml = "0.9"
+unicode-width = "0.2"
 
 [lints]
 workspace = true

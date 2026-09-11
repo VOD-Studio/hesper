@@ -39,9 +39,10 @@ Dependency direction is:
 Root Cargo defaults target only `crates/cli`; use `--workspace` for repository-wide work.
 
 ```sh
-cargo run -p hesper                              # built-in demo
-cargo run -p hesper -- --trace
-cargo run -p hesper -- --bus-trace --trace-limit 4
+cargo run -p hesper                              # 双终端进入 TUI；重定向时运行 demo
+cargo run -p hesper -- demo                      # 显式内置演示，适合脚本/CI
+cargo run -p hesper -- demo --trace
+cargo run -p hesper -- demo --bus-trace --trace-limit 4
 cargo fmt --all                                  # rewrite formatting
 cargo check --workspace --all-targets
 cargo test --workspace

@@ -1,6 +1,6 @@
 # Apple I 使用示例
 
-Apple I 的硬件架构、历史背景和 Woz Monitor 全面介绍见 [`apple-1-overview.md`](apple-1-overview.md)。本文档给出 `crates/apple1`（`hesper-apple1`）机器模型与 `hesper apple1` CLI 子命令的可复现使用示例。机器模型与地址映射见 [`crates/apple1/src/lib.rs`](../../crates/apple1/src/lib.rs)；CLI 交互循环见 [`crates/cli/src/apple1.rs`](../../crates/cli/src/apple1.rs)；来源与许可证见 [`references.md`](../references.md#apple-i)。
+Apple I 的硬件架构、历史背景和 Woz Monitor 全面介绍见 [`apple-1-overview.md`](apple-1-overview.md)。本文档给出 `crates/apple1`（`hesper-apple1`）机器模型与 Hesper TUI / `hesper apple1` 文本宿主的可复现使用示例。机器模型与地址映射见 [`crates/apple1/src/lib.rs`](../../crates/apple1/src/lib.rs)；CLI 分流、会话与 TUI 分别在 [`crates/cli/src/main.rs`](../../crates/cli/src/main.rs)、[`crates/cli/src/apple1.rs`](../../crates/cli/src/apple1.rs) 和 [`crates/cli/src/tui.rs`](../../crates/cli/src/tui.rs)；来源与许可证见 [`references.md`](../references.md#apple-i)。
 
 所有输出片段均为本地实际运行结果，不是编造的示意输出。
 
@@ -27,7 +27,7 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 
 | 选项 | 说明 |
 | --- | --- |
-| `--rom <path>` | 必填，256 字节 Woz Monitor ROM |
+| `--rom <path>` | 文本/管道模式必填；TUI 中可在配置页输入，256 字节 Woz Monitor ROM |
 | `--program <path>` | 可选，启动时额外加载到 `$0000` 的程序 |
 | `--max-cycles <N>` | 真实 CPU 周期预算上限（不含刷新停钟的板级时间），用完即退出 |
 | `--trace` / `--bus-trace` | 指令／总线诊断，运行结束后写 stderr（不进入机器画面） |
@@ -35,7 +35,7 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 
 `--max-cycles` 计的是真实 CPU 总线周期；总线诊断每行以 `M=<会话主板时钟>` 开头，并按 `C<CPU 序号>` 续接，因此刷新停钟在 trace 里表现为 M 的间隔而不是伪造的读写记录。显示没有速度参数：终端固定按原板时序在光标槽接受字符。
 
-不带 `--max-cycles` 时正常启动交互式终端：
+不带 `--max-cycles` 时正常启动 Apple-1 TUI：
 
 ```sh
 cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
@@ -47,7 +47,7 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
 
 `\` 是 Woz Monitor 复位后的提示符。
 
-**stdin 与 stdout 都是真实终端时**，CLI 进入网格视图：从终端左上角绘制机器自己的 40×24 屏幕（内容全部来自机器的 `screen()`/`cursor()`，终端更宽也不重排；窗口不足 40×24 时只显示可见矩形，机器状态不变），按键无需按 Enter 就进入模拟键盘，monitor 命令仍以 Enter（CR）执行。窗口有第 25 行时，该行显示宿主命令的状态标记。
+**stdin 与 stdout 都是真实终端时**，CLI 进入 Apple-1 TUI：机器的 40×24 屏幕只从 `screen()`/`cursor()` 投影，状态、菜单和 RESET 通知在网格外绘制。F1 帮助、F2 会话菜单、F3 侧栏、F10 顶栏菜单；小于 `44×30` 时会暂停机器并保留可退出入口。按键无需按 Enter 就进入模拟键盘，monitor 命令仍以 Enter（CR）执行。无参数 `cargo run -p hesper` 则先显示中文启动中心，可配置或继续本次进程内保留的 Apple-1 会话。
 
 保留的宿主命令（真实 Apple I 键盘产生不了 Ctrl 组合）：
 
@@ -58,6 +58,8 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
 | Ctrl-L | CLEAR SCREEN：Apple I 键盘的第二个按钮，清机器 40×24 屏幕，不跑任何周期 |
 | Ctrl-P | 暂停／继续：暂停期间不跑自由批次，按键仍排队；Ctrl-R／Ctrl-N 仍会执行并保持暂停 |
 | Ctrl-N | 用原始 ROM／程序字节重建机器（新 RAM、空屏），会话周期计数与预算保留 |
+
+TUI 配置使用系统配置目录中的 `hesper/config.toml`，只保存已校验的绝对 ROM 路径和显示偏好；路径或 TOML 损坏不会被自动覆盖，也不会影响 `demo` 或文本/管道 Apple-1 路径。
 
 **stdout 被重定向时**（`> file`、管道）仍是纯字符流，绝不写入光标／清屏等控制序列。
 

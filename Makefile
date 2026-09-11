@@ -57,9 +57,9 @@ clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
 demo:
-	cargo run -p hesper
-	cargo run -p hesper -- --trace
-	cargo run -p hesper -- --bus-trace --trace-limit 4
+	cargo run -p hesper -- demo
+	cargo run -p hesper -- demo --trace
+	cargo run -p hesper -- demo --bus-trace --trace-limit 4
 
 diff:
 	git diff --check
