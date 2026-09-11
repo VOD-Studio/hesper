@@ -99,6 +99,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 - 246 组 IRQ/NMI/RDY/SO revD 总线观察
 - 419 组物理 RESET revD 总线观察
 
+`cargo test --workspace` 不包含验证脚本自身的回归、需要 Woz ROM 的 `#[ignore]` 测试和全量外部一致性。`tools/` 下 5 个脚本（3 个数据准备、Woz ROM 下载、Visual6502 重放驱动）的回归测试用 Bun 运行，冷缓存时会真实下载固定上游数据，因此不并入 `make verify`：
+
+```sh
+make tools-test        # 等价于 bun test tools/
+```
+
 ## 全量 CPU 一致性验证
 
 全量验证会联网准备固定版本的数据，并运行 151 万条 SingleStep 用例、Klaus 功能/十进制/中断程序、Visual6502 原模型重放和 CPU 引脚对照：

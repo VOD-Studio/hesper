@@ -140,6 +140,18 @@ bun tools/verify_visual6502.ts --suite reset --record /tmp/hesper-reset-referenc
 
 完整官方 JSON、Klaus 镜像与 Visual6502 模型需要显式执行上述准备命令。全量 SingleStep、functional、decimal、interrupt（`--feedback-delay 4`）验证 CPU；`bun tools/verify_visual6502.ts` 验证原模型能重现固定观察；`cargo test -p hesper-cpu6502 --test pins --release` 在检查夹具完整性后实际对照 CPU 的两个引脚套件。不能用 Bun 重放替代 CPU 对照，反之也不能省略来源和哈希验证。准备命令验证来源哈希，运行命令缺数据或校验失败直接报错。
 
+准备脚本自身的回归测试：`bun test tools/prepare_singlestep.test.ts`、
+`bun test tools/prepare_klaus.test.ts`、`bun test tools/prepare_visual6502.test.ts`。
+三者都直接运行真实脚本，不 mock 网络、缓存或哈希：覆盖 `--help` 与非法参数的退出码，
+冷缓存下真实下载、暖缓存下复用并给出逐字节相同的输出。`prepare_visual6502` 另外按
+`visual6502/manifest.json` 独立核对缓存中 7 个模型文件的 SHA-256；`prepare_klaus` 用
+`--binary-only` 核对 65536 字节功能测试镜像的哈希（完整 decimal／interrupt 构建需要
+`make` 与 C 编译器，耗时且联网，仍按上面的命令手动执行）；`prepare_singlestep` 覆盖
+672 条夹具选择与 151 万条全量清单两种校验模式。冷缓存首次运行需要联网，普通 Cargo
+回归不需要这些测试。`make tools-test`（= `bun test tools/`）一次运行 `tools/` 下全部
+5 个脚本的回归，包含上面的 `verify_visual6502.test.ts` 与 Woz ROM 工具测试；它不属于
+`make verify`。
+
 [快速 CI](../../../../.github/workflows/ci.yml) 在拉取 Rust 开发依赖后离线运行固定测试；[全量 CI](../../../../.github/workflows/full-cpu.yml) 只在 GitHub Actions 中手动运行 **Full CPU conformance** 时下载和执行外部数据。Bun 1.4.0、make／C 编译器仅用于数据准备和参考模型，不成为 CPU 运行依赖。两份配置尚未远程运行验证。
 
 外部执行失败报告保留最后 32 个真实总线周期及其指令前后状态，并给出当前执行阶段、引脚和中断锁存；格式化不读取 Bus。SingleStep 报告继续附版本、opcode、用例索引和重放命令。Klaus 默认 0 延迟已知失败仍退出 1，不以“预期失败”替代外部程序通过的声明。

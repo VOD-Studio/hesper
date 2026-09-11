@@ -57,9 +57,12 @@ cargo test -p hesper-cpu6502 --test pins
 cargo test -p hesper-cpu6502 --test external
 cargo run -p hesper-cpu6502 --example singlestep -- --opcode 69 --case-index 0
 cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
+make tools-test                                  # bun test tools/ (Bun regression for the verification scripts)
 ```
 
 `make full` is networked and expensive; reserve it for CPU semantic/timing, fixture, or release-validation changes. `make data` prepares its pinned inputs first.
+
+`make tools-test` covers only `tools/*.test.ts` (14 tests across 5 files); it is not part of `make verify` because a cold cache performs real pinned downloads. `cargo test --workspace` never runs it, nor the seven ROM-gated `#[ignore]` tests.
 
 ## Code Conventions & Common Patterns
 

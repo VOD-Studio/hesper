@@ -407,3 +407,28 @@ Make 入口将 ROM 转为绝对路径，避免 Cargo 从 crate 目录运行测�
 
 未修改 CPU 语义、固定夹具或期望数据；`cargo test -p hesper-cpu6502 --test pins` 相关的
 CPU 对照范围本轮未重跑，因为 CPU 未改动。未远程运行 CI，未提交、推送或发布。
+
+## 三个数据准备脚本的 Bun 回归测试与 `make tools-test` 入口
+
+2026-09-11：`tools/prepare_singlestep.test.ts`、`tools/prepare_klaus.test.ts`、
+`tools/prepare_visual6502.test.ts` 已随上一节的 Bun 迁移提交（`3771fbd`）加入，本轮不新增
+测试文件，只实际运行确认并补上此前缺失的文档入口（`crates/cpu6502/tests/data/README.md`
+此前只记录了 `verify_visual6502.test.ts` 与 `prepare_wozmon.test.ts`）。
+
+本地证据（Bun 1.4.0，macOS aarch64）：
+
+| 命令／范围 | 结果 |
+| --- | --- |
+| `bun test tools/prepare_visual6502.test.ts tools/prepare_singlestep.test.ts tools/prepare_klaus.test.ts`（暖缓存） | 8 个测试、38 个断言全部通过，2.55s |
+| 同上两个下载脚本的冷缓存路径 | 临时移走 `.cache/cpu6502/visual6502/d8ecc129…` 与 Klaus `bin_files/6502_functional_test.bin` 后 4 个测试通过（真实下载 4.94s，其中 visual6502 单测 4.14s，暖缓存时仅数十毫秒），随后恢复原缓存目录与镜像 |
+| 覆盖范围 | `--help`／非法参数退出码；冷缓存真实下载与暖缓存复用输出逐字节相同；visual6502 按 manifest 核对 7 个模型文件 SHA-256；Klaus `--binary-only` 核对 65536 字节镜像哈希；singlestep 672 条夹具选择与 151 万条全量清单两种校验模式 |
+| `cargo test --workspace`（= `make test`，用于确认覆盖边界） | 121 通过、0 失败、7 ignored（共 128 个测试函数：`crates/apple1/tests/wozmon.rs` 4 个与 `crates/cli/tests/apple1.rs` 3 个需 Woz ROM）；不包含任何 `tools/*.test.ts` |
+| 新增 `make tools-test`（= `bun test tools/`） | 5 个文件、14 个测试、57 个断言全部通过，12.32s（含 `verify_visual6502.test.ts` 的 `--record` 全量 246 组重放） |
+
+未修改任何脚本、固定夹具、清单或哈希；CPU 未改动，因此未重跑 SingleStep 151 万／Klaus
+三配置／246+419 pins 的完整外部一致性范围。Klaus 完整 decimal／interrupt 构建（`make`
+与 C 编译器）仍按手动命令执行，不在该回归内。未远程运行 CI，未推送或发布。
+
+同步新增 `Makefile` 的 `tools-test` 目标（不加入 `verify`，因为冷缓存需要联网），并在
+`README.md`、`AGENTS.md`、`crates/cpu6502/tests/data/README.md`、
+`crates/apple1/tests/data/README.md` 记录该入口与 `cargo test --workspace` 的覆盖边界。

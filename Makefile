@@ -14,6 +14,8 @@
 #   make wozmon-verify ROM=<path>  校验用户自备 Woz Monitor ROM 的大小与哈希
 #   make wozmon-tests ROM=<path>   显式运行需要该 ROM 的 --ignored 集成测试
 #                  （ROM 不内嵌或提交；下载需显式请求，见 crates/apple1/tests/data/README.md）
+#   make tools-test  用 Bun 运行 tools/ 下 5 个验证脚本自身的回归测试
+#                  （不在 verify 中：冷缓存首次运行需要联网真实下载）
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -26,7 +28,7 @@
 .NOTPARALLEL:
 
 .PHONY: verify fmt fix check test test-release clippy demo diff wasm \
-        wozmon wozmon-verify wozmon-tests \
+        tools-test wozmon wozmon-verify wozmon-tests \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -64,6 +66,11 @@ diff:
 
 wasm:
 	cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
+
+# ---- 验证脚本自身的回归（Bun；不属于 cargo test --workspace） ----
+# 冷缓存时真实下载固定上游数据，因此不加入 verify。
+tools-test:
+	bun test tools/
 
 # ---- Woz Monitor ROM (explicit download only; never committed) ----
 ROM ?= .cache/apple1/wozmon.bin

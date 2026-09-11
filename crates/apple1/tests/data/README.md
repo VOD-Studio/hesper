@@ -51,6 +51,7 @@ make wozmon-verify ROM=/path/to/wozmon.bin
 
 工具的离线覆写保护回归：`bun test tools/prepare_wozmon.test.ts`。
 它使用错误哈希的合成下载，不需要真实 ROM 或网络。
+连同其余验证脚本一起运行用 `make tools-test`（= `bun test tools/`，冷缓存时会联网）。
 
 ## 向量与入口（来自该镜像，供核对用）
 
