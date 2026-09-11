@@ -239,6 +239,53 @@ fn apple1_cli_boots_to_prompt() {
 
 #[test]
 #[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn a_tiny_budget_stops_exactly_where_it_says() {
+    // The ROM is still fully validated with a zero budget; what must not
+    // happen is any emulated cycle beyond the ceiling. Before the session
+    // budget existed, `--max-cycles 1` ran 50 013 cycles.
+    let rom = RomFile::from_env("tiny-budget");
+    for budget in ["0", "1"] {
+        let output = run_apple1_cli(&["--rom", rom.path(), "--max-cycles", budget], b"");
+        assert!(
+            output.status.success(),
+            "a budget stop is graceful, got {:?}",
+            output.status
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("[max cycles reached: {budget}]")),
+            "expected the exact budget in the stop message, got: {stderr:?}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "no character can complete in {budget} cycles, got: {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn repeated_input_cannot_push_the_run_past_its_budget() {
+    // 100 lines of input used to buy 100 more batches: the same run
+    // reported 262 013 cycles against a 51 000-cycle ceiling.
+    let rom = RomFile::from_env("budget-input");
+    let input: Vec<u8> = b"F\n".repeat(100);
+    let output = run_apple1_cli(&["--rom", rom.path(), "--max-cycles", "51000"], &input);
+    assert!(
+        output.status.success(),
+        "a budget stop is graceful, got {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[max cycles reached: 51000]"),
+        "expected the run to stop at exactly 51000 cycles, got: {stderr:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn apple1_cli_examine_command_terminated_by_bare_lf_is_executed() {
     // Regression test: a bare-LF line ending (what a real canonical
     // terminal actually delivers for Enter) must still be recognized as
