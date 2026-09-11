@@ -19,7 +19,7 @@ cargo test -p hesper-cpu6502 --test external
 cargo run -p hesper-cpu6502 --example singlestep
 cargo run -p hesper-cpu6502 --example singlestep -- --opcode 69 --case-index 0
 # 显式联网准备上游文件到忽略的缓存，并核对选取过程；不覆盖仓库文件
-python3 tools/prepare_singlestep.py
+bun tools/prepare_singlestep.ts
 ```
 
 验证维度：原始 PC/A/X/Y/SP、P 的六个存储标志、最终 RAM（含对未列入最终状态的写入检查）、周期数量。仅对 P 的 B/位 5 表示进行规范化；不删除 N/V/Z/C 比较。M2.3 起**逐周期比较地址、数据及读写方向**，并要求每次 `cycle` 返回的记录等于实际 Bus 活动。测试检查不在源用例 RAM 列表中的访问，失败报告包含数据提交、opcode、用例索引／名称、初始状态、首个差异及重放命令。
@@ -32,11 +32,11 @@ python3 tools/prepare_singlestep.py
 固定提交与 M2.1 相同。[full-manifest.json](singlestep/full-manifest.json) 列出全部 151 个官方 opcode 文件，每份 10000 条，共 **1510000 条**，原始字节不改写。完整 JSON 缓存在 `.cache/cpu6502/`，不提交到仓库；显式全量命令缺数据、哈希不符、清单缩减或零匹配都会失败，不自动跳过。
 
 ```sh
-python3 tools/prepare_singlestep.py --full
+bun tools/prepare_singlestep.ts --full
 cargo run -p hesper-cpu6502 --example singlestep --release -- --full
 # 定位全量数据中的单条用例，不代表运行整个 corpus
 cargo run -p hesper-cpu6502 --example singlestep --release -- --full --opcode 69 --case-index 0
-python3 tools/prepare_klaus.py
+bun tools/prepare_klaus.ts
 cargo run -p hesper-cpu6502 --example functional --release
 cargo run -p hesper-cpu6502 --example functional --release -- --decimal
 ```
@@ -50,7 +50,7 @@ Klaus 数据固定为 [`7954e2dbb49c469ea286070bf46cdd71aeb29e4b`](https://githu
 
 两个 runner 使用上游 monitor 入口契约注入 PC、SP=`FD`、P=`20`，并非硬件 RESET；原创 CLI 演示仍从复位向量启动。每个程序限定 100000000 条指令／400000000 周期；任何错误或超限退出失败。
 
-十进制源码仅转换汇编器伪指令并开启全部检查，原有运算及预期计算代码保留。脚本在缓存内构建 [cc65 V2.19](https://github.com/cc65/cc65/releases/tag/V2.19) 的 ca65/ld65，提交 `555282497c3ecf8b313d87d5973093af19c35bd5`，源码包 SHA-256=`62c77f00ef4141153a0ddecef06ca086c11c68f14d022beadeaf353d1d833ff1`。该版本工具实际报告 V2.18（上游发布说明已注明），BUILD_ID 固定为 `Git 55528249`；保留源码包内的 zlib 风格 LICENSE，不安装到系统。需要 Python 3.12+、make 和本地 C 编译器。转换后源码哈希为 `586f6f2da4fc8763630f73211356c6de5f8d47cbc01cc38fddcd761a6ed3ec39`；脚本检查最终镜像及 TEST/DONE/ERROR 符号地址，可在缓存查看完整 listing。
+十进制源码仅转换汇编器伪指令并开启全部检查，原有运算及预期计算代码保留。脚本在缓存内构建 [cc65 V2.19](https://github.com/cc65/cc65/releases/tag/V2.19) 的 ca65/ld65，提交 `555282497c3ecf8b313d87d5973093af19c35bd5`，源码包 SHA-256=`62c77f00ef4141153a0ddecef06ca086c11c68f14d022beadeaf353d1d833ff1`。该版本工具实际报告 V2.18（上游发布说明已注明），BUILD_ID 固定为 `Git 55528249`；保留源码包内的 zlib 风格 LICENSE，不安装到系统。需要 Bun、make 和本地 C 编译器。转换后源码哈希为 `586f6f2da4fc8763630f73211356c6de5f8d47cbc01cc38fddcd761a6ed3ec39`；脚本检查最终镜像及 TEST/DONE/ERROR 符号地址，可在缓存查看完整 listing。
 
 M2.2 历史通过范围见 [verification.md](../../../../docs/verification.md)：指令状态／内存和 SingleStep 周期数量；此时尚未比较逐周期总线序列，也未运行 Klaus 中断程序。
 
@@ -62,15 +62,20 @@ M2.2 历史通过范围见 [verification.md](../../../../docs/verification.md)�
 ```sh
 # 离线快速比较固定观察
 cargo test -p hesper-cpu6502 --test pins
-# 显式准备外部模型，随后 Node 本地重新运行并核对固定 trace
-python3 tools/prepare_visual6502.py
-node tools/verify_visual6502.cjs --suite pins
+# 显式准备外部模型，随后 Bun 本地重新运行并核对固定 trace
+bun tools/prepare_visual6502.ts
+bun tools/verify_visual6502.ts --suite pins
 # 构建保留全部 505 条原指令语句的 Klaus 中断程序，运行明确延迟配置
-python3 tools/prepare_klaus.py
+bun tools/prepare_klaus.ts
 cargo run -p hesper-cpu6502 --example interrupt --release -- --feedback-delay 4
 ```
 
-模型文件哈希见 [manifest.json](visual6502/manifest.json)。上游 `chipsim.js`、`macros.js`、`wires.js`、`nodenames.js` 带 MIT 许可；`segdefs.js` 标明 CC BY-NC-SA 3.0，原作者 Greg James、来源 www.visual6502.org；`transdefs.js` 文件本身没有单独许可声明。模型文件及其原有声明仅保留在缓存，未复制进 CPU 或提交网表。新增 fixture 是原创程序的数字观察，并记录上述来源；不据此给 Hesper 自身选择许可证。Node 仅为显式外部验证工具，普通 Cargo 测试不需要它。
+驱动脚本自身的回归测试：`bun test tools/verify_visual6502.test.ts`。它针对上面
+`bun tools/prepare_visual6502.ts` 准备好的固定缓存，真实调用原模型逐场景对照
+（不 mock 沙箱），并覆盖 CLI 参数校验与 `--record` 写入路径；未准备数据时脚本本身
+以退出码 1 失败，测试不做额外跳过或伪造通过。
+
+模型文件哈希见 [manifest.json](visual6502/manifest.json)。上游 `chipsim.js`、`macros.js`、`wires.js`、`nodenames.js` 带 MIT 许可；`segdefs.js` 标明 CC BY-NC-SA 3.0，原作者 Greg James、来源 www.visual6502.org；`transdefs.js` 文件本身没有单独许可声明。模型文件及其原有声明仅保留在缓存，未复制进 CPU 或提交网表。新增 fixture 是原创程序的数字观察，并记录上述来源；不据此给 Hesper 自身选择许可证。Bun 仅为显式外部验证工具，普通 Cargo 测试不需要它。
 
 Klaus 中断源码沿用前述固定版本／GPL-3.0-or-later，采用相同 ca65/ld65。保留默认 `I_port=$BFFC, I_ddr=0, I_drive=1, IRQ_bit=0, NMI_bit=1, I_filter=$7F, D_clear=0, load_data_direct=1, report=0`。只改汇编伪指令并添加成功地址符号；独立检查转换前后全部 505 条指令语句一致，错误陷阱保留。转换源码 SHA-256=`f2ce31cba447eef9ad0a292a5d616b85e4b1ba1b947abaf168d3c00fcad0b1d9`；65536 字节镜像 SHA-256=`ecc829d494fd1f4b4262ac5c58e8cb3925f7aa7570ce815e9a3214b6f66a3c58`。加载 `$0000`，入口 `$0400`，唯一成功地址 `$06F5`，预算 1000000 周期；后面的手动 65C02 WAI/STP 测试不执行。
 
@@ -96,15 +101,15 @@ Klaus 中断源码沿用前述固定版本／GPL-3.0-or-later，采用相同 ca6
 
 ```sh
 # 重现两个完整套件；分别报告 pins 和 reset，不合并成 CPU 通过数
-node tools/verify_visual6502.cjs
+bun tools/verify_visual6502.ts
 # 只重现 RESET，或精确重放一组观察
-node tools/verify_visual6502.cjs --suite reset
-node tools/verify_visual6502.cjs --suite reset --case reset-registers-stack-wrap
+bun tools/verify_visual6502.ts --suite reset
+bun tools/verify_visual6502.ts --suite reset --case reset-registers-stack-wrap
 # 实际 CPU 对照全部 419 组 RESET；普通 workspace 测试也包含它
 cargo test -p hesper-cpu6502 --test pins fixed_visual6502_revd_reset_traces_match_actual_bus_cycles -- --exact
-node tools/verify_visual6502.cjs --suite pins --case nop-irq-0
+bun tools/verify_visual6502.ts --suite pins --case nop-irq-0
 # 显式重新生成一整个套件到临时路径，不自动覆盖固定预期
-node tools/verify_visual6502.cjs --suite reset --record /tmp/hesper-reset-reference.json
+bun tools/verify_visual6502.ts --suite reset --record /tmp/hesper-reset-reference.json
 ```
 
 `--case` 按完整场景名选择，零匹配报错；重复／缺值参数、未知套件、未指定单套件的 `--record`、同时使用 `--case` 和 `--record` 均报错。验证先校验夹具哈希再运行模型；缺数据、哈希错误、场景／周期差异均退出 1。差异报告提供首个场景、周期、预期／实际值及单场景重放命令；不更新预期来吞掉失败。
@@ -131,10 +136,10 @@ node tools/verify_visual6502.cjs --suite reset --record /tmp/hesper-reset-refere
 
 ## 快速回归、全量验证与失败诊断
 
-普通 `cargo test --workspace` 使用仓库里的 672 条单步样例、246 组 IRQ/NMI/RDY/SO 观察、419 组物理 RESET 观察和本地穷举／边界测试；两组引脚数据均实际驱动 CPU。不读取外部下载缓存、不运行 Node 模型。当前 workspace 共 91 个测试。
+普通 `cargo test --workspace` 使用仓库里的 672 条单步样例、246 组 IRQ/NMI/RDY/SO 观察、419 组物理 RESET 观察和本地穷举／边界测试；两组引脚数据均实际驱动 CPU。不读取外部下载缓存、不运行 Bun 模型。当前 workspace 共 91 个测试。
 
-完整官方 JSON、Klaus 镜像与 Visual6502 模型需要显式执行上述准备命令。全量 SingleStep、functional、decimal、interrupt（`--feedback-delay 4`）验证 CPU；`node tools/verify_visual6502.cjs` 验证原模型能重现固定观察；`cargo test -p hesper-cpu6502 --test pins --release` 在检查夹具完整性后实际对照 CPU 的两个引脚套件。不能用 Node 重放替代 CPU 对照，反之也不能省略来源和哈希验证。准备命令验证来源哈希，运行命令缺数据或校验失败直接报错。
+完整官方 JSON、Klaus 镜像与 Visual6502 模型需要显式执行上述准备命令。全量 SingleStep、functional、decimal、interrupt（`--feedback-delay 4`）验证 CPU；`bun tools/verify_visual6502.ts` 验证原模型能重现固定观察；`cargo test -p hesper-cpu6502 --test pins --release` 在检查夹具完整性后实际对照 CPU 的两个引脚套件。不能用 Bun 重放替代 CPU 对照，反之也不能省略来源和哈希验证。准备命令验证来源哈希，运行命令缺数据或校验失败直接报错。
 
-[快速 CI](../../../../.github/workflows/ci.yml) 在拉取 Rust 开发依赖后离线运行固定测试；[全量 CI](../../../../.github/workflows/full-cpu.yml) 只在 GitHub Actions 中手动运行 **Full CPU conformance** 时下载和执行外部数据。Node 26、Python 3.12+、make／C 编译器仅用于数据准备和参考模型，不成为 CPU 运行依赖。两份配置尚未远程运行验证。
+[快速 CI](../../../../.github/workflows/ci.yml) 在拉取 Rust 开发依赖后离线运行固定测试；[全量 CI](../../../../.github/workflows/full-cpu.yml) 只在 GitHub Actions 中手动运行 **Full CPU conformance** 时下载和执行外部数据。Bun 1.4.0、make／C 编译器仅用于数据准备和参考模型，不成为 CPU 运行依赖。两份配置尚未远程运行验证。
 
 外部执行失败报告保留最后 32 个真实总线周期及其指令前后状态，并给出当前执行阶段、引脚和中断锁存；格式化不读取 Bus。SingleStep 报告继续附版本、opcode、用例索引和重放命令。Klaus 默认 0 延迟已知失败仍退出 1，不以“预期失败”替代外部程序通过的声明。

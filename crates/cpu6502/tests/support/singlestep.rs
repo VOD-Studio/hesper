@@ -364,7 +364,7 @@ pub fn run(directory: &Path, options: Options) -> Result<Report, String> {
         let path = data_directory.join(format!("{opcode:02x}.json"));
         let bytes = fs::read(&path).map_err(|e| {
             format!(
-                "{}: {e}; prepare with python3 tools/prepare_singlestep.py --full",
+                "{}: {e}; prepare with bun tools/prepare_singlestep.ts --full",
                 path.display()
             )
         })?;

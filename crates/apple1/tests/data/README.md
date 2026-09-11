@@ -4,8 +4,8 @@ Woz Monitor 是 Apple 自己的固件（Steve Wozniak 编写，最初发行于 1
 *Apple-1 Operation Manual*），不是本项目的代码。依照 [`AGENTS.md`](../../../../AGENTS.md)
 与 [`docs/roadmap.md`](../../../../docs/roadmap.md) M3.1 的既定规则——「不提交
 Apple ROM、商业软件或来源不明镜像」「公开可下载不等于有权再分发」——本仓库
-**不下载、不内嵌、不提交**这份 256 字节镜像。任何需要真实 Woz Monitor 交互
-的测试都从调用者显式提供的路径读取它。
+**不内嵌、不提交**这份 256 字节镜像。下载仅由用户显式运行宿主工具触发，
+普通构建和测试不会联网获取 ROM。真实 Woz Monitor 测试仍从用户提供的路径读取它。
 
 ## 获取 ROM
 
@@ -14,6 +14,21 @@ Apple ROM、商业软件或来源不明镜像」「公开可下载不等于有�
 <https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex>（逐字节
 核对自 *Apple-1 Operation Manual* 扫描件）。获取渠道公开并不代表你已有再
 分发权，本项目也不因引用该链接而为你的副本背书；请自行确认使用权限。
+
+安装 Bun 后，在项目根目录显式下载并校验（无需 `package.json` 或依赖安装）：
+
+```sh
+bun tools/prepare_wozmon.ts
+# 等价于 make wozmon；默认写入被 Git 忽略的 .cache/apple1/wozmon.bin
+export HESPER_APPLE1_ROM="$PWD/.cache/apple1/wozmon.bin"
+cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
+```
+
+工具从上述来源下载 HEX 文本，严格解析为 256 字节并校验下面的 SHA-256，
+全部通过后才写入二进制文件；HTTP 错误、非法 HEX、大小或哈希不符均失败，
+不覆盖已有文件。可用 `bun tools/prepare_wozmon.ts /path/to/wozmon.bin`
+或 `make wozmon ROM=/path/to/wozmon.bin` 指定输出路径。默认路径相对于仓库，
+显式相对路径相对于当前工作目录。下载不构成使用或再分发授权。
 
 ## 校验
 
@@ -26,12 +41,16 @@ e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25
 ```
 
 ```sh
-python3 tools/verify_wozmon_hash.py /path/to/wozmon.bin
+bun tools/prepare_wozmon.ts --verify /path/to/wozmon.bin
 # 等价于：
 make wozmon-verify ROM=/path/to/wozmon.bin
 ```
 
-哈希不匹配或大小不对时脚本以退出码 1 失败，不静默通过。
+`--verify` 只读本地二进制，不下载、不改写；省略路径时校验默认缓存。
+文件缺失、哈希不匹配或大小不对时脚本以退出码 1 失败，不静默通过。
+
+工具的离线覆写保护回归：`bun test tools/prepare_wozmon.test.ts`。
+它使用错误哈希的合成下载，不需要真实 ROM 或网络。
 
 ## 向量与入口（来自该镜像，供核对用）
 

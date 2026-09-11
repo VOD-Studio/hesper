@@ -6,24 +6,23 @@
 
 ## 1. 准备 ROM
 
-ROM 未包含在仓库中（`.gitignore` 排除 `/wozmon.bin`），需要合法获取后自行准备。仓库的 `crates/apple1/tests/wozmon.rs` 内嵌了核对过的 Woz Monitor 256 字节镜像（来自 Apple-1 Operation Manual，逐字节核对自 <https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex>），`make wozmon` 从该测试夹具提取出二进制文件：
+ROM 不内嵌、不提交；请先确认使用权限。安装 Bun 后，`make wozmon` 调用 `tools/prepare_wozmon.ts` 从 <https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex> 下载 HEX、转换并校验 256 字节和 SHA-256，通过后写入被 Git 忽略的 `.cache/apple1/wozmon.bin`。普通构建和测试不会自动下载，详见 [`资源说明`](../../crates/apple1/tests/data/README.md)。
 
 ```sh
 make wozmon
-# wozmon.bin ready (256 bytes)
+export HESPER_APPLE1_ROM="$PWD/.cache/apple1/wozmon.bin"
 ```
 
 校验：
 
 ```sh
-shasum -a 256 wozmon.bin
-# e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25  wozmon.bin
+bun tools/prepare_wozmon.ts --verify "$HESPER_APPLE1_ROM"
 ```
 
 ## 2. CLI 快速启动
 
 ```sh
-cargo run -p hesper -- apple1 --rom wozmon.bin --help
+cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 ```
 
 | 选项 | 说明 |
@@ -37,7 +36,7 @@ cargo run -p hesper -- apple1 --rom wozmon.bin --help
 不带 `--max-cycles` 时正常启动交互式终端：
 
 ```sh
-cargo run -p hesper -- apple1 --rom wozmon.bin
+cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
 ```
 
 ```
@@ -90,7 +89,7 @@ CLI 通过管道读取 stdin 时同样有效，适合脚本或 CI smoke check。
 
 ```sh
 printf 'FF00.FF0F\r\n300: A9 2A 8D 12 D0 4C 05 03\r\n300R\r\n' \
-  | cargo run -p hesper -- apple1 --rom wozmon.bin --max-cycles 2000000
+  | cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --max-cycles 2000000
 ```
 
 从真实交互式终端敲 Enter 同样能正确工作：终端的 canonical 模式会把物理 Enter（CR）翻译成 LF 再交给读取进程，CLI 在把整行内容送进模拟键盘前会先剥掉这个行尾，统一补发一次 CR（`crates/cli/src/apple1.rs`）；因此第 3～5 节里的交互示例在真实终端里逐字敲同样命令即可复现，不需要额外操心行结束符。

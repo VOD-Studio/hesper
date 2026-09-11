@@ -1,8 +1,8 @@
 //! Loader for a legally-obtained Woz Monitor ROM image.
 //!
 //! Mirrors `crates/apple1/tests/support/wozmon_rom.rs`: the Woz Monitor is
-//! Apple's own firmware and is never downloaded, embedded, or committed
-//! here. Tests needing it read the image from a caller-supplied path and
+//! Apple's own firmware and is never embedded or committed here. Tests never
+//! download it; those needing it read the image from a caller-supplied path and
 //! are `#[ignore]`d; running them explicitly without the resource fails
 //! loudly instead of skipping silently. See
 //! `crates/apple1/tests/data/README.md`.

@@ -39,11 +39,11 @@ cargo run -p hesper -- --bus-trace --trace-limit 4
 cargo run -p hesper -- --help
 ```
 
-Apple I Woz Monitor 交互（需要合法获取 ROM 后）：
+Apple I Woz Monitor 交互（需安装 Bun，并自行确认 ROM 使用权限）：
 
 ```sh
-make wozmon                                 # 提取 Woz Monitor ROM 到 wozmon.bin
-cargo run -p hesper apple1 --rom wozmon.bin # 启动交互式 Apple I 终端
+make wozmon                               # 下载并校验到 .cache/apple1/wozmon.bin
+cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin
 ```
 
 ## Workspace 结构
@@ -108,12 +108,12 @@ make data
 make full
 ```
 
-额外需要 Python 3.12+、Node、`make` 和本地 C 编译器。下载及构建结果只写入已忽略的 `.cache/cpu6502/`。
+额外需要 Bun、`make` 和本地 C 编译器。下载及构建结果只写入已忽略的 `.cache/cpu6502/`。
 
-Visual6502 的 Node 重放与 CPU 验证是两项独立证明：
+Visual6502 的 Bun 重放与 CPU 验证是两项独立证明：
 
 ```sh
-node tools/verify_visual6502.cjs
+bun tools/verify_visual6502.ts
 cargo test -p hesper-cpu6502 --test pins --release
 ```
 

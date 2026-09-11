@@ -10,11 +10,12 @@
 #                  cargo fix --allow-dirty 自动修复
 #   make wasm      仅 CPU 库 Wasm 编译检查；需要已安装 wasm32-unknown-unknown 目标
 #                  （未安装时跳过，不在 verify 中强制）
+#   make wozmon [ROM=<path>]      用 Bun 下载并校验 ROM（默认 .cache/apple1/wozmon.bin）
 #   make wozmon-verify ROM=<path>  校验用户自备 Woz Monitor ROM 的大小与哈希
 #   make wozmon-tests ROM=<path>   显式运行需要该 ROM 的 --ignored 集成测试
-#                  （ROM 从不下载或提交，见 crates/apple1/tests/data/README.md）
+#                  （ROM 不内嵌或提交；下载需显式请求，见 crates/apple1/tests/data/README.md）
 #
-# 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Python 3.12+ 与 Node）：
+# 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
 #   make full      重现全部外部验证：151 万 SingleStep、Klaus、decimal、中断、revD 对照
 #   make singlestep / functional / decimal / interrupt / visual6502 / pins
@@ -25,7 +26,7 @@
 .NOTPARALLEL:
 
 .PHONY: verify fmt fix check test test-release clippy demo diff wasm \
-        wozmon-verify wozmon-tests \
+        wozmon wozmon-verify wozmon-tests \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -64,22 +65,29 @@ diff:
 wasm:
 	cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
-# ---- Woz Monitor ROM (never committed; caller supplies the image) ----
+# ---- Woz Monitor ROM (explicit download only; never committed) ----
+ROM ?= .cache/apple1/wozmon.bin
+# Cargo runs tests from each crate directory; pass an absolute ROM path.
+ROM_PATH = $(if $(filter /%,$(ROM)),$(ROM),$(CURDIR)/$(ROM))
+
+wozmon:
+	bun tools/prepare_wozmon.ts "$(ROM_PATH)"
+
 # make wozmon-verify ROM=/path/to/wozmon.bin
 wozmon-verify:
-	python3 tools/verify_wozmon_hash.py $(ROM)
+	bun tools/prepare_wozmon.ts --verify "$(ROM_PATH)"
 
 # make wozmon-tests ROM=/path/to/wozmon.bin
 wozmon-tests:
-	HESPER_APPLE1_ROM=$(ROM) cargo test -p hesper-apple1 --test wozmon -- --ignored
-	HESPER_APPLE1_ROM=$(ROM) cargo test -p hesper --test apple1 -- --ignored
+	HESPER_APPLE1_ROM="$(ROM_PATH)" cargo test -p hesper-apple1 --test wozmon -- --ignored
+	HESPER_APPLE1_ROM="$(ROM_PATH)" cargo test -p hesper --test apple1 -- --ignored
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 
 data:
-	python3 tools/prepare_singlestep.py --full
-	python3 tools/prepare_klaus.py
-	python3 tools/prepare_visual6502.py
+	bun tools/prepare_singlestep.ts --full
+	bun tools/prepare_klaus.ts
+	bun tools/prepare_visual6502.ts
 
 singlestep:
 	cargo run -p hesper-cpu6502 --example singlestep --release -- --full
@@ -94,7 +102,7 @@ interrupt:
 	cargo run -p hesper-cpu6502 --example interrupt --release -- --feedback-delay 4
 
 visual6502:
-	node tools/verify_visual6502.cjs
+	bun tools/verify_visual6502.ts
 
 pins:
 	cargo test -p hesper-cpu6502 --test pins --release

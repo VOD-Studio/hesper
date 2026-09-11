@@ -58,7 +58,7 @@ fn run() -> Result<(), String> {
         .join(filename);
     let image = fs::read(&path).map_err(|error| {
         format!(
-            "{}: {error}; prepare with python3 tools/prepare_klaus.py",
+            "{}: {error}; prepare with bun tools/prepare_klaus.ts",
             path.display()
         )
     })?;

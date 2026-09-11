@@ -340,3 +340,70 @@ CPU 核心与 `hesper-apple1` 机器模型（`bus.rs`／`pia.rs`／`display.rs`�
 | `cargo run -p hesper` | 演示正常；54 条指令／154 周期 |
 
 CPU 核心（`hesper-cpu6502`）本轮未修改，因此未重跑 SingleStep 151 万／Klaus 三配置／246+419 pins 完整外部一致性范围。仍未关闭的项（详见 [roadmap.md M3.4](roadmap.md#m3apple-i-文本系统部分实现尚未整体验收)）：Apple I 配置依据来自二级技术资料而非逐页手册核对；RDY 在当前 Apple I 基础配置没有实际驱动方；`--trace`／`--bus-trace` 对 apple1 CLI 仍未实现；显示滚动只在单元测试层面证明，未额外用真实 PTY 会话录制填满 24 行的转录。**M3 整体验收因此仍未勾选**。未远程运行 CI，未推送或发布。
+
+## Woz Monitor 下载与校验工具迁移至 Bun
+
+2026-09-10：以 `tools/prepare_wozmon.ts` 替换并删除 `tools/verify_wozmon_hash.py`。
+本节之前的 Python 命令是历史执行记录，不再是当前入口。用户显式运行
+`bun tools/prepare_wozmon.ts`／`make wozmon` 时下载公开 HEX 转录，严格解析
+256 字节并核对既有 SHA-256 后才写入 `.cache/apple1/wozmon.bin`；
+`--verify`／`make wozmon-verify` 只读本地文件。普通构建与测试不下载 ROM。
+Make 入口将 ROM 转为绝对路径，避免 Cargo 从 crate 目录运行测试时找不到相对路径。
+
+本地证据（Bun 1.4.0）：
+
+| 命令／范围 | 结果 |
+| --- | --- |
+| `bun tools/prepare_wozmon.ts`、`make wozmon` | 真实下载成功；256 字节，SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`；另以 Python hashlib 独立核对 |
+| `make wozmon-verify`、`make wozmon-tests` | 校验通过，4 个机器 ROM 测试与 3 个真实 CLI 测试通过 |
+| `bun test tools/prepare_wozmon.test.ts` | 1 个离线回归通过：合法 HEX、正确长度但错误哈希的下载不能覆盖已有文件；无真实 ROM 夹具 |
+| 临时 CLI smoke（已清理） | 禁止网络时 help／本地校验仍成功；缺文件、错误长度／哈希、非法参数均失败；HTTP／网络／非法 HEX／哈希失败不覆盖已有 ROM，拒绝的下载不新建文件 |
+| 临时路径 smoke（已清理） | 真实下载可创建含空格的嵌套目录；Make 校验与 7 个 ROM 测试接受含空格的绝对路径 |
+| `make verify` | 格式、全目标检查、debug/release workspace 测试、Clippy、CLI 演示及空白检查全部通过 |
+
+未修改 CPU 语义、固定外部数据或期望 ROM 指纹，未运行完整 CPU 外部一致性层或远程 CI。
+
+## Visual6502 参考驱动重写为 TypeScript，改用 Bun 运行
+
+2026-09-10：`tools/verify_visual6502.cjs`（Node CommonJS）改写为 `tools/verify_visual6502.ts`，
+改用 `bun tools/verify_visual6502.ts` 运行；旧文件已删除。逻辑与原脚本逐行对应：同样的
+246 组 pins／419 组 reset 场景构造、同样的 `vm` 沙箱加载固定哈希校验过的 6 个上游源文件、
+同样的 CLI 参数（`--suite`／`--case`／`--record`）与差异报告格式。未修改任何固定夹具、
+哈希或场景数据；仅重写驱动脚本本身。
+
+改写过程中发现并绕开一个 Bun `node:vm` 兼容性限制：Node 的 `vm.createContext` 会把脚本内
+顶层 `var` 声明（例如上游 `macros.js` 的 `var memory = Array();`）真正“contextify”为沙箱对象
+的同一份绑定，宿主对该属性的**整体重新赋值**（`ctx.memory = newArray`）和脚本内部读取共享
+同一存储位置。Bun 1.4.0 的 `node:vm` 沙箱不满足这一点：宿主整体重新赋值只更新宿主侧可见的
+属性，与脚本内部闭包实际引用的绑定完全脱钩（用最小复现验证：脚本内声明 `var memory=[]` 后，
+宿主 `ctx.memory = [...]` 再调用脚本内定义的 `mRead`/`mWrite` 读到的是重新赋值前的旧绑定，
+`vm.runInContext("memory", ctx) === ctx.memory` 为 `false`）。反之，脚本内部执行的重新赋值
+（`vm.runInContext("memory = new Array(65536).fill(0xea);", ctx)`）之后，宿主对已存在数组的
+**按索引写入**（`ctx.memory[addr] = value`，不整体替换引用）会正确双向同步。修复只改了一处：
+把原来的 `c.memory = Array(65536).fill(0xea)`（宿主整体重新赋值）换成等价的
+`vm.runInContext("memory = new Array(65536).fill(0xea);", c)`；其余所有内存写入本来就是按
+索引写入，未改动。若不加这一处修复，直接把旧 `.cjs` 用 `bun` 运行也会在引导阶段卡死并报
+`bootstrap cycle budget exceeded`（已用未修改的旧文件复现，确认问题在 Bun 的 `vm` 而非改写）。
+
+同时把新脚本改为使用本仓库已有的 Bun 原生约定（对齐 `tools/prepare_wozmon.ts`）：
+`Bun.file()`/`Bun.write()` 取代 `node:fs` 的同步读写，`Bun.CryptoHasher` 取代 `node:crypto`，
+`Bun.argv` 取代 `process.argv`；`node:path` 与 `node:vm` 保留，因为 Bun 没有原生替代。
+
+本地证据（Bun 1.4.0，macOS aarch64）：
+
+| 命令／范围 | 结果 |
+| --- | --- |
+| `bun tools/verify_visual6502.ts` | 246 组 pins、419 组 reset 全部精确重现，与固定 fixture 序列化逐字节一致；本机本次 34.7s（此前同等 Node 运行约 215s） |
+| `bun tools/verify_visual6502.ts --suite pins --case nop-irq-0` | 单场景重放通过 |
+| `bun tools/verify_visual6502.ts --suite reset --case reset-registers-stack-wrap` | 单场景重放通过 |
+| `bun tools/verify_visual6502.ts --suite reset --record /tmp/hesper-reset-record.json` | 写出 419 条记录到临时路径，行数与内容格式符合预期，未覆盖仓库固定 fixture |
+| 错误路径：未知 `--suite`、缺值参数、重复 flag、`--case`+`--record` 同时使用 | 均按原语义报错并以退出码 1 结束 |
+
+同步更新 `Makefile`（`visual6502` 目标）、`README.md`、`AGENTS.md`、
+`crates/cpu6502/tests/data/README.md`、`.github/workflows/full-cpu.yml`
+（`setup-node@v7` 替换为 `oven-sh/setup-bun@v2`，版本固定 `1.4.0`）中引用该工具的命令。
+`docs/references.md` 与本文件更早的历史小节按当时实际使用 Node／`.cjs` 的记录原样保留，
+不回溯改写。
+
+未修改 CPU 语义、固定夹具或期望数据；`cargo test -p hesper-cpu6502 --test pins` 相关的
+CPU 对照范围本轮未重跑，因为 CPU 未改动。未远程运行 CI，未提交、推送或发布。

@@ -31,7 +31,7 @@ Dependency direction is:
 - `crates/cpu6502/examples/`: bounded SingleStep, Klaus functional/decimal, and interrupt verification runners.
 - `crates/cli/src/`: demo host library and binary presentation layer.
 - `crates/cli/tests/`: library and real-binary CLI integration tests.
-- `tools/`: Python data preparation and Node Visual6502 reference replay. Prepared data belongs only under ignored `.cache/cpu6502/`.
+- `tools/`: Bun data preparation and Visual6502 reference replay. Prepared data belongs only under ignored `.cache/cpu6502/`.
 - `docs/`: architecture contracts, opcode scope, source provenance, roadmap, and chronological verification evidence.
 
 ## Development Commands
@@ -93,8 +93,8 @@ cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
 
 - Use the checked-in stable Rust toolchain. Keep `Cargo.lock` current and prefer `--locked`; CI fetches once, then runs normal Rust checks offline.
 - The CPU crate has no runtime dependencies. `serde`, `serde_json`, and `sha2` are test/example-only dependencies.
-- Python and Node are host verification tools, not application runtimes. Full CI uses Python 3.12 and Node 26; Klaus preparation also needs `make` and a C compiler.
-- No `package.json`, Python environment manifest, custom Cargo config, custom rustfmt/Clippy config, feature matrix, or declared MSRV exists. Do not invent one.
+- Bun is a host verification tool, not an application runtime. Full CI uses Bun 1.4.0; Klaus preparation also needs `make` and a C compiler.
+- No `package.json`, custom Cargo config, custom rustfmt/Clippy config, feature matrix, or declared MSRV exists. Do not invent one.
 - `wasm32-unknown-unknown` is optional locally and checks only the CPU library; install the target before running `make wasm`.
 - Do not create future machine/browser/plugin scaffolding unless the task explicitly enters that roadmap milestone.
 
@@ -111,8 +111,8 @@ make full
 # or run individual Make targets: singlestep functional decimal interrupt visual6502 pins
 ```
 
-- Keep two proofs distinct: `node tools/verify_visual6502.cjs` reproduces tracked observations using the pinned upstream model; `cargo test -p hesper-cpu6502 --test pins --release` compares Hesper with those observations. Neither substitutes for the other.
-- Diagnose narrowly with `--opcode ... --case-index ...` or `node tools/verify_visual6502.cjs --suite ... --case ...`; never report a targeted pass as full-corpus validation.
+- Keep two proofs distinct: `bun tools/verify_visual6502.ts` reproduces tracked observations using the pinned upstream model; `cargo test -p hesper-cpu6502 --test pins --release` compares Hesper with those observations. Neither substitutes for the other.
+- Diagnose narrowly with `--opcode ... --case-index ...` or `bun tools/verify_visual6502.ts --suite ... --case ...`; never report a targeted pass as full-corpus validation.
 - Do not regenerate expected fixtures to hide mismatches. Preserve pinned revisions, SHA-256 checks, fixture counts, exact success addresses, cycle budgets, bus comparisons, and replay commands.
 - Klaus interrupt conformance is verified with `--feedback-delay 4`. Zero delay reaches a documented NMOS trap and must remain a failure, not be suppressed or called passing.
 - Report local runs and remote CI separately. Workflow presence is not evidence that CI passed.

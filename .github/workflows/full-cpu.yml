@@ -12,26 +12,21 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: oven-sh/setup-bun@v2
         with:
-          python-version: '3.12'
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '26'
-          package-manager-cache: false
+          bun-version: '1.4.0'
       - run: rustup toolchain install stable --profile minimal
       - name: Toolchain versions
         run: |
           rustc --version
           cargo --version
-          python3 --version
-          node --version
+          bun --version
       - run: cargo fetch --locked
       - name: Prepare pinned external data and assembler
         run: |
-          python3 tools/prepare_singlestep.py --full
-          python3 tools/prepare_klaus.py
-          python3 tools/prepare_visual6502.py
+          bun tools/prepare_singlestep.ts --full
+          bun tools/prepare_klaus.ts
+          bun tools/prepare_visual6502.ts
       - name: All official single-step cases (state, counts, bus sequences)
         run: cargo run -p hesper-cpu6502 --example singlestep --release --locked --offline -- --full
       - name: Klaus official functional program
@@ -43,6 +38,6 @@ jobs:
         # See tests/data/README.md; this job does not claim that configuration passes.
         run: cargo run -p hesper-cpu6502 --example interrupt --release --locked --offline -- --feedback-delay 4
       - name: Reproduce revD pin and independent RESET reference observations
-        run: node tools/verify_visual6502.cjs
+        run: bun tools/verify_visual6502.ts
       - name: Compare CPU pins and check RESET reference integrity (no CPU RESET comparison)
         run: cargo test -p hesper-cpu6502 --test pins --release --locked --offline

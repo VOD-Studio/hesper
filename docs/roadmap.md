@@ -98,7 +98,7 @@ M3 Apple I 文本系统：M3.1～M3.4 的目标项已逐条落地并测试，包
 
 **已落地**（2026-09-10）：`crates/apple1/` 包含 PIA 寄存器模型（`pia.rs`）及地址译码 Bus（`bus.rs`，4 KiB RAM + 256 B ROM + $D010–$D013 PIA + 开路总线）；固定配置、开路总线约定、RESET 与清屏分离、PIA RESET 与 6502 RES 共用同一系统复位信号、14.31818 MHz 晶振分频出的 1.023 MHz 时钟（本模拟器不据此节流墙钟）均记录在 `crates/apple1/src/lib.rs` 的模块文档，来源见 [references.md#apple-i](references.md#apple-i)。目标监控程序（Woz Monitor）的向量、入口、获取条件、哈希及许可注意事项记录在 [`crates/apple1/tests/data/README.md`](../crates/apple1/tests/data/README.md)；原创的小型总线验证程序在 `crates/apple1/src/bus.rs`（单元测试）与 `crates/apple1/tests/machine.rs`（仅设置 RESET 向量的合成 256 字节镜像，不依赖任何真实 ROM）。
 
-**已解决的资源冲突**：此前 `crates/apple1/tests/wozmon.rs` 与 `crates/cli/tests/apple1.rs` 内嵌完整 256 字节 Woz Monitor ROM，与“不提交 Apple ROM”的约束冲突。现已移除嵌入字节；需要真实 Woz Monitor 交互的测试改为从调用者提供的 `HESPER_APPLE1_ROM` 路径加载并核对 SHA-256，标记 `#[ignore]` 使默认 `cargo test --workspace` 保持离线自包含，显式请求（`make wozmon-tests ROM=<path>`）缺资源时明确失败而非静默跳过。`tools/extract_wozmon.py`／`make wozmon`（原本从该测试夹具反向提取 ROM，逻辑本身自相矛盾）已退役，替换为只做哈希校验、不下载不内嵌的 `tools/verify_wozmon_hash.py`／`make wozmon-verify`。
+**已解决的资源冲突**：此前 `crates/apple1/tests/wozmon.rs` 与 `crates/cli/tests/apple1.rs` 内嵌完整 256 字节 Woz Monitor ROM，与“不提交 Apple ROM”的约束冲突。现已移除嵌入字节；需要真实 Woz Monitor 交互的测试改为从调用者提供的 `HESPER_APPLE1_ROM` 路径加载并核对 SHA-256，标记 `#[ignore]` 使默认 `cargo test --workspace` 保持离线自包含，显式请求（`make wozmon-tests ROM=<path>`）缺资源时明确失败而非静默跳过。原先从测试夹具反向提取 ROM 的工具已退役。当前由 `tools/prepare_wozmon.ts`／`make wozmon` 在用户显式请求时下载并校验到忽略缓存，`--verify`／`make wozmon-verify` 只做离线校验；不内嵌、不提交 ROM，下载不构成使用或再分发授权。旧 Python 校验器已移除。
 
 **尚未闭合的深度**：上述配置结论来自 2026-09-10 的网络二级资料检索（技术爱好者网站、社区转录），未逐页核对 *Apple-1 Operation Manual* 或原理图扫描件原文；这比“不凭其他模拟器地址表直接实现”的前提要求浅，具体缺口记录在 [references.md#apple-i](references.md#apple-i)，后续有条件时应补齐精确页码引用。这不影响本节验收线（总线读写行为的独立预期与测试）已经满足。
 

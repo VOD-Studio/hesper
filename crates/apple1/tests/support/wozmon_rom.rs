@@ -2,7 +2,7 @@
 //!
 //! The Apple I's 256-byte Woz Monitor is Apple's own firmware, not this
 //! project's code; per `AGENTS.md` and `docs/roadmap.md` (M3.1) it is never
-//! downloaded, embedded, or committed to this repository. Tests that need
+//! embedded or committed to this repository. Tests never download it; those needing
 //! it to exercise real monitor interaction read the image from a path the
 //! caller supplies and are `#[ignore]`d so the default `cargo test
 //! --workspace` stays self-contained and offline; running them explicitly
