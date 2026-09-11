@@ -6,7 +6,9 @@
 
 Hesper 是一个使用 Rust 编写的 NMOS 6502 模拟器项目。目前包含一个机器无关、逐周期执行的 CPU 核心，以及用于演示和验证核心行为的命令行程序。
 
-当前实现聚焦官方 NMOS 6502 指令、总线周期、中断、RDY/SO 和物理 RESET。Apple I 文本系统（Woz Monitor + PIA 键盘/显示）已完成。Apple II 与浏览器前端尚未开始。
+当前实现聚焦官方 NMOS 6502 指令、总线周期、中断、RDY/SO 和物理 RESET。Apple I 文本系统（Woz Monitor + PIA 键盘/显示、40×24 屏幕、真实终端网格视图）可实际交互使用，但**整体验收尚未勾选**：视频板 DRAM 刷新时钟不建模、显示忙时延时是固定近似、配置资料未逐页核对原始手册（见 [`docs/roadmap.md`](docs/roadmap.md) 的 M3 已知缺口）。Apple II 与浏览器前端尚未开始。
+
+Apple I 交互命令行的按键约定见 [`docs/apple1/examples.md`](docs/apple1/examples.md)：Ctrl-R 是物理 RESET，Ctrl-L 是键盘上的 CLEAR SCREEN 按钮，Ctrl-P 暂停/继续，Ctrl-N 重建机器，Ctrl-C/Ctrl-D 退出。
 
 ## 特性
 

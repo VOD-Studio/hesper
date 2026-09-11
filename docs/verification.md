@@ -432,3 +432,109 @@ CPU 对照范围本轮未重跑，因为 CPU 未改动。未远程运行 CI，�
 同步新增 `Makefile` 的 `tools-test` 目标（不加入 `verify`，因为冷缓存需要联网），并在
 `README.md`、`AGENTS.md`、`crates/cpu6502/tests/data/README.md`、
 `crates/apple1/tests/data/README.md` 记录该入口与 `cargo test --workspace` 的覆盖边界。
+
+## Apple I 功能级修复：PIA 语义、RESET 丢键、CLEAR SCREEN、严格预算、ROM 身份、trace 与终端网格
+
+2026-09-11：本轮只改 `crates/apple1` 与 `crates/cli`，未触碰 CPU 执行语义。
+
+### 修复前实际复现的缺陷
+
+全部在修复前的代码上实测复现，不是推测：
+
+| 缺陷 | 修复前实测 |
+| --- | --- |
+| PIA 数据地址读取忽略 CR 第 2 位 | 写 `DDRB=$7F` 后从 `$D012` 读回 `$00` |
+| 键盘按非数据访问被"消费" | 未读的 `X` 经两次 RESET 后从 `$D010` 读到 `$00` |
+| `--max-cycles` 只在批次之间比较 | `--max-cycles 1` 实际执行到 50013 周期 |
+| 每条输入都能买到新批次 | 预算 51000 配 100 行 `F` 实际执行到 262013 周期 |
+| 非法参数与越界加载 panic | `--cycles-per-char 0` 与 `load_ram(0x1001, &[1])` 均 panic |
+| ROM 无身份校验 | 256 字节但内容错误的文件被 CLI 正常接受并启动 |
+| Apple I trace | `--trace`／`--bus-trace` 只打印 "not yet implemented" |
+| 终端呈现 | 只写字符流，由宿主终端按自身宽度换行滚动；机器 40×24 屏幕从未被呈现；Ctrl-L 只清宿主画面 |
+
+另有一处文档级事实错误：此前结论"Apple I 没有独立清屏硬件输入"与
+*Apple-1 Operation Manual* Section I / KEYBOARD 明确列出的 **RESET** 与
+**CLEAR SCREEN** 两个按钮相矛盾，已在 `docs/references.md` 与
+`crates/apple1/src/lib.rs` 更正。
+
+### 本地证据
+
+| 命令／范围 | 结果 |
+| --- | --- |
+| `cargo test --locked --workspace` | 157 通过、0 失败、14 ignored |
+| `cargo test --locked --workspace --release` | 157 通过、0 失败、14 ignored |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | 无告警 |
+| `make verify`（fmt/check/test/test-release/clippy/demo/diff） | 全部通过 |
+| `bun tools/prepare_wozmon.ts --verify .cache/apple1/wozmon.bin` | 256 字节、SHA-256 `e5af0d1c…5c25` |
+| `cargo test -p hesper-apple1 --test wozmon -- --ignored`（debug 与 release） | 各 4 通过 |
+| `cargo test -p hesper --test apple1 -- --ignored`（debug 与 release） | 各 10 通过 |
+| `cargo run -p hesper`／`-- --trace`／`-- --bus-trace --trace-limit 4` | 输出与迁移前逐字一致（54 指令、147+7=154 周期） |
+| 真实 PTY 脚本（临时 Python `pty.fork`，非管道） | 14 个场景全部通过 |
+
+新增／改写的设备与宿主回归（离线、不需要 ROM）：
+
+- `crates/apple1/src/pia.rs`：DDR 经数据地址回读、只有外设数据读清对应端口标志（DDR 读／
+  控制读／OR 写都不清、也不清另一端口）、`take_port_a_read` 一次性读事件、RESET 保持期间
+  清一次寄存器并丢弃写入且任何 CA1/CB1 沿都不置标志、释放后重新可配置、`display_data`
+  要求 OR 选择且 DDRB 低七位全为输出。
+- `crates/apple1/src/display.rs`：`cycles_per_char` 改为 `NonZeroU64`（零延时在类型上不可
+  构造）、CLEAR SCREEN 清屏并归位光标、清屏与在途字符互不影响。
+- `crates/apple1/src/bus.rs`：`RamLoadError` 覆盖末字节可加载、跨末地址失败且 RAM 不变、
+  `$1000` 空加载成功、`$1001`/`$FFFF` 非法起址返回结构化错误而非 panic，错误文本给出
+  Apple I 的 4 KiB 容量。
+- `crates/apple1/tests/machine.rs`（17 项）：连续两次 RESET 后 `XY` 各回显一次、已被 CPU 读过
+  的键不因 RESET 重放、RESET 线保持跨多个批次期间 PIA 保持复位且未读键不丢、DDRB 非全输出
+  时写 ORB 不产生字符、系统 RESET 保留屏幕且在途字符仍完成、CLEAR SCREEN 只动屏幕
+  （周期数／寄存器／debug_state／RAM／键盘队列不变），以及脚本化时间线（物理 RESET 断言
+  与释放落在指定周期、一个未读键、结束时仍有在途字符）在 1/7/31/64/400 周期分批下逐 `Cycle`、
+  `debug_state`、RAM、输出、屏幕、光标、Port B 忙位与总周期数全等。
+- `crates/apple1/tests/wozmon.rs`：`run_until_idle` 换成 `run_until(predicate)`，四个场景各等
+  具体完成结果（完整提示符 `[5C, 0D]`、两行 16 字节完整转储、`ram_slice()` 确认写入后的完整
+  `0300: AB CD EF` 回读行、命令回显之后的 `*`），每次等待预算 1000000 周期，CPU 错误或耗尽
+  预算时带最近 64 周期轨迹、寄存器与屏幕失败。
+- `crates/cli/src/apple1.rs`（12 个单元测试）：零预算不跑任何周期、预算 1/2/5 精确停在 RESET
+  中途、批次边界耗尽后不再执行、机器重建后会话计数与天花板保留、两种 trace 共用一个上限、
+  渲染器在 80×30 不重排 40 列、24 行窗口不画状态行、20×10 裁剪且 1×1 隐藏光标、0 宽或 0 高
+  不发坐标命令、机器屏幕上的 ESC/BEL 画成空格。
+- `crates/cli/tests/apple1.rs`：7 个离线失败用例（零／非数值延时、trace-limit 0/4097/非数值、
+  非数值 max-cycles、缺 ROM、255/257 字节 ROM、256 字节错哈希）均非零退出、stderr 有具体
+  诊断、stdout 为空；10 个 ROM-gated 用例含 `--max-cycles 0`/`1` 精确报告、预算 51000 配
+  100 行输入精确报告 51000、20 周期 bus-trace 给出 20 条含 `$FFFC`/`$FFFD` 的记录、
+  `--trace-limit 4` 只留四条、开关 trace 不改变 stdout、`300: 02` + `300R` 触发
+  `unsupported opcode $02 at $0300` 且仍报告出错前的记录。
+
+### 真实 PTY 场景（14/14 通过）
+
+临时 Python 脚本用 `pty.fork` 驱动 `target/debug/hesper`，解析渲染器**实际发出**的
+alternate-screen／line-wrap／清屏／光标定位／bracketed-paste 序列并还原 40×24 网格，遇到
+无法识别的序列即失败；每个会话有墙钟上限。脚本只在执行期生成，不进仓库。
+
+1. 80×30 与 40×24 两种窗口启动 Woz Monitor，按键无需 Enter 即被回显，命令仍以 Enter 执行，
+   `300: AB CD EF` 写入后 `300.302` 回读一致。
+2. `300: A2 29 A9 41 20 EF FF CA D0 F8 4C 0A 03` + `300R` 输出的 41 个 `A` 在机器第 40 列换行
+   （32+9 跨行），宿主第 41 列起始终为空——不按 80 列重排；Ctrl-L 清空机器画面，Ctrl-R 才
+   回到 monitor 提示符。
+3. `300: A2 1A A9 41 20 EF FF A9 0D 20 EF FF CA D0 F3 4C 0F 03` + `300R` 打印 26 次 `A`+CR 后
+   自旋，最终网格第 0..22 行为 `A` 加 39 个空格、第 23 行全空、光标 `(23,0)`——与手工推算的
+   滚动结果逐格一致。
+4. 暂停期间排入 `300.302` 不执行，恢复后只执行一次；连续按键与 Resize 期间 CPU 仍推进；
+   暂停状态下 Ctrl-R 保留屏幕并保持暂停、Ctrl-L 零周期清屏、Ctrl-N 重建后仍暂停。
+5. 缩到 20×10 只绘制 10×20 且不越界、机器网格不重排，恢复 80×30 后完整重绘原内容。
+6. bracketed paste 的整段文本被送进模拟键盘并执行。
+7. stdout 重定向而 stdin 是终端时，输出文件里没有任何 `ESC[` 序列，机器输出仍完整
+   （本轮据此发现并修正了 `EnableBracketedPaste` 写进重定向 stdout 的泄漏）。
+8. Ctrl-C、预算停止、外部 `SIGTERM` 均退出码 0，unsupported opcode 退出码非 0；四种退出后
+   termios 的 ICANON/ECHO 均恢复，主屏幕、光标可见与自动换行均恢复，trace 与错误信息出现在
+   离开 alternate screen 之后。
+
+### 明确保留的近似与不宣称的范围
+
+- 视频板 DRAM 刷新时钟（Operation Manual Section III：每 65 个时钟 4 个刷新周期并抑制 Φ2）
+  **不建模**；`cycles_per_char` 是固定近似；显示忙时写入按功能级协议覆写在途字符。
+- CLEAR SCREEN 是一次性功能动作，不建模按钮脉冲宽度；终端呈现只投影可打印 ASCII，不是原版
+  字符 ROM 仿真。
+- CLI 固定只接受上述唯一 SHA-256 的 Woz Monitor 镜像；机器库仍接受任意合法 256 字节原创 ROM。
+- 本节是**功能级修复通过**，不是 Apple I 整机逐周期准确，也不是完整 MC6821 芯片认证；
+  M3 整体验收仍未勾选（缺口见 `docs/roadmap.md`）。
+- CPU 执行语义未改动，因此未重跑 SingleStep 151 万／Klaus 三配置／246+419 pins 的完整外部
+  一致性范围。未远程运行 CI，未推送或发布。

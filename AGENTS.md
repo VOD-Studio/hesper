@@ -62,7 +62,7 @@ make tools-test                                  # bun test tools/ (Bun regressi
 
 `make full` is networked and expensive; reserve it for CPU semantic/timing, fixture, or release-validation changes. `make data` prepares its pinned inputs first.
 
-`make tools-test` covers only `tools/*.test.ts` (14 tests across 5 files); it is not part of `make verify` because a cold cache performs real pinned downloads. `cargo test --workspace` never runs it, nor the seven ROM-gated `#[ignore]` tests.
+`make tools-test` covers only `tools/*.test.ts` (14 tests across 5 files); it is not part of `make verify` because a cold cache performs real pinned downloads. `cargo test --workspace` never runs it, nor the 14 ROM-gated `#[ignore]` tests (4 in `crates/apple1/tests/wozmon.rs`, 10 in `crates/cli/tests/apple1.rs`; run both with `make wozmon-tests`).
 
 ## Code Conventions & Common Patterns
 

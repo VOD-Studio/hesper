@@ -31,7 +31,8 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 | `--program <path>` | 可选，启动时额外加载到 `$0000` 的程序 |
 | `--cycles-per-char <N>` | 显示节奏，默认 1000 周期/字符 |
 | `--max-cycles <N>` | 总周期预算上限，用完即退出 |
-| `--trace` / `--bus-trace` | 尚未实现（CLI 会打印提示，不影响正常交互） |
+| `--trace` / `--bus-trace` | 指令／总线诊断，运行结束后写 stderr（不进入机器画面） |
+| `--trace-limit <N>` | 保留最近 N 条诊断记录，1..4096，默认 64；两种 trace 共用这个上限 |
 
 不带 `--max-cycles` 时正常启动交互式终端：
 
@@ -43,7 +44,21 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
 \
 ```
 
-`\` 是 Woz Monitor 复位后的提示符；此时终端等待逐行输入命令，每行以 Enter 结束。
+`\` 是 Woz Monitor 复位后的提示符。
+
+**stdin 与 stdout 都是真实终端时**，CLI 进入网格视图：从终端左上角绘制机器自己的 40×24 屏幕（内容全部来自机器的 `screen()`/`cursor()`，终端更宽也不重排；窗口不足 40×24 时只显示可见矩形，机器状态不变），按键无需按 Enter 就进入模拟键盘，monitor 命令仍以 Enter（CR）执行。窗口有第 25 行时，该行显示宿主命令的状态标记。
+
+保留的宿主命令（真实 Apple I 键盘产生不了 Ctrl 组合）：
+
+| 按键 | 作用 |
+| --- | --- |
+| Ctrl-C / Ctrl-D | 退出（退出码 0，终端恢复） |
+| Ctrl-R | 物理 RESET：保留 RAM、屏幕与未读按键，受同一周期预算约束 |
+| Ctrl-L | CLEAR SCREEN：Apple I 键盘的第二个按钮，清机器 40×24 屏幕，不跑任何周期 |
+| Ctrl-P | 暂停／继续：暂停期间不跑自由批次，按键仍排队；Ctrl-R／Ctrl-N 仍会执行并保持暂停 |
+| Ctrl-N | 用原始 ROM／程序字节重建机器（新 RAM、空屏），会话周期计数与预算保留 |
+
+**stdout 被重定向时**（`> file`、管道）仍是纯字符流，绝不写入光标／清屏等控制序列。
 
 ## 3. 交互示例：内存检查（examine）
 
@@ -103,7 +118,7 @@ use hesper_apple1::Apple1;
 
 fn run(rom: &[u8; 256]) -> Result<(), Box<dyn std::error::Error>> {
     let mut machine = Apple1::new(rom, None)?; // None 用默认显示节奏
-    machine.reset(); // 走完整 7 周期物理 RESET，再从 $FF00 跑 ROM
+    machine.reset()?; // 拉物理 RESET 线、保持、释放并跑完真实复位时序
 
     // 启动阶段先跑够周期，收集到达提示符前产生的显示输出
     let boot_output = machine.run_cycles(50_000)?;
@@ -111,21 +126,22 @@ fn run(rom: &[u8; 256]) -> Result<(), Box<dyn std::error::Error>> {
 
     // 逐字符输入一条命令（monitor 只认 CR 结尾，不是 LF）
     machine.type_str("FF00.FF0F\r");
+
+    // 等一个**具体结果**，不要用"某一批没有输出"当作完成：机器空转时
+    // 同样没有输出。这里等两行完整的 16 字节转储。
     let mut output = Vec::new();
-    loop {
-        let batch = machine.run_cycles(10_000)?;
-        if batch.is_empty() {
-            break; // 机器空闲，等待下一次输入
+    for _ in 0..100 {
+        output.extend_from_slice(&machine.run_cycles(10_000)?);
+        let text = String::from_utf8_lossy(&output);
+        if text.contains("FF00: D8 58") && text.contains("FF08: ") {
+            return Ok(());
         }
-        output.extend_from_slice(&batch);
     }
-    let text = String::from_utf8_lossy(&output);
-    assert!(text.contains("FF00: D8 58"));
-    Ok(())
+    Err("dump did not complete within the cycle budget".into())
 }
 ```
 
-这与 `crates/apple1/tests/wozmon.rs` 里的 `wozmon_memory_examine_dumps_rom` 等测试用的是同一套 API；测试里的 `run_until_idle` 辅助函数就是上面循环的封装。
+这与 `crates/apple1/tests/wozmon.rs` 里的测试用的是同一套 API；测试里的 `run_until(machine, budget, predicate)` 辅助函数就是上面这种"等具体结果"的封装，并在超预算时带最近周期轨迹、CPU 状态与屏幕内容失败。
 
 ## 8. 可以手动输入运行的完整程序
 
