@@ -755,15 +755,6 @@ fn run_interactive(
                     Action::ClearScreen => {
                         session.machine.clear_screen();
                         redraw = true;
-                        if view == View::Stream {
-                            // Nothing redraws a byte stream, so clear the
-                            // host's own screen to match the machine's.
-                            execute!(
-                                stdout,
-                                terminal::Clear(terminal::ClearType::All),
-                                cursor::MoveTo(0, 0)
-                            )?;
-                        }
                     }
                     Action::TogglePause => {
                         paused = !paused;

@@ -86,8 +86,8 @@ Options:
   --program <path>       Optional program file to load into RAM at $0000
   --cycles-per-char <N>  CPU cycles per display character (default: 1000)
   --max-cycles <N>       Maximum total cycles before the emulator exits
-  --trace                Enable instruction trace (not yet implemented)
-  --bus-trace            Enable bus-level trace (not yet implemented)
+  --trace                Enable instruction trace
+  --bus-trace            Enable bus-level trace
   --trace-limit <N>      Keep the last N trace records, 1..4096 (default: 64)
   --help, -h             Show this help message"
     );
