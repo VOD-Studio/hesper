@@ -21,11 +21,23 @@
 //! Column/row geometry and hardware scroll-on-CR/scroll-on-fill behavior
 //! are drawn from secondary technical sources (see `docs/references.md#apple-i`),
 //! not a page-by-page primary manual/schematic citation.
+//!
+//! # CLEAR SCREEN
+//!
+//! The Apple I keyboard has two pushbuttons: RESET and CLEAR SCREEN
+//! (Apple-1 Operation Manual, Section I / Keyboard). CLEAR SCREEN is a
+//! video-board input, entirely separate from the system reset line:
+//! [`Display::clear_screen`] blanks the grid and homes the cursor without
+//! touching the CPU, the PIA, the keyboard, or this model's in-flight
+//! character timing. It is modeled as one functional action, not as a
+//! button pulse of a particular width.
+
+use std::num::NonZeroU64;
 
 use crate::pia::Pia6821;
 
 /// Default cycles per character (~1 ms at 1 MHz).
-pub const DEFAULT_CYCLES_PER_CHAR: u64 = 1000;
+pub const DEFAULT_CYCLES_PER_CHAR: NonZeroU64 = NonZeroU64::new(1000).unwrap();
 
 /// Screen width in characters.
 pub const COLUMNS: usize = 40;
@@ -35,7 +47,9 @@ pub const ROWS: usize = 24;
 
 /// Display shift-register model.
 pub struct Display {
-    pub cycles_per_char: u64,
+    /// Cycles a character takes to shift out. Non-zero by type: a
+    /// zero-cycle character would never expire the busy timer.
+    cycles_per_char: NonZeroU64,
     cycles_remaining: u64,
     /// Characters that have been fully sent, awaiting `drain_output`.
     output: Vec<u8>,
@@ -50,7 +64,7 @@ pub struct Display {
 }
 
 impl Display {
-    pub fn new(cycles_per_char: u64) -> Self {
+    pub fn new(cycles_per_char: NonZeroU64) -> Self {
         Self {
             cycles_per_char,
             cycles_remaining: 0,
@@ -122,8 +136,8 @@ impl Display {
         pia.set_port_b_inputs(value);
     }
 
-    /// Notify the display that the CPU wrote to Port B (`$D012`).
-    /// Starts the shift-register busy timer.
+    /// Notify the display that the CPU wrote a character to Port B's output
+    /// register (`$D012`). Starts the shift-register busy timer.
     ///
     /// A write that arrives while a previous character is still busy
     /// replaces it and restarts the timer: this crate does not model an
@@ -135,7 +149,7 @@ impl Display {
     pub fn on_write(&mut self, ch: u8) {
         self.busy = true;
         self.latch = ch;
-        self.cycles_remaining = self.cycles_per_char;
+        self.cycles_remaining = self.cycles_per_char.get();
     }
 
     /// Drain all completed output characters since the last drain.
@@ -156,28 +170,28 @@ impl Display {
         (self.cursor_row, self.cursor_col)
     }
 
-    /// Stop any in-progress transmission and clear the undelivered output
-    /// queue.
+    /// CLEAR SCREEN: blank the whole grid and home the cursor.
     ///
-    /// Real Apple I hardware RESET does **not** clear the video screen —
-    /// there is no clear-screen hardware input at all, and the video
-    /// board's shift-register memory is not wired to the system reset
-    /// line. This crate does not model an independently-clocked video
-    /// timer, so `reset` only stops this model's pending-transmission
-    /// bookkeeping (mirroring a host giving up on delivering a character
-    /// whose timer no longer matters); `screen` and the cursor position
-    /// are left untouched, matching hardware.
-    pub fn reset(&mut self) {
-        self.busy = false;
-        self.latch = 0;
-        self.cycles_remaining = 0;
-        self.output.clear();
+    /// This is the Apple I keyboard's second pushbutton (see the module
+    /// docs), a video-board input independent of the system reset line. It
+    /// touches nothing else: a character still shifting out keeps its
+    /// timer and lands at the cleared screen's new cursor position when it
+    /// completes, and already-completed bytes still awaiting
+    /// `drain_output` are still delivered.
+    pub fn clear_screen(&mut self) {
+        self.screen = [[b' '; COLUMNS]; ROWS];
+        self.cursor_row = 0;
+        self.cursor_col = 0;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cycles(n: u64) -> NonZeroU64 {
+        NonZeroU64::new(n).unwrap()
+    }
 
     /// Drive one character through the busy timer to completion.
     fn send(display: &mut Display, ch: u8) {
@@ -190,7 +204,7 @@ mod tests {
 
     #[test]
     fn single_character_writes_screen_cell_and_advances_cursor() {
-        let mut display = Display::new(1);
+        let mut display = Display::new(cycles(1));
         send(&mut display, b'A');
         assert_eq!(display.screen()[0][0], b'A');
         assert_eq!(display.cursor(), (0, 1));
@@ -199,7 +213,7 @@ mod tests {
 
     #[test]
     fn carriage_return_wraps_to_column_zero_of_next_line() {
-        let mut display = Display::new(1);
+        let mut display = Display::new(cycles(1));
         send(&mut display, b'A');
         send(&mut display, b'\r');
         assert_eq!(display.cursor(), (1, 0));
@@ -209,7 +223,7 @@ mod tests {
 
     #[test]
     fn filling_a_line_wraps_without_explicit_cr() {
-        let mut display = Display::new(1);
+        let mut display = Display::new(cycles(1));
         for _ in 0..COLUMNS {
             send(&mut display, b'x');
         }
@@ -224,7 +238,7 @@ mod tests {
 
     #[test]
     fn scrolling_on_last_line_shifts_rows_up_and_clears_bottom() {
-        let mut display = Display::new(1);
+        let mut display = Display::new(cycles(1));
         for row in 0..ROWS {
             send(&mut display, b'0' + (row % 10) as u8);
             send(&mut display, b'\r');
@@ -246,7 +260,7 @@ mod tests {
 
     #[test]
     fn write_while_busy_drops_pending_character() {
-        let mut display = Display::new(10);
+        let mut display = Display::new(cycles(10));
         let mut pia = Pia6821::new();
         display.on_write(b'A');
         for _ in 0..3 {
@@ -262,29 +276,39 @@ mod tests {
     }
 
     #[test]
-    fn reset_stops_transmission_but_preserves_screen_and_cursor() {
-        let mut display = Display::new(10);
+    fn clear_screen_blanks_grid_and_homes_cursor() {
+        let mut display = Display::new(cycles(1));
         send(&mut display, b'A');
+        send(&mut display, b'B');
+        assert_eq!(display.cursor(), (0, 2));
+
+        display.clear_screen();
+
+        assert_eq!(display.screen(), &[[b' '; COLUMNS]; ROWS]);
+        assert_eq!(display.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn clear_screen_leaves_an_in_flight_character_to_land_on_the_new_screen() {
+        let mut display = Display::new(cycles(10));
         let mut pia = Pia6821::new();
-        display.on_write(b'B'); // in-flight, not yet committed
+        send(&mut display, b'A');
+        assert_eq!(display.drain_output(), b"A");
+
+        display.on_write(b'B'); // in flight, not yet committed
         for _ in 0..3 {
             display.tick(&mut pia);
         }
+        display.clear_screen();
+        assert_eq!(display.screen()[0][0], b' ', "'A' is cleared");
 
-        display.reset();
-
-        // Real hardware RESET does not clear the video screen; only the
-        // in-flight, undelivered 'B' transmission is abandoned.
-        assert_eq!(display.screen()[0][0], b'A');
+        // The in-flight character keeps its timer and lands at the homed
+        // cursor when it finishes — CLEAR SCREEN is not a video reset.
+        for _ in 0..7 {
+            display.tick(&mut pia);
+        }
+        assert_eq!(display.drain_output(), b"B");
+        assert_eq!(display.screen()[0][0], b'B');
         assert_eq!(display.cursor(), (0, 1));
-        assert_eq!(
-            display.drain_output(),
-            b"",
-            "no undelivered output survives reset"
-        );
-
-        // A fresh write after reset behaves normally.
-        send(&mut display, b'C');
-        assert_eq!(display.screen()[0][1], b'C');
     }
 }

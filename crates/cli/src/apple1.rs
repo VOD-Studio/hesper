@@ -8,6 +8,7 @@ use std::{
     error::Error,
     fmt, fs,
     io::{self, BufRead, IsTerminal, Write},
+    num::NonZeroU64,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -64,7 +65,7 @@ impl fmt::Display for StopReason {
 pub fn run_apple1(
     rom_path: &str,
     program_path: Option<&str>,
-    cycles_per_char: u64,
+    cycles_per_char: NonZeroU64,
     max_cycles: Option<u64>,
     trace: bool,
     bus_trace: bool,
@@ -110,7 +111,7 @@ pub fn run_apple1(
 fn boot(
     rom: &[u8],
     program: Option<&[u8]>,
-    cycles_per_char: u64,
+    cycles_per_char: NonZeroU64,
 ) -> Result<Apple1, Box<dyn Error>> {
     let mut machine = Apple1::new(rom, Some(cycles_per_char))?;
     if let Some(bytes) = program {
@@ -279,7 +280,7 @@ fn run_interactive(
     machine: &mut Apple1,
     rom: &[u8],
     program: Option<&[u8]>,
-    cycles_per_char: u64,
+    cycles_per_char: NonZeroU64,
     max_cycles: Option<u64>,
 ) -> Result<StopReason, Box<dyn Error>> {
     let _raw = RawMode::enable()?;

@@ -1,6 +1,8 @@
 //! Apple I machine: wraps CPU, bus, display, and keyboard into a cycle‑batch
 //! run loop.
 
+use std::num::NonZeroU64;
+
 use hesper_cpu6502::{Cpu, CpuError, Cycle, Direction, StepKind};
 
 use crate::bus::{Apple1Bus, RomSizeError};
@@ -29,62 +31,86 @@ pub struct Apple1 {
     display: Display,
     keyboard: Keyboard,
     total_cycles: u64,
+    reset_line: bool,
 }
 
 impl Apple1 {
     /// Create an Apple I machine with the given 256‑byte Woz Monitor ROM and
     /// display speed (in CPU cycles per character).  Uses
     /// [`DEFAULT_CYCLES_PER_CHAR`] if `None`.
-    pub fn new(rom: &[u8], cycles_per_char: Option<u64>) -> Result<Self, RomSizeError> {
+    pub fn new(rom: &[u8], cycles_per_char: Option<NonZeroU64>) -> Result<Self, RomSizeError> {
         Ok(Self {
             cpu: Cpu::new(),
             bus: Apple1Bus::new(rom)?,
             display: Display::new(cycles_per_char.unwrap_or(DEFAULT_CYCLES_PER_CHAR)),
             keyboard: Keyboard::new(),
             total_cycles: 0,
+            reset_line: false,
         })
     }
 
     /// Run every device and the CPU through exactly one cycle: tick devices
-    /// → update PIA input pins → execute one CPU cycle → detect `$D012`
-    /// writes. Returns the raw CPU [`hesper_cpu6502::Cycle`] so callers can
-    /// inspect completion (used by both `run_cycles` and `reset`).
-    fn tick_one_cycle(&mut self) -> Result<Cycle, CpuError> {
-        self.keyboard.tick(self.bus.pia_mut());
+    /// → update PIA input pins → execute one CPU cycle → deliver a `$D012`
+    /// output-register write to the display. Returns the raw CPU
+    /// [`hesper_cpu6502::Cycle`] so callers can inspect bus activity and
+    /// completion; the machine itself keeps no execution history.
+    ///
+    /// While the physical RESET line is held the keyboard is not advanced
+    /// (its strobe negotiation with a reset PIA is meaningless), but the
+    /// display timer, the PIA's display input pins, and the CPU's real
+    /// reset sequence all still run.
+    ///
+    /// The cycle counter increments before the CPU executes, so a cycle
+    /// that ends in [`CpuError::UnsupportedOpcode`] still counts: its bus
+    /// read really happened.
+    pub fn cycle(&mut self) -> Result<Cycle, CpuError> {
+        if !self.bus.pia().reset_asserted() {
+            self.keyboard.tick(self.bus.pia_mut());
+        }
         self.display.tick(self.bus.pia_mut());
         self.display.update_pia(self.bus.pia_mut());
 
+        self.total_cycles += 1;
         let cycle = self.cpu.cycle(&mut self.bus)?;
 
+        // A write to the Port B data address only reaches the video board
+        // when the PIA is actually driving the seven display data lines;
+        // the display never sees the raw CPU byte (see
+        // `Pia6821::display_data`).
         if cycle.bus.address == 0xD012
             && cycle.bus.direction == Direction::Write
-            && self.bus.pia().port_b_or_selected()
+            && let Some(data) = self.bus.pia().display_data()
         {
-            self.display.on_write(cycle.bus.data);
+            self.display.on_write(data);
         }
 
-        self.total_cycles += 1;
         Ok(cycle)
     }
 
     /// Advance the machine by up to `budget` CPU cycles.
     ///
-    /// Each cycle runs: tick devices → update PIA input pins → execute one CPU
-    /// cycle → detect `$D012` writes → collect completed display output.
+    /// Each cycle runs [`Apple1::cycle`]. Returns any display characters
+    /// that completed during this batch (`run_cycles(0)` runs no cycle and
+    /// only collects what was already complete). Splitting the same total
+    /// budget across several calls (mid-instruction, mid-RDY-wait, or mid
+    /// physical RESET hold) yields the same device and CPU state as one
+    /// call with the combined budget: the CPU's own sequencer state
+    /// persists across calls, and every device is ticked exactly once per
+    /// cycle regardless of batch boundaries.
     ///
-    /// Returns any display characters that completed during this batch.
-    /// Splitting the same total budget across several calls (mid-instruction,
-    /// mid-RDY-wait, or mid physical RESET hold) yields the same device and
-    /// CPU state as one call with the combined budget: the CPU's own
-    /// sequencer state persists across calls, and every device is ticked
-    /// exactly once per cycle regardless of batch boundaries.
+    /// On error the completed-output queue is preserved; the caller can
+    /// still take it with [`Apple1::drain_output`].
     pub fn run_cycles(&mut self, budget: u64) -> Result<Vec<u8>, CpuError> {
-        let mut output = Vec::new();
         for _ in 0..budget {
-            self.tick_one_cycle()?;
-            output.extend(self.display.drain_output());
+            self.cycle()?;
         }
-        Ok(output)
+        Ok(self.drain_output())
+    }
+
+    /// Take the display characters that have finished shifting out since
+    /// the last drain.
+    pub fn drain_output(&mut self) -> Vec<u8> {
+        self.display.drain_output()
     }
 
     /// Push a single character into the keyboard queue.
@@ -99,34 +125,65 @@ impl Apple1 {
         }
     }
 
-    /// Physical RESET: assert the shared reset line the 6502 and the PIA
-    /// are both tied to on real Apple I hardware, hold it, then release and
-    /// run the CPU's real reset sequence (sync, hold, dummy fetch, three
-    /// stack reads, `$FFFC/D` vector read) to completion — not the
-    /// immediate host `begin_reset` entry point. RAM is preserved.
+    /// Drive the shared physical RESET line that the 6502's `RES` pin and
+    /// the PIA's own RESET pin are both tied to on real Apple I hardware.
     ///
-    /// The PIA's own registers are cleared (its RESET pin shares the same
-    /// line). The video screen and the keyboard's queued-ahead keys are
-    /// left alone: neither is wired to the Apple I's system reset line (see
-    /// `crates/apple1/src/lib.rs`).
+    /// Asserting it clears the PIA's registers, resynchronizes the keyboard
+    /// strobe against that cleared PIA (queued-ahead keys survive; see
+    /// [`Keyboard::resync`]), and takes the CPU's reset line low. RAM, the
+    /// video screen, and in-flight display timing are untouched: neither
+    /// the 40x24 screen nor the keyboard encoder is wired to the reset line
+    /// (see `crates/apple1/src/lib.rs`), and this line is not the CLEAR
+    /// SCREEN button ([`Apple1::clear_screen`]).
+    ///
+    /// The caller advances the machine with [`Apple1::cycle`] /
+    /// [`Apple1::run_cycles`] while the line is held and after releasing
+    /// it, so a host can hold RESET across any number of batches and stay
+    /// inside its own cycle budget. Setting the level it already has is a
+    /// no-op.
+    pub fn set_reset_line(&mut self, asserted: bool) {
+        if self.reset_line == asserted {
+            return;
+        }
+        self.reset_line = asserted;
+        if asserted {
+            self.bus.pia_mut().set_reset_line(true);
+            self.keyboard.resync(self.bus.pia_mut());
+            self.cpu.set_reset_line(true);
+        } else {
+            self.bus.pia_mut().set_reset_line(false);
+            self.cpu.set_reset_line(false);
+        }
+    }
+
+    /// Whether the physical RESET line is currently held asserted.
+    pub fn reset_line_asserted(&self) -> bool {
+        self.reset_line
+    }
+
+    /// Synchronous convenience RESET: assert the line for
+    /// [`RESET_HOLD_CYCLES`], release it, then run until the CPU reports
+    /// its physical reset sequence complete (sync, hold, dummy fetch, three
+    /// stack reads, `$FFFC/D` vector read).
+    ///
+    /// This runs cycles to completion without yielding, so a host that
+    /// needs to enforce its own cycle budget mid-RESET drives
+    /// [`Apple1::set_reset_line`] and [`Apple1::cycle`] directly instead
+    /// (as `crates/cli/src/apple1.rs` does).
     ///
     /// Returns [`CpuError::CycleBudgetExceeded`] if the reset sequence does
     /// not report completion within [`RESET_COMPLETION_BUDGET`] cycles of
     /// release; this can only happen if the CPU itself is broken, since the
     /// sequence is fixed-length.
     pub fn reset(&mut self) -> Result<(), CpuError> {
-        self.bus.pia_mut().reset();
-        self.keyboard.resync();
-        self.display.reset();
-
-        self.cpu.set_reset_line(true);
+        self.set_reset_line(true);
         for _ in 0..RESET_HOLD_CYCLES {
-            self.tick_one_cycle()?;
+            self.cycle()?;
         }
-        self.cpu.set_reset_line(false);
+        self.set_reset_line(false);
 
         for _ in 0..RESET_COMPLETION_BUDGET {
-            let cycle = self.tick_one_cycle()?;
+            let cycle = self.cycle()?;
             if let Some(step) = cycle.completed
                 && step.kind == StepKind::Reset
             {
@@ -137,6 +194,15 @@ impl Apple1 {
             address: self.cpu.registers().pc,
             budget: RESET_COMPLETION_BUDGET,
         })
+    }
+
+    /// CLEAR SCREEN: the Apple I keyboard's second pushbutton. Blanks the
+    /// 40x24 screen and homes the cursor, running no CPU cycle and touching
+    /// no other state — not RAM, the CPU, the PIA, the keyboard queue, the
+    /// cycle count, or a character still shifting out (see
+    /// [`Display::clear_screen`]).
+    pub fn clear_screen(&mut self) {
+        self.display.clear_screen();
     }
 
     /// Total cycles executed since creation.

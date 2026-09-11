@@ -16,7 +16,7 @@
 
 use std::fmt;
 
-use hesper_cpu6502::{Bus, LoadError};
+use hesper_cpu6502::Bus;
 
 use crate::pia::Pia6821;
 
@@ -43,6 +43,28 @@ impl fmt::Display for RomSizeError {
 }
 
 impl std::error::Error for RomSizeError {}
+
+/// Error returned when a host RAM load does not fit entirely inside the
+/// Apple I's 4 KiB RAM. Distinct from the CPU crate's fixed 64 KiB
+/// `LoadError`: this bus decodes RAM only at `$0000–$0FFF`, so both the
+/// start address and the length are checked against 4 KiB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RamLoadError {
+    pub start: u16,
+    pub len: usize,
+}
+
+impl fmt::Display for RamLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cannot load {} bytes at ${:04X}: exceeds 4 KiB Apple I RAM",
+            self.len, self.start
+        )
+    }
+}
+
+impl std::error::Error for RamLoadError {}
 
 impl Apple1Bus {
     pub const RAM_SIZE: usize = 4 * 1024;
@@ -71,12 +93,13 @@ impl Apple1Bus {
         })
     }
 
-    /// Host load into RAM (non‑wrapping).  Returns an error if the region
-    /// does not fit entirely within the 4 KiB RAM.
-    pub fn load_ram(&mut self, start: u16, bytes: &[u8]) -> Result<(), LoadError> {
+    /// Host load into RAM (non‑wrapping, transactional).  Returns an error
+    /// if the start address is outside RAM or the region does not fit
+    /// entirely within the 4 KiB RAM; nothing is copied on error.
+    pub fn load_ram(&mut self, start: u16, bytes: &[u8]) -> Result<(), RamLoadError> {
         let offset = usize::from(start);
-        if bytes.len() > Self::RAM_SIZE - offset {
-            return Err(LoadError {
+        if offset > Self::RAM_SIZE || bytes.len() > Self::RAM_SIZE - offset {
+            return Err(RamLoadError {
                 start,
                 len: bytes.len(),
             });
@@ -223,5 +246,55 @@ mod tests {
         assert_eq!(err.len, 17);
         // RAM untouched.
         assert_eq!(bus.read(0x0FF0), 0xAA);
+    }
+
+    #[test]
+    fn load_ram_last_byte_fits_and_crossing_the_end_changes_nothing() {
+        let mut bus = Apple1Bus::new(&dummy_rom()).unwrap();
+        bus.load_ram(0x0FFF, &[0x11]).unwrap();
+        assert_eq!(bus.read(0x0FFF), 0x11);
+
+        let err = bus.load_ram(0x0FFF, &[0x22, 0x33]).unwrap_err();
+        assert_eq!(
+            err,
+            RamLoadError {
+                start: 0x0FFF,
+                len: 2
+            }
+        );
+        assert_eq!(
+            bus.read(0x0FFF),
+            0x11,
+            "a rejected load must leave RAM exactly as it was"
+        );
+    }
+
+    #[test]
+    fn load_ram_rejects_start_addresses_outside_ram_without_panicking() {
+        let mut bus = Apple1Bus::new(&dummy_rom()).unwrap();
+        // The first address past RAM accepts an empty load (nothing is
+        // written), matching a zero-length region ending exactly at the
+        // 4 KiB boundary.
+        bus.load_ram(0x1000, &[]).unwrap();
+
+        for start in [0x1001u16, 0xFFFF] {
+            let err = bus.load_ram(start, &[]).unwrap_err();
+            assert_eq!(err, RamLoadError { start, len: 0 });
+            let err = bus.load_ram(start, &[0x99]).unwrap_err();
+            assert_eq!(err, RamLoadError { start, len: 1 });
+        }
+        assert_eq!(bus.ram_slice(), &[0u8; Apple1Bus::RAM_SIZE]);
+    }
+
+    #[test]
+    fn ram_load_error_names_the_apple_i_ram_size() {
+        let err = RamLoadError {
+            start: 0x0FFE,
+            len: 4,
+        };
+        assert_eq!(
+            err.to_string(),
+            "cannot load 4 bytes at $0FFE: exceeds 4 KiB Apple I RAM"
+        );
     }
 }

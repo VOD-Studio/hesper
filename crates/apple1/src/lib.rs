@@ -27,19 +27,26 @@
 //! convention** chosen for reproducibility; real unmapped Apple I addresses
 //! float and can return noise, which this crate does not model.
 //!
-//! # RESET is not clear‑screen
+//! # RESET and CLEAR SCREEN are separate inputs
 //!
-//! On real Apple I hardware the RESET pushbutton only asserts the shared
-//! system reset line, which the 6502's `RES` pin and the MC6820/6821 PIA's
-//! own active‑low RESET pin (tied to the same line on the Apple I board)
-//! both sample. Asserting it clears the PIA's control/data‑direction
-//! registers (so both ports come up as inputs and interrupts disabled) and
-//! restarts the CPU from `$FFFC/D` — it does **not** clear the video
-//! screen or the external keyboard's already‑queued keys; the Apple I has
-//! no separate clear‑screen hardware input at all. `Apple1::reset` models
-//! the CPU+PIA reset tied to the physical `RES`/PIA‑reset line; a host
-//! wanting to present a cleared terminal does so at the presentation layer,
-//! not as a machine input (see `crates/cli/src/apple1.rs`).
+//! The Apple I keyboard has two pushbuttons, RESET and CLEAR SCREEN
+//! (Apple-1 Operation Manual, Section I / Keyboard; see
+//! `docs/references.md#apple-i`). They are unrelated hardware inputs:
+//!
+//! - RESET asserts the shared system reset line, which the 6502's `RES`
+//!   pin and the MC6820/6821 PIA's own active‑low RESET pin (tied to the
+//!   same line on the Apple I board) both sample. It clears the PIA's
+//!   output/data‑direction/control registers (so both ports come up as
+//!   inputs with interrupts disabled) and restarts the CPU from `$FFFC/D`.
+//!   It does **not** clear the video screen, and it does not erase keys
+//!   the user already typed ahead: neither the video board's
+//!   shift‑register memory nor the external keyboard encoder is wired to
+//!   that line. `Apple1::set_reset_line` models the pin; `Apple1::reset`
+//!   is the synchronous convenience wrapper around it.
+//! - CLEAR SCREEN is a video‑board input that blanks the 40x24 screen and
+//!   homes the cursor, running no CPU cycle and changing no other machine
+//!   state. `Apple1::clear_screen` models it as one functional action, not
+//!   as a button pulse of a particular width.
 //!
 //! # Clock
 //!
@@ -64,7 +71,7 @@ pub mod keyboard;
 pub mod machine;
 pub mod pia;
 
-pub use bus::{Apple1Bus, RomSizeError};
+pub use bus::{Apple1Bus, RamLoadError, RomSizeError};
 pub use display::Display;
 pub use keyboard::Keyboard;
 pub use machine::Apple1;

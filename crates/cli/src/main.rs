@@ -1,8 +1,11 @@
 mod apple1;
 
-use std::{collections::VecDeque, env, error::Error, fmt::Write as _, process::ExitCode};
+use std::{
+    collections::VecDeque, env, error::Error, fmt::Write as _, num::NonZeroU64, process::ExitCode,
+};
 
 use hesper::{DEFAULT_MAX_STEPS, DemoEvent, run_demo_with_trace};
+use hesper_apple1::display::DEFAULT_CYCLES_PER_CHAR;
 use hesper_cpu6502::{Direction, Registers, StepKind};
 
 fn registers(state: Registers) -> String {
@@ -20,7 +23,7 @@ fn registers(state: Registers) -> String {
 fn run_apple1_subcommand(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let mut rom: Option<String> = None;
     let mut program: Option<String> = None;
-    let mut cycles_per_char: u64 = 1000;
+    let mut cycles_per_char: NonZeroU64 = DEFAULT_CYCLES_PER_CHAR;
     let mut max_cycles: Option<u64> = None;
     let mut trace = false;
     let mut bus_trace = false;

@@ -22,16 +22,37 @@
 //! | 2   | DDR access | R/W | 0 = DDR selected, 1 = OR selected        |
 //! | 1   | CA1/CB1 ctl | R/W | Active transition (0 = H→L, 1 = L→H)    |
 //! | 0   | CA1/CB1 ctl | R/W | Interrupt enable (0 = disable, 1 = enable)|
+//!
+//! ## CR bit 2 selects the register for reads too
+//!
+//! Bit 2 of a control register selects which register the matching data
+//! address addresses — for **both** directions. With bit 2 clear, reads and
+//! writes at `$D010`/`$D012` see the Data Direction Register; with it set
+//! they see the peripheral data register (see `docs/references.md#apple-i`
+//! for the MC6821 register reference consulted). Only a real peripheral
+//! data-register read clears that port's interrupt flags; reading a DDR or
+//! a control register, and writing any register, do not.
+//!
+//! ## RESET
+//!
+//! The Apple I board ties the PIA's active-low RESET pin to the same system
+//! reset line as the 6502's. [`Pia6821::set_reset_line`] models that pin:
+//! entering the asserted state clears the output, data-direction, and
+//! control/interrupt registers; while it stays asserted, CPU register
+//! writes are ignored and no CA1/CB1 edge can latch an interrupt flag.
+//! External input pin levels are not part of the chip's register file and
+//! are left alone (the keyboard encoder and video board are not wired to
+//! the reset line).
 
 use std::fmt;
 
 /// Four register addresses decoded from RS1/RS0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reg {
-    PortAData = 0,
-    ControlA = 1,
-    PortBData = 2,
-    ControlB = 3,
+    PortAData,
+    ControlA,
+    PortBData,
+    ControlB,
 }
 
 impl Reg {
@@ -65,6 +86,15 @@ pub struct Pia6821 {
     _ca2_input: bool,
     cb1: bool,
     _cb2_input: bool,
+
+    /// Whether the RESET pin is currently held asserted.
+    reset_held: bool,
+
+    /// Set by an actual Port A peripheral data-register read, consumed by
+    /// [`Pia6821::take_port_a_read`]. Not a hardware register: it is how
+    /// the machine tells the keyboard model that the CPU really took the
+    /// presented byte, instead of guessing from the interrupt flag.
+    port_a_read: bool,
 }
 
 impl Pia6821 {
@@ -83,6 +113,8 @@ impl Pia6821 {
             _ca2_input: false,
             cb1: false,
             _cb2_input: false,
+            reset_held: false,
+            port_a_read: false,
         }
     }
 
@@ -102,9 +134,15 @@ impl Pia6821 {
     /// PIA's IRQ output to the 6502's IRQ input either). Software can
     /// therefore always poll the flag, enabled or not — this is how the
     /// Woz Monitor itself reads it (`BIT`/`BPL`, no interrupt handler).
+    ///
+    /// While the RESET pin is held asserted the pin level is still tracked
+    /// (it is an external line) but no flag can latch.
     pub fn set_ca1(&mut self, asserted: bool) {
         let prev = self.ca1;
         self.ca1 = asserted;
+        if self.reset_held {
+            return;
+        }
         let rising = asserted && !prev;
         let falling = !asserted && prev;
         let active_high = self.cra & 0x02 != 0;
@@ -125,10 +163,14 @@ impl Pia6821 {
 
     /// Set the CB1 input pin (Display Acknowledge on Apple I). See
     /// [`Pia6821::set_ca1`]: the flag sets on the qualifying edge
-    /// regardless of the interrupt enable bit.
+    /// regardless of the interrupt enable bit, and never while RESET is
+    /// held.
     pub fn set_cb1(&mut self, asserted: bool) {
         let prev = self.cb1;
         self.cb1 = asserted;
+        if self.reset_held {
+            return;
+        }
         let rising = asserted && !prev;
         let falling = !asserted && prev;
         let active_high = self.crb & 0x02 != 0;
@@ -147,48 +189,99 @@ impl Pia6821 {
     }
 
     /// Whether the IRQA1 interrupt flag (CRA bit 7) is currently set.
-    /// This is cleared when the CPU reads Port A data.
+    /// Cleared by a Port A **peripheral data register** read (CRA bit 2
+    /// set), not by a DDRA read and not by any write.
     pub fn irqa1_active(&self) -> bool {
         self.cra & 0x80 != 0
     }
 
-    /// Reset to power-on state: all registers zero, all control lines inactive.
-    pub fn reset(&mut self) {
+    /// Drive the PIA's active-low RESET pin (`asserted == true` means the
+    /// board's reset line is pulled, i.e. the pin is low).
+    ///
+    /// The false→true transition clears the register file: both output
+    /// registers, both data-direction registers (all lines become inputs),
+    /// and both control registers including the interrupt flags. Holding it
+    /// keeps the chip in that state: CPU writes are dropped and no CA1/CB1
+    /// edge latches a flag. Releasing it only ends the hold — it does not
+    /// clear the registers a second time. Redundant asserts are no-ops.
+    ///
+    /// External input pin levels and a pending
+    /// [`Pia6821::take_port_a_read`] notification survive: they are not
+    /// chip registers, and the host must still be able to settle a read
+    /// that really happened just before the button was pressed.
+    pub(crate) fn set_reset_line(&mut self, asserted: bool) {
+        if !asserted {
+            self.reset_held = false;
+            return;
+        }
+        if self.reset_held {
+            return;
+        }
+        self.reset_held = true;
         self.ora = 0;
         self.ddra = 0;
         self.cra = 0;
-        self.pins_a = 0;
         self.orb = 0;
         self.ddrb = 0;
         self.crb = 0;
-        self.pins_b = 0;
-        self.ca1 = false;
-        self._ca2_input = false;
-        self.cb1 = false;
-        self._cb2_input = false;
     }
 
-    /// Whether writes to Port B go to the Output Register (CRB bit 2 = 1)
-    /// rather than the Data Direction Register.
-    pub fn port_b_or_selected(&self) -> bool {
-        self.crb & 0x04 != 0
+    /// Whether the RESET pin is currently held asserted.
+    pub(crate) fn reset_asserted(&self) -> bool {
+        self.reset_held
+    }
+
+    /// Consume the "the CPU read Port A's peripheral data register" event.
+    pub(crate) fn take_port_a_read(&mut self) -> bool {
+        std::mem::take(&mut self.port_a_read)
+    }
+
+    /// The byte the Port B output pins are actually driving to the video
+    /// board, or `None` when nothing valid is being driven: RESET held,
+    /// CRB not selecting the output register, or PB0–PB6 not all
+    /// configured as outputs (the Apple I display takes seven data lines,
+    /// so a partly-input DDRB is not driving a character).
+    pub(crate) fn display_data(&self) -> Option<u8> {
+        if self.reset_held || self.crb & 0x04 == 0 || self.ddrb & 0x7F != 0x7F {
+            return None;
+        }
+        Some(self.orb & 0x7F)
     }
 
     // --- Bus-facing read / write ---
 
     /// Read a PIA register.  `addr` should be in `$D010..$D013`.
     /// Only the lowest two address bits matter.
+    ///
+    /// CR bit 2 selects the data register vs. the DDR for reads as well as
+    /// writes; only a peripheral data-register read has the side effects
+    /// (interrupt flags cleared, read event latched).
     pub fn read(&mut self, addr: u16) -> u8 {
         match Reg::from_addr(addr) {
-            Reg::PortAData => self.read_port_a_data(),
+            Reg::PortAData => {
+                if self.cra & 0x04 != 0 {
+                    self.read_port_a_data()
+                } else {
+                    self.ddra
+                }
+            }
             Reg::ControlA => self.cra,
-            Reg::PortBData => self.read_port_b_data(),
+            Reg::PortBData => {
+                if self.crb & 0x04 != 0 {
+                    self.read_port_b_data()
+                } else {
+                    self.ddrb
+                }
+            }
             Reg::ControlB => self.crb,
         }
     }
 
-    /// Write a PIA register.
+    /// Write a PIA register.  Ignored entirely while RESET is held.
     pub fn write(&mut self, addr: u16, value: u8) {
+        if self.reset_held {
+            return;
+        }
         match Reg::from_addr(addr) {
             Reg::PortAData => self.write_port_a_data(value),
             Reg::ControlA => self.cra = self.write_cr(self.cra, value),
@@ -199,12 +292,13 @@ impl Pia6821 {
 
     // --- Internal helpers ---
 
-    /// Read Port A data.  The returned value mixes ORA for output bits with
-    /// input pin state for input bits.  Reading clears IRQA1 and IRQA2.
+    /// Read Port A's peripheral data register.  The returned value mixes
+    /// ORA for output bits with input pin state for input bits.  Reading
+    /// clears IRQA1/IRQA2 and latches the read event for the host.
     fn read_port_a_data(&mut self) -> u8 {
         let value = (self.ora & self.ddra) | (self.pins_a & !self.ddra);
-        // Reading the data register clears interrupt flags.
         self.cra &= !0xC0;
+        self.port_a_read = true;
         value
     }
 
@@ -215,11 +309,6 @@ impl Pia6821 {
         } else {
             // CR bit 2 = 0 → write Data Direction Register
             self.ddra = value;
-        }
-        // Writing the data register also clears interrupt flags (side effect
-        // when CR bit 2 = 1, but consistent peripherals clear on write too).
-        if self.cra & 0x04 != 0 {
-            self.cra &= !0xC0;
         }
     }
 
@@ -232,7 +321,6 @@ impl Pia6821 {
     fn write_port_b_data(&mut self, value: u8) {
         if self.crb & 0x04 != 0 {
             self.orb = value;
-            self.crb &= !0xC0;
         } else {
             self.ddrb = value;
         }
@@ -262,6 +350,7 @@ impl fmt::Debug for Pia6821 {
             .field("ddrb", &self.ddrb)
             .field("orb", &self.orb)
             .field("crb", &format_args!("{:02X}", self.crb))
+            .field("reset_held", &self.reset_held)
             .finish()
     }
 }
@@ -301,6 +390,22 @@ mod tests {
         pia.write(addr_a, 0xF0);
         assert_eq!(pia.ddra, 0xF0);
         assert_eq!(pia.ora, 0x55); // ORA unchanged
+    }
+
+    #[test]
+    fn ddr_reads_back_from_the_data_address_when_cr_bit2_is_clear() {
+        // Regression: reading `$D010`/`$D012` with CR bit 2 clear used to
+        // return the peripheral data register (and clear interrupt flags),
+        // so software could never read back the DDR it had just written —
+        // writing DDRB = $7F read back as $00.
+        let mut pia = Pia6821::new();
+        pia.write(0xD010, 0x3C); // DDRA
+        pia.write(0xD012, 0x7F); // DDRB
+        pia.set_port_a_inputs(0xFF);
+        pia.set_port_b_inputs(0xFF);
+
+        assert_eq!(pia.read(0xD010), 0x3C, "DDRA must read back");
+        assert_eq!(pia.read(0xD012), 0x7F, "DDRB must read back");
     }
 
     #[test]
@@ -374,6 +479,74 @@ mod tests {
     }
 
     #[test]
+    fn only_a_peripheral_data_read_clears_that_ports_flags() {
+        let mut pia = Pia6821::new();
+        // Both ports: rising-edge active, DDR selected (bit 2 clear).
+        pia.write(0xD011, 0x02);
+        pia.write(0xD013, 0x02);
+        pia.set_ca1(true);
+        pia.set_cb1(true);
+        assert_eq!(pia.cra & 0x80, 0x80);
+        assert_eq!(pia.crb & 0x80, 0x80);
+
+        // Reading the DDR through the data address must not clear flags.
+        let _ = pia.read(0xD010);
+        let _ = pia.read(0xD012);
+        // Reading the control registers must not clear flags.
+        let _ = pia.read(0xD011);
+        let _ = pia.read(0xD013);
+        // Writing the DDR must not clear flags.
+        pia.write(0xD010, 0x00);
+        pia.write(0xD012, 0x7F);
+        assert_eq!(
+            pia.cra & 0x80,
+            0x80,
+            "DDR/control access must not clear IRQA1"
+        );
+        assert_eq!(
+            pia.crb & 0x80,
+            0x80,
+            "DDR/control access must not clear IRQB1"
+        );
+
+        // Select the output registers and write them: still no clearing.
+        pia.write(0xD011, 0x06);
+        pia.write(0xD013, 0x06);
+        pia.write(0xD010, 0x00);
+        pia.write(0xD012, 0x41);
+        assert_eq!(pia.cra & 0x80, 0x80, "an OR write must not clear IRQA1");
+        assert_eq!(pia.crb & 0x80, 0x80, "an OR write must not clear IRQB1");
+
+        // A real Port A data read clears Port A's flags only.
+        pia.set_port_a_inputs(0xC8);
+        assert_eq!(pia.read(0xD010), 0xC8);
+        assert_eq!(pia.cra & 0x80, 0);
+        assert_eq!(pia.crb & 0x80, 0x80, "the other port keeps its flag");
+
+        // ...and symmetrically for Port B.
+        let _ = pia.read(0xD012);
+        assert_eq!(pia.crb & 0x80, 0);
+    }
+
+    #[test]
+    fn only_a_peripheral_data_read_reports_a_port_a_read_event() {
+        let mut pia = Pia6821::new();
+        pia.write(0xD011, 0x02); // DDR selected
+        let _ = pia.read(0xD010); // DDRA read
+        let _ = pia.read(0xD011); // control read
+        pia.write(0xD010, 0x00); // DDRA write
+        assert!(!pia.take_port_a_read(), "no data register was read");
+
+        pia.write(0xD011, 0x06); // select OR
+        pia.write(0xD010, 0x00); // ORA write
+        assert!(!pia.take_port_a_read(), "an OR write is not a read");
+
+        let _ = pia.read(0xD010);
+        assert!(pia.take_port_a_read(), "the data register read must report");
+        assert!(!pia.take_port_a_read(), "the event is consumed once");
+    }
+
+    #[test]
     fn control_register_preserves_readonly_flags_on_write() {
         let mut pia = Pia6821::new();
         pia.write(0xD011, 0x03); // rising edge, IRQ enabled
@@ -384,5 +557,89 @@ mod tests {
         // Write only the DDR select bit — flags must survive.
         pia.write(0xD011, 0x04);
         assert_eq!(pia.cra, 0x84); // $80 (flag) | $04 (DDR select)
+    }
+
+    #[test]
+    fn held_reset_clears_registers_once_and_blocks_writes() {
+        let mut pia = Pia6821::new();
+        pia.write(0xD011, 0x07);
+        pia.write(0xD013, 0x07);
+        pia.write(0xD010, 0x55); // ORA
+        pia.write(0xD012, 0x41); // ORB
+        pia.set_ca1(true);
+        assert_eq!(pia.cra & 0x80, 0x80);
+
+        pia.set_reset_line(true);
+        assert!(pia.reset_asserted());
+        assert_eq!(pia.cra, 0);
+        assert_eq!(pia.crb, 0);
+        assert_eq!(pia.ora, 0);
+        assert_eq!(pia.orb, 0);
+        assert_eq!(pia.ddra, 0);
+        assert_eq!(pia.ddrb, 0);
+
+        // Writes while held are dropped, and no edge can latch a flag.
+        pia.write(0xD011, 0x07);
+        pia.write(0xD010, 0x55);
+        pia.write(0xD012, 0x7F);
+        pia.set_ca1(false);
+        pia.set_ca1(true);
+        assert_eq!(pia.cra, 0, "CRA must stay cleared while RESET is held");
+        assert_eq!(pia.ora, 0);
+        assert_eq!(pia.ddrb, 0);
+
+        // A redundant assert changes nothing; release ends the hold and
+        // software can reconfigure the chip again.
+        pia.set_reset_line(true);
+        assert!(pia.reset_asserted());
+        pia.set_reset_line(false);
+        assert!(!pia.reset_asserted());
+        pia.write(0xD011, 0x07);
+        assert_eq!(pia.cra, 0x07);
+        pia.set_ca1(false);
+        pia.set_ca1(true);
+        assert_eq!(pia.cra & 0x80, 0x80, "edges latch again after release");
+    }
+
+    #[test]
+    fn held_reset_keeps_input_pin_levels_and_a_pending_read_event() {
+        let mut pia = Pia6821::new();
+        pia.write(0xD011, 0x06); // select ORA
+        pia.set_port_a_inputs(0xC1);
+        assert_eq!(pia.read(0xD010), 0xC1);
+
+        pia.set_reset_line(true);
+        // The keyboard encoder and video board are not on the reset line.
+        assert!(pia.port_a_bit7(), "external pin levels are untouched");
+        assert!(
+            pia.take_port_a_read(),
+            "a read that already happened must still settle"
+        );
+    }
+
+    #[test]
+    fn display_data_requires_or_select_and_seven_output_lines() {
+        let mut pia = Pia6821::new();
+        pia.write(0xD012, 0x7F); // DDRB: PB0-PB6 outputs
+        assert_eq!(pia.display_data(), None, "DDR still selected, no OR write");
+
+        pia.write(0xD013, 0x04); // select ORB
+        pia.write(0xD012, 0xC1);
+        assert_eq!(pia.display_data(), Some(0x41), "bit 7 is not a data line");
+
+        // A port line configured as input is not driving the display.
+        pia.write(0xD013, 0x00); // select DDRB
+        pia.write(0xD012, 0x3F); // PB6 becomes an input
+        pia.write(0xD013, 0x04);
+        assert_eq!(pia.display_data(), None);
+
+        // Held RESET drives nothing.
+        pia.write(0xD013, 0x00);
+        pia.write(0xD012, 0x7F);
+        pia.write(0xD013, 0x04);
+        pia.write(0xD012, 0x41);
+        assert_eq!(pia.display_data(), Some(0x41));
+        pia.set_reset_line(true);
+        assert_eq!(pia.display_data(), None);
     }
 }
