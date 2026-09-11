@@ -9,6 +9,7 @@
 //! recreate, and every input batch included.
 
 use std::{
+    collections::VecDeque,
     error::Error,
     fmt::{self, Write as _},
     fs,
@@ -29,6 +30,8 @@ use hesper_apple1::{
 };
 use hesper_cpu6502::{CpuError, Cycle, StepKind};
 use sha2::{Digest, Sha256};
+
+use crate::{format_bus_trace, format_instruction_trace};
 
 /// Cycles to run per idle tick while nothing new has arrived (a keystroke
 /// in the interactive loop, or after a line in the batch loop) and no
@@ -87,23 +90,44 @@ impl fmt::Display for StopReason {
     }
 }
 
+/// Which CPU observations a session records, and how many it keeps.
+///
+/// Both kinds share one bounded queue: `--trace-limit` caps total records,
+/// so diagnostics stay bounded no matter how long the machine runs.
+struct TraceOptions {
+    instructions: bool,
+    bus: bool,
+    limit: usize,
+}
+
+impl TraceOptions {
+    fn enabled(&self) -> bool {
+        self.instructions || self.bus
+    }
+}
+
 /// One CLI session over one machine at a time.
 ///
 /// `total_cycles` is this session's accumulated cycle count, deliberately
 /// separate from `Apple1::total_cycles`: recreating the machine (Ctrl-N)
-/// gives a fresh machine counter, but the session ceiling keeps counting.
+/// gives a fresh machine counter, but the session ceiling and its trace
+/// keep going.
 struct Session {
     machine: Apple1,
     total_cycles: u64,
     max_cycles: Option<u64>,
+    trace: TraceOptions,
+    recent: VecDeque<String>,
 }
 
 impl Session {
-    fn new(machine: Apple1, max_cycles: Option<u64>) -> Self {
+    fn new(machine: Apple1, max_cycles: Option<u64>, trace: TraceOptions) -> Self {
         Self {
             machine,
             total_cycles: 0,
             max_cycles,
+            trace,
+            recent: VecDeque::new(),
         }
     }
 
@@ -117,14 +141,44 @@ impl Session {
     /// when the budget is exhausted, without touching the machine.
     ///
     /// A cycle that ends in a CPU error still counts: its bus access
-    /// really happened (see `Apple1::cycle`).
+    /// really happened (see `Apple1::cycle`). An unsupported opcode returns
+    /// no `Cycle` at all, so the records already kept are reported as they
+    /// are; no bus line is invented for the failed cycle.
     fn cycle(&mut self) -> Result<Option<Cycle>, CpuError> {
         if self.remaining() == Some(0) {
             return Ok(None);
         }
         self.total_cycles += 1;
         let cycle = self.machine.cycle()?;
+
+        // With both kinds off nothing is snapshotted, formatted, or queued.
+        if self.trace.bus {
+            let state = self.machine.cpu().debug_state();
+            self.record(format_bus_trace(&cycle, &state, self.total_cycles));
+        }
+        if self.trace.instructions
+            && let Some(step) = cycle.completed
+        {
+            self.record(format_instruction_trace(&step, self.total_cycles));
+        }
         Ok(Some(cycle))
+    }
+
+    /// Keep the newest record, dropping the oldest past the limit.
+    fn record(&mut self, line: String) {
+        if self.recent.len() == self.trace.limit {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(line);
+    }
+
+    /// Write the retained records. Called only after the terminal has been
+    /// restored, so diagnostics never land inside the machine's screen.
+    fn write_trace(&self, out: &mut impl Write) -> io::Result<()> {
+        for line in &self.recent {
+            writeln!(out, "{line}")?;
+        }
+        Ok(())
     }
 
     /// Run up to `requested` cycles. Stops the moment the budget is
@@ -203,12 +257,11 @@ pub fn run_apple1(
     if !TRACE_LIMIT_RANGE.contains(&trace_limit) {
         return Err("--trace-limit requires 1..4096".into());
     }
-    if trace {
-        eprintln!("[--trace not yet implemented for apple1]");
-    }
-    if bus_trace {
-        eprintln!("[--bus-trace not yet implemented for apple1]");
-    }
+    let trace_options = TraceOptions {
+        instructions: trace,
+        bus: bus_trace,
+        limit: trace_limit,
+    };
 
     // 1. Load and fully validate ROM and optional program (exact ROM
     // identity, program fits in RAM) before any machine state exists to
@@ -220,13 +273,21 @@ pub fn run_apple1(
     // 2. Build the machine and the session. Nothing has executed yet: with
     // `--max-cycles 0` the run stops here having reported zero cycles.
     let machine = create_machine(&rom, program.as_deref(), cycles_per_char)?;
-    let mut session = Session::new(machine, max_cycles);
+    let mut session = Session::new(machine, max_cycles, trace_options);
 
     let outcome = if io::stdin().is_terminal() {
         run_interactive(&mut session, &rom, program.as_deref(), cycles_per_char)
     } else {
         run_batch(&mut session)
     };
+
+    // 3. The terminal is restored by now (the interactive guard is dropped
+    // on the way out), so the retained records go to stderr while stdout
+    // keeps only machine output. A budget stop, a user quit, a signal, and
+    // a CPU error all reach this point.
+    if session.trace.enabled() {
+        let _ = session.write_trace(&mut io::stderr());
+    }
 
     let stop = outcome?;
     eprintln!("\n{stop}");
@@ -596,10 +657,21 @@ mod tests {
     /// work to do and never stops on its own.
     const SPIN: &[u8] = &[0x4C, 0x00, 0x00];
 
-    fn spinning_session(max_cycles: Option<u64>) -> Session {
+    fn session_with(max_cycles: Option<u64>, trace: TraceOptions) -> Session {
         let rom = test_rom(0x0000);
         let machine = create_machine(&rom, Some(SPIN), NonZeroU64::new(50).unwrap()).unwrap();
-        Session::new(machine, max_cycles)
+        Session::new(machine, max_cycles, trace)
+    }
+
+    fn spinning_session(max_cycles: Option<u64>) -> Session {
+        session_with(
+            max_cycles,
+            TraceOptions {
+                instructions: false,
+                bus: false,
+                limit: 64,
+            },
+        )
     }
 
     #[test]
@@ -675,5 +747,42 @@ mod tests {
         assert!(session.advance(1_000).unwrap().is_none());
         assert_eq!(session.total_cycles, after_reset + 1_000);
         assert_eq!(session.machine.total_cycles(), session.total_cycles);
+    }
+
+    #[test]
+    fn both_trace_kinds_share_one_bounded_queue() {
+        let mut session = session_with(
+            None,
+            TraceOptions {
+                instructions: true,
+                bus: true,
+                limit: 4,
+            },
+        );
+        assert!(session.reset().unwrap().is_none());
+        assert!(session.advance(500).unwrap().is_none());
+
+        assert_eq!(
+            session.recent.len(),
+            4,
+            "the limit caps both kinds together, not each separately"
+        );
+        // The newest record belongs to the most recent cycle, and a bus
+        // record precedes the completion it belongs to.
+        let last = session.recent.back().unwrap();
+        assert!(
+            last.starts_with(&format!("C{:06}", session.total_cycles))
+                || last.contains(&format!("total={}", session.total_cycles)),
+            "unexpected newest record: {last}"
+        );
+    }
+
+    #[test]
+    fn a_disabled_trace_records_nothing() {
+        let mut session = spinning_session(None);
+        assert!(session.reset().unwrap().is_none());
+        assert!(session.advance(500).unwrap().is_none());
+        assert!(session.recent.is_empty());
+        assert!(!session.trace.enabled());
     }
 }

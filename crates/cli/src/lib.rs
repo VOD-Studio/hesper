@@ -1,8 +1,63 @@
-//! Host-side demo shared by the CLI and its integration tests, not a machine model.
+//! Host-side demo shared by the CLI and its integration tests, not a machine
+//! model. Also owns the trace line formats both CLI hosts (demo and Apple I)
+//! print, so the two report identical CPU observations.
 
 use std::fmt;
 
-use hesper_cpu6502::{Cpu, CpuError, Cycle, DebugState, LoadError, Ram, Registers, Step};
+use hesper_cpu6502::{
+    Cpu, CpuError, Cycle, DebugState, Direction, LoadError, Ram, Registers, Step, StepKind,
+};
+
+/// One line of register state, as both hosts print it.
+pub fn format_registers(registers: Registers) -> String {
+    format!(
+        "A={:02X} X={:02X} Y={:02X} SP={:02X} PC={:04X} P={:02X}",
+        registers.a,
+        registers.x,
+        registers.y,
+        registers.sp,
+        registers.pc,
+        registers.status.bits()
+    )
+}
+
+/// One completed instruction, IRQ, NMI, or RESET sequence, with the
+/// accumulated cycle count the host is keeping.
+pub fn format_instruction_trace(step: &Step, total: u64) -> String {
+    let event = match step.kind {
+        StepKind::Instruction { opcode } => format!("{opcode:02X}"),
+        StepKind::Irq => "IRQ".to_owned(),
+        StepKind::Nmi => "NMI".to_owned(),
+        StepKind::Reset => "RESET".to_owned(),
+    };
+    format!(
+        "${:04X} {event} | {} -> {} | +{} cycles total={total}",
+        step.address,
+        format_registers(step.before),
+        format_registers(step.after),
+        step.cycles
+    )
+}
+
+/// One bus cycle with the CPU's internal observation for that cycle.
+pub fn format_bus_trace(cycle: &Cycle, state: &DebugState, total: u64) -> String {
+    let direction = if cycle.bus.direction == Direction::Read {
+        'R'
+    } else {
+        'W'
+    };
+    format!(
+        "C{total:06} {direction} ${:04X}={:02X} SYNC={} stalled={} | next={:?}/{:?} pins={:?} latches={:?}",
+        cycle.bus.address,
+        cycle.bus.data,
+        cycle.bus.sync,
+        cycle.stalled,
+        state.next_clock_phase,
+        state.execution.map(|e| e.phase),
+        state.pins,
+        state.latches
+    )
+}
 
 pub const DEMO_START: u16 = 0x8000;
 pub const DEMO_DONE: u16 = 0x800f;

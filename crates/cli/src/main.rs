@@ -2,24 +2,14 @@ use std::{
     collections::VecDeque, env, error::Error, fmt::Write as _, num::NonZeroU64, process::ExitCode,
 };
 
-use hesper::{DEFAULT_MAX_STEPS, DemoEvent, apple1::run_apple1, run_demo_with_trace};
+use hesper::{
+    DEFAULT_MAX_STEPS, DemoEvent, apple1::run_apple1, format_bus_trace, format_instruction_trace,
+    format_registers, run_demo_with_trace,
+};
 use hesper_apple1::display::DEFAULT_CYCLES_PER_CHAR;
-use hesper_cpu6502::{Direction, Registers, StepKind};
 
 /// Trace records kept by default when `--trace`/`--bus-trace` is on.
 const DEFAULT_TRACE_LIMIT: usize = 64;
-
-fn registers(state: Registers) -> String {
-    format!(
-        "A={:02X} X={:02X} Y={:02X} SP={:02X} PC={:04X} P={:02X}",
-        state.a,
-        state.x,
-        state.y,
-        state.sp,
-        state.pc,
-        state.status.bits()
-    )
-}
 
 fn run_apple1_subcommand(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let mut rom: Option<String> = None;
@@ -145,7 +135,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: hesper [--trace] [--bus-trace] [--trace-limit 1..4096] [--max-steps N]\nRun the built-in NMOS 6502 count demo. Default limit: {DEFAULT_MAX_STEPS} instructions; keep the last 64 trace records."
+                    "Usage: hesper [--trace] [--bus-trace] [--trace-limit 1..4096] [--max-steps N]\nRun the built-in NMOS 6502 count demo. Default limit: {DEFAULT_MAX_STEPS} instructions; keep the last {DEFAULT_TRACE_LIMIT} trace records."
                 );
                 return Ok(());
             }
@@ -155,38 +145,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut recent = VecDeque::new();
     let result = run_demo_with_trace(max_steps, |event, total| {
         let line = match event {
-            DemoEvent::Instruction(step) if trace => {
-                let event = match step.kind {
-                    StepKind::Instruction { opcode } => format!("{opcode:02X}"),
-                    StepKind::Irq => "IRQ".to_owned(),
-                    StepKind::Nmi => "NMI".to_owned(),
-                    StepKind::Reset => "RESET".to_owned(),
-                };
-                Some(format!(
-                    "${:04X} {event} | {} -> {} | +{} cycles total={total}",
-                    step.address,
-                    registers(step.before),
-                    registers(step.after),
-                    step.cycles
-                ))
-            }
+            DemoEvent::Instruction(step) if trace => Some(format_instruction_trace(&step, total)),
             DemoEvent::Cycle { cycle, state } if bus_trace => {
-                let direction = if cycle.bus.direction == Direction::Read {
-                    'R'
-                } else {
-                    'W'
-                };
-                Some(format!(
-                    "C{total:06} {direction} ${:04X}={:02X} SYNC={} stalled={} | next={:?}/{:?} pins={:?} latches={:?}",
-                    cycle.bus.address,
-                    cycle.bus.data,
-                    cycle.bus.sync,
-                    cycle.stalled,
-                    state.next_clock_phase,
-                    state.execution.map(|e| e.phase),
-                    state.pins,
-                    state.latches
-                ))
+                Some(format_bus_trace(&cycle, &state, total))
             }
             _ => None,
         };
@@ -206,7 +167,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         write!(output, " {value}")?;
     }
     println!("$0200..$0209:{output}");
-    println!("{}", registers(result.registers));
+    println!("{}", format_registers(result.registers));
     println!(
         "Completed: {} instructions, {} instruction cycles + {} reset cycles = {} total cycles",
         result.steps,

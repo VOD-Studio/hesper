@@ -337,3 +337,186 @@ fn oversized_program_is_rejected() {
     let output = run_apple1_cli(&["--rom", rom.path(), "--program", program.path()], b"");
     assert_rejected(&output, "program exceeds 4 KiB Apple I RAM");
 }
+
+/// Trace records the CLI kept, one per line on stderr, above the stop
+/// message.
+fn trace_lines(output: &Output) -> Vec<String> {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter(|line| line.starts_with('C') || line.starts_with('$'))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn a_bus_trace_reports_every_executed_cycle_including_the_reset_vector() {
+    let rom = RomFile::from_env("bus-trace");
+    let output = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--max-cycles",
+            "20",
+            "--bus-trace",
+            "--trace-limit",
+            "4096",
+        ],
+        b"",
+    );
+    assert!(
+        output.status.success(),
+        "a budget stop is graceful, got {:?}",
+        output.status
+    );
+    let lines = trace_lines(&output);
+    assert_eq!(
+        lines.len(),
+        20,
+        "20 executed cycles must produce 20 bus records, got: {lines:?}"
+    );
+    // The physical RESET sequence's own vector reads are real bus cycles.
+    assert!(
+        lines.iter().any(|line| line.contains("$FFFC=")),
+        "expected the reset vector low read, got: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("$FFFD=")),
+        "expected the reset vector high read, got: {lines:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn the_trace_limit_bounds_both_kinds_together() {
+    let rom = RomFile::from_env("trace-limit");
+    let bus_only = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--max-cycles",
+            "20",
+            "--bus-trace",
+            "--trace-limit",
+            "4",
+        ],
+        b"",
+    );
+    let bus_lines = trace_lines(&bus_only);
+    assert_eq!(
+        bus_lines.len(),
+        4,
+        "only the last four records may be kept, got: {bus_lines:?}"
+    );
+
+    let both = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--max-cycles",
+            "20",
+            "--bus-trace",
+            "--trace",
+            "--trace-limit",
+            "4",
+        ],
+        b"",
+    );
+    let both_lines = trace_lines(&both);
+    assert_eq!(
+        both_lines.len(),
+        4,
+        "two trace kinds share one limit, got: {both_lines:?}"
+    );
+
+    // Unbounded enough to keep everything: the instruction trace reports
+    // the completed physical RESET sequence, the bus trace does not.
+    let instructions = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--max-cycles",
+            "20",
+            "--trace",
+            "--trace-limit",
+            "4096",
+        ],
+        b"",
+    );
+    let instruction_lines = trace_lines(&instructions);
+    assert!(
+        instruction_lines.iter().any(|line| line.contains("RESET")),
+        "expected the completed RESET sequence record, got: {instruction_lines:?}"
+    );
+    assert!(
+        instruction_lines.len() < 20,
+        "instruction records are per completed step, not per cycle, got: \
+         {instruction_lines:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn tracing_does_not_change_what_the_machine_does() {
+    let rom = RomFile::from_env("trace-neutral");
+    let plain = run_apple1_cli(
+        &["--rom", rom.path(), "--max-cycles", "200000"],
+        b"300: AB CD EF\n300.302\n",
+    );
+    let traced = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--max-cycles",
+            "200000",
+            "--trace",
+            "--bus-trace",
+        ],
+        b"300: AB CD EF\n300.302\n",
+    );
+    assert_eq!(
+        plain.stdout, traced.stdout,
+        "the same input and budget must produce the same machine output"
+    );
+    assert!(!trace_lines(&traced).is_empty(), "the traced run recorded");
+    assert!(
+        trace_lines(&plain).is_empty(),
+        "the plain run recorded none"
+    );
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn an_unsupported_opcode_fails_with_the_trace_that_led_to_it() {
+    // $02 is not an official NMOS opcode; the monitor's own RUN command
+    // jumps straight into it.
+    let rom = RomFile::from_env("bad-opcode");
+    let output = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--max-cycles",
+            "200000",
+            "--bus-trace",
+            "--trace-limit",
+            "8",
+        ],
+        b"300: 02\n300R\n",
+    );
+    assert!(
+        !output.status.success(),
+        "a real CPU error must exit non-zero, got {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unsupported opcode $02 at $0300"),
+        "expected the failing address and opcode, got: {stderr:?}"
+    );
+    let lines = trace_lines(&output);
+    assert_eq!(
+        lines.len(),
+        8,
+        "the records leading to the error must still be reported, got: {lines:?}"
+    );
+}
