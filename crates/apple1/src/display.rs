@@ -14,9 +14,9 @@
 //! sending CR on the last line scrolls the screen up one line in
 //! hardware. This module tracks that same 40x24 grid and cursor position
 //! as the authoritative machine-side screen state ([`Display::screen`]);
-//! `drain_output` separately hands the host a raw byte stream for
-//! presentation (a terminal in canonical mode already wraps/scrolls for
-//! display, independent of this machine-side model).
+//! `drain_output` separately hands the host the completed seven-bit
+//! character stream with ASCII letters uppercased, not raw bus bytes.
+//! The same normalized characters enter the screen and output queue.
 //!
 //! Column/row geometry and hardware scroll-on-CR/scroll-on-fill behavior
 //! are drawn from secondary technical sources (see `docs/references.md#apple-i`),
@@ -100,6 +100,7 @@ impl Display {
     /// column — the Apple I terminal has no hardware erase/backspace, so
     /// non-CR control bytes are not special-cased.
     fn commit_char(&mut self, ch: u8) {
+        let ch = ch.to_ascii_uppercase();
         self.output.push(ch);
         if ch == b'\r' {
             self.cursor_col = 0;
@@ -153,6 +154,7 @@ impl Display {
     }
 
     /// Drain all completed output characters since the last drain.
+    /// These are seven-bit characters with ASCII letters uppercased.
     pub fn drain_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.output)
     }
@@ -203,6 +205,29 @@ mod tests {
     }
 
     #[test]
+    fn uppercase_output_preserves_latched_readback() {
+        let mut display = Display::new(cycles(2));
+        let mut pia = Pia6821::new();
+        pia.write(0xD013, 0x04);
+        display.on_write(0xE1);
+        display.update_pia(&mut pia);
+        assert_eq!(pia.read(0xD012), 0xE1);
+        display.tick(&mut pia);
+        assert!(display.drain_output().is_empty());
+        display.tick(&mut pia);
+        display.update_pia(&mut pia);
+        assert_eq!(pia.read(0xD012), 0x61);
+        assert_eq!(display.drain_output(), b"A");
+        assert_eq!(display.screen()[0][0], b'A');
+        for &byte in b"09@[\x60{~_\r" {
+            send(&mut display, byte);
+        }
+        assert_eq!(display.drain_output(), b"09@[\x60{~_\r");
+        assert_eq!(&display.screen()[0][..9], b"A09@[\x60{~_");
+        assert_eq!(display.cursor(), (1, 0));
+    }
+
+    #[test]
     fn single_character_writes_screen_cell_and_advances_cursor() {
         let mut display = Display::new(cycles(1));
         send(&mut display, b'A');
@@ -232,7 +257,7 @@ mod tests {
             (1, 0),
             "the 41st cell must start the next line"
         );
-        assert_eq!(display.screen()[0], [b'x'; COLUMNS]);
+        assert_eq!(display.screen()[0], [b'X'; COLUMNS]);
         assert_eq!(display.screen()[1], [b' '; COLUMNS]);
     }
 

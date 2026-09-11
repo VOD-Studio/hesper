@@ -4,7 +4,7 @@
 
 use std::num::NonZeroU64;
 
-use hesper_apple1::Apple1;
+use hesper_apple1::{Apple1, Keyboard, Pia6821};
 use hesper_cpu6502::{Bus, Cycle, DebugState};
 
 fn cycles(n: u64) -> NonZeroU64 {
@@ -83,11 +83,11 @@ fn display_output_collects_character() {
     //   STA $D012       8D 12 D0   ; DDRB = $FF (all outputs)
     //   LDA #$04        A9 04
     //   STA $D013       8D 13 D0   ; CRB = $04 (select OR, IRQ off)
-    //   LDA #'A'        A9 41
-    //   STA $D012       8D 12 D0   ; write 'A' to display
+    //   LDA #'a'        A9 61
+    //   STA $D012       8D 12 D0   ; write 'a' to display
     //   JMP $000F       4C 0F 00   ; spinloop
     let program: &[u8] = &[
-        0xA9, 0xFF, 0x8D, 0x12, 0xD0, 0xA9, 0x04, 0x8D, 0x13, 0xD0, 0xA9, 0x41, 0x8D, 0x12, 0xD0,
+        0xA9, 0xFF, 0x8D, 0x12, 0xD0, 0xA9, 0x04, 0x8D, 0x13, 0xD0, 0xA9, 0x61, 0x8D, 0x12, 0xD0,
         0x4C, 0x0F, 0x00,
     ];
     machine.bus_mut().load_ram(0x0000, program).unwrap();
@@ -98,9 +98,8 @@ fn display_output_collects_character() {
     // spinloop after STA $D012. Give plenty of budget for display timing.
     let output = machine.run_cycles(200).unwrap();
 
-    assert!(output.contains(&b'A'), "display output should contain 'A'");
-    // Should be exactly one character — no spurious output from DDR write.
-    assert_eq!(output.len(), 1, "expected exactly 1 output character");
+    assert_eq!(output, b"A");
+    assert_eq!(machine.display().screen()[0][0], b'A');
 }
 
 #[test]
@@ -308,7 +307,7 @@ fn keyboard_repeated_read_without_new_key_returns_same_data() {
     let mut machine = echo_machine(50);
     machine.reset().unwrap();
     machine.bus_mut().write(0xD011, 0x07);
-    machine.type_char(b'Q');
+    machine.type_char(b'q');
     let _ = machine.run_cycles(5).unwrap();
 
     let first = machine.bus_mut().read(0xD010);
@@ -317,7 +316,7 @@ fn keyboard_repeated_read_without_new_key_returns_same_data() {
         first, second,
         "repeated reads without a new key must return the same data"
     );
-    assert_eq!(first & 0x7F, b'Q');
+    assert_eq!(first, 0xD1);
 }
 
 #[test]
@@ -325,20 +324,40 @@ fn keyboard_continuous_input_delivers_keys_in_fifo_order() {
     let mut machine = echo_machine(50);
     machine.reset().unwrap();
     machine.bus_mut().write(0xD011, 0x07);
-    machine.type_str("AB");
+    machine.type_str("aB");
 
     // The second key must wait for the first to be read before it is
     // presented — no skipping or reordering.
     let _ = machine.run_cycles(5).unwrap();
-    assert_eq!(machine.bus_mut().read(0xD010) & 0x7F, b'A');
+    assert_eq!(machine.bus_mut().read(0xD010), 0xC1);
     let _ = machine.run_cycles(5).unwrap();
-    assert_eq!(machine.bus_mut().read(0xD010) & 0x7F, b'B');
+    assert_eq!(machine.bus_mut().read(0xD010), 0xC2);
+}
+
+#[test]
+fn keyboard_normalizes_high_bit_letters_without_changing_symbols() {
+    let mut keyboard = Keyboard::new();
+    let mut pia = Pia6821::new();
+    pia.write(0xD011, 0x07);
+    for byte in [
+        0xE1, 0xFA, b'0', b'9', b'@', b'[', 0x60, b'{', b'~', b'_', b'\r', 0x1B,
+    ] {
+        keyboard.type_char(byte);
+    }
+    for expected in [
+        0xC1, 0xDA, 0xB0, 0xB9, 0xC0, 0xDB, 0xE0, 0xFB, 0xFE, 0xDF, 0x8D, 0x9B,
+    ] {
+        keyboard.tick(&mut pia);
+        assert_eq!(pia.read(0xD010), expected);
+        keyboard.tick(&mut pia);
+    }
+    assert!(!keyboard.has_pending());
 }
 
 #[test]
 fn keyboard_control_characters_pass_through_unfiltered() {
     // CR ($0D) is an ordinary data byte to the PIA; the keyboard model
-    // does not interpret or filter any code point.
+    // does not interpret or filter control characters.
     let mut machine = echo_machine(50);
     machine.reset().unwrap();
     machine.bus_mut().write(0xD011, 0x07);

@@ -37,8 +37,9 @@ impl Keyboard {
     }
 
     /// Queue a character to be "typed" to the emulated machine.
+    /// Masks to seven bits and uppercases ASCII letters before queuing.
     pub fn type_char(&mut self, c: u8) {
-        self.pending.push_back(c);
+        self.pending.push_back((c & 0x7F).to_ascii_uppercase());
     }
 
     /// Called before each CPU cycle.  Settles any read the CPU performed

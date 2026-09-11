@@ -114,11 +114,13 @@ impl Apple1 {
     }
 
     /// Push a single character into the keyboard queue.
+    /// Masks to seven bits and uppercases ASCII letters.
     pub fn type_char(&mut self, c: u8) {
         self.keyboard.type_char(c);
     }
 
     /// Push each byte of `s` into the keyboard queue.
+    /// Each byte is masked to seven bits and ASCII letters are uppercased.
     pub fn type_str(&mut self, s: &str) {
         for b in s.bytes() {
             self.keyboard.type_char(b);

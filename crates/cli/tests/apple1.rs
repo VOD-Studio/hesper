@@ -314,7 +314,7 @@ fn apple1_cli_write_and_examine_ram_terminated_by_bare_lf() {
     let rom = RomFile::from_env("write-examine");
     let output = run_apple1_cli(
         &["--rom", rom.path(), "--max-cycles", ROM_TEST_MAX_CYCLES],
-        b"300: AB CD EF\n300.302\n",
+        b"300: aB cD eF\n300.302\n",
     );
     assert!(
         output.status.success(),
@@ -322,6 +322,7 @@ fn apple1_cli_write_and_examine_ram_terminated_by_bare_lf() {
         output.status
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("300: AB CD EF"), "got: {stdout:?}");
     assert!(
         stdout.contains("0300: AB CD EF"),
         "expected the deposited bytes to read back after bare-LF-terminated \

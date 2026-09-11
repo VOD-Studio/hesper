@@ -644,13 +644,9 @@ enum Action {
 
 /// Map a real keyboard's keypress to an [`Action`].
 ///
-/// The Apple I keyboard is uppercase-only 7-bit ASCII with no
-/// backspace/erase key of its own: the Woz Monitor recognizes underscore
-/// (`_`, `$5F`) as its line-edit backspace and ESC (`$1B`) to cancel a
-/// line, and only ever compares against uppercase letters. A modern
-/// keyboard's Backspace/Esc/lowercase-letter keys are translated to match
-/// what a real Apple I keyboard would have sent, so software written
-/// against the real hardware behaves the same from a modern terminal.
+/// Translate Enter to CR, Backspace to the Woz Monitor's underscore
+/// erase key, and Esc to its cancel byte. ASCII letter case is handled
+/// by the emulated Keyboard, not the host adapter.
 fn classify_key(key: KeyEvent) -> Action {
     if key.kind != KeyEventKind::Press {
         return Action::None;
@@ -670,7 +666,7 @@ fn classify_key(key: KeyEvent) -> Action {
         KeyCode::Enter => Action::Key(b'\r'),
         KeyCode::Backspace => Action::Key(b'_'),
         KeyCode::Esc => Action::Key(0x1B),
-        KeyCode::Char(c) if c.is_ascii() => Action::Key(c.to_ascii_uppercase() as u8),
+        KeyCode::Char(c) if c.is_ascii() => Action::Key(c as u8),
         _ => Action::None,
     }
 }
@@ -799,7 +795,7 @@ fn run_interactive(
                 Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {}
                 Event::Paste(text) => {
                     for ch in text.chars().filter(char::is_ascii) {
-                        session.machine.type_char(ch.to_ascii_uppercase() as u8);
+                        session.machine.type_char(ch as u8);
                     }
                 }
             }
