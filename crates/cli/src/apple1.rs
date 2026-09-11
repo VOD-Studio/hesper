@@ -6,7 +6,8 @@
 
 use std::{
     error::Error,
-    fmt, fs,
+    fmt::{self, Write as _},
+    fs,
     io::{self, BufRead, IsTerminal, Write},
     num::NonZeroU64,
     sync::{Arc, atomic::AtomicBool},
@@ -18,7 +19,8 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute, terminal,
 };
-use hesper_apple1::Apple1;
+use hesper_apple1::{Apple1, Apple1Bus};
+use sha2::{Digest, Sha256};
 
 /// Cycles to run per idle tick while nothing new has arrived (a keystroke
 /// in the interactive loop, or after a line in the batch loop) and no
@@ -61,6 +63,21 @@ impl fmt::Display for StopReason {
     }
 }
 
+/// The exact 256-byte Woz Monitor image this CLI accepts, by SHA-256.
+///
+/// The Apple I firmware is not shipped, embedded, or downloaded here (see
+/// `crates/apple1/tests/data/README.md`); the host supplies it with
+/// `--rom`. Pinning its identity keeps a wrong-but-same-length file from
+/// booting into unexplained garbage: the machine library still accepts any
+/// valid 256-byte ROM for original firmware, only this CLI is fixed.
+const WOZMON_SHA256: [u8; 32] = [
+    0xe5, 0xaf, 0x0d, 0x1c, 0x40, 0x57, 0xbd, 0x8e, 0x0e, 0xf5, 0xcb, 0x06, 0x9c, 0x20, 0x8f, 0xf7,
+    0xcc, 0x09, 0x84, 0xa7, 0xdf, 0xf5, 0x3b, 0x12, 0xc5, 0xcf, 0x11, 0x9d, 0xe8, 0xcb, 0x5c, 0x25,
+];
+
+/// Inclusive bounds on `--trace-limit`, matching the demo host's.
+const TRACE_LIMIT_RANGE: std::ops::RangeInclusive<usize> = 1..=4096;
+
 /// Run the Apple I with the given ROM and optional program.
 pub fn run_apple1(
     rom_path: &str,
@@ -69,7 +86,13 @@ pub fn run_apple1(
     max_cycles: Option<u64>,
     trace: bool,
     bus_trace: bool,
+    trace_limit: usize,
 ) -> Result<(), Box<dyn Error>> {
+    // Checked here too, not only in the argument parser: a direct library
+    // call must not be able to install an unbounded diagnostic queue.
+    if !TRACE_LIMIT_RANGE.contains(&trace_limit) {
+        return Err("--trace-limit requires 1..4096".into());
+    }
     if trace {
         eprintln!("[--trace not yet implemented for apple1]");
     }
@@ -77,13 +100,12 @@ pub fn run_apple1(
         eprintln!("[--bus-trace not yet implemented for apple1]");
     }
 
-    // 1. Load ROM and optional program. Both are validated (exact size,
-    // fits in RAM) before any machine state exists to mutate; a bad path
-    // or oversized program fails here with nothing partially applied.
-    let rom = fs::read(rom_path).map_err(|e| format!("cannot read ROM file '{rom_path}': {e}"))?;
-    let program = program_path
-        .map(|path| fs::read(path).map_err(|e| format!("cannot read program file '{path}': {e}")))
-        .transpose()?;
+    // 1. Load and fully validate ROM and optional program (exact ROM
+    // identity, program fits in RAM) before any machine state exists to
+    // mutate; a bad path, wrong image, or oversized program fails here
+    // with nothing partially applied and no cycle executed.
+    let rom = load_rom(rom_path)?;
+    let program = program_path.map(load_program).transpose()?;
 
     let mut machine = boot(&rom, program.as_deref(), cycles_per_char)?;
     let mut stdout = io::stdout();
@@ -105,11 +127,60 @@ pub fn run_apple1(
     Ok(())
 }
 
+/// Read the Woz Monitor ROM: exactly 256 bytes and exactly the pinned
+/// image (see [`WOZMON_SHA256`]). No download, no way to skip the check.
+fn load_rom(path: &str) -> Result<[u8; 256], Box<dyn Error>> {
+    let bytes = fs::read(path).map_err(|e| format!("cannot read ROM file '{path}': {e}"))?;
+    if bytes.len() != Apple1Bus::ROM_SIZE {
+        return Err(format!(
+            "ROM file '{path}' is {} bytes; the Woz Monitor image is exactly {} bytes",
+            bytes.len(),
+            Apple1Bus::ROM_SIZE
+        )
+        .into());
+    }
+    let digest = Sha256::digest(&bytes);
+    if digest.as_slice() != WOZMON_SHA256 {
+        return Err(format!(
+            "ROM SHA-256 mismatch for '{path}': got {}, expected {}",
+            hex(&digest),
+            hex(&WOZMON_SHA256)
+        )
+        .into());
+    }
+    let mut rom = [0u8; Apple1Bus::ROM_SIZE];
+    rom.copy_from_slice(&bytes);
+    Ok(rom)
+}
+
+/// Read an optional raw program image loaded at `$0000`. Any length that
+/// fits the Apple I's 4 KiB RAM is accepted, including empty.
+fn load_program(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let bytes = fs::read(path).map_err(|e| format!("cannot read program file '{path}': {e}"))?;
+    if bytes.len() > Apple1Bus::RAM_SIZE {
+        return Err(format!(
+            "program '{path}' is {} bytes: program exceeds 4 KiB Apple I RAM",
+            bytes.len()
+        )
+        .into());
+    }
+    Ok(bytes)
+}
+
+/// Lowercase hex, only built for a mismatch message.
+fn hex(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
+}
+
 /// Construct a machine, load the optional program, and drive it through a
 /// real physical RESET. Shared by the initial boot and by the interactive
 /// loop's "recreate machine" command.
 fn boot(
-    rom: &[u8],
+    rom: &[u8; 256],
     program: Option<&[u8]>,
     cycles_per_char: NonZeroU64,
 ) -> Result<Apple1, Box<dyn Error>> {
@@ -278,7 +349,7 @@ fn classify_key(key: KeyEvent) -> Action {
 /// in raw mode.
 fn run_interactive(
     machine: &mut Apple1,
-    rom: &[u8],
+    rom: &[u8; 256],
     program: Option<&[u8]>,
     cycles_per_char: NonZeroU64,
     max_cycles: Option<u64>,

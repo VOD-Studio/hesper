@@ -1,12 +1,13 @@
-mod apple1;
-
 use std::{
     collections::VecDeque, env, error::Error, fmt::Write as _, num::NonZeroU64, process::ExitCode,
 };
 
-use hesper::{DEFAULT_MAX_STEPS, DemoEvent, run_demo_with_trace};
+use hesper::{DEFAULT_MAX_STEPS, DemoEvent, apple1::run_apple1, run_demo_with_trace};
 use hesper_apple1::display::DEFAULT_CYCLES_PER_CHAR;
 use hesper_cpu6502::{Direction, Registers, StepKind};
+
+/// Trace records kept by default when `--trace`/`--bus-trace` is on.
+const DEFAULT_TRACE_LIMIT: usize = 64;
 
 fn registers(state: Registers) -> String {
     format!(
@@ -27,6 +28,7 @@ fn run_apple1_subcommand(mut args: impl Iterator<Item = String>) -> Result<(), B
     let mut max_cycles: Option<u64> = None;
     let mut trace = false;
     let mut bus_trace = false;
+    let mut trace_limit = DEFAULT_TRACE_LIMIT;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -46,10 +48,20 @@ fn run_apple1_subcommand(mut args: impl Iterator<Item = String>) -> Result<(), B
             "--max-cycles" => {
                 max_cycles = Some(
                     args.next()
-                        .ok_or("--max-cycles requires a positive integer")?
+                        .ok_or("--max-cycles requires an unsigned integer")?
                         .parse()
-                        .map_err(|_| "--max-cycles requires a positive integer")?,
+                        .map_err(|_| "--max-cycles requires an unsigned integer")?,
                 );
+            }
+            "--trace-limit" => {
+                trace_limit = args
+                    .next()
+                    .ok_or("--trace-limit requires 1..4096")?
+                    .parse()
+                    .map_err(|_| "--trace-limit requires 1..4096")?;
+                if !(1..=4096).contains(&trace_limit) {
+                    return Err("--trace-limit requires 1..4096".into());
+                }
             }
             "--trace" => trace = true,
             "--bus-trace" => bus_trace = true,
@@ -63,13 +75,14 @@ fn run_apple1_subcommand(mut args: impl Iterator<Item = String>) -> Result<(), B
 
     let rom_path = rom.ok_or("missing required --rom <path>\nUse 'apple1 --help' for usage")?;
 
-    apple1::run_apple1(
+    run_apple1(
         &rom_path,
         program.as_deref(),
         cycles_per_char,
         max_cycles,
         trace,
         bus_trace,
+        trace_limit,
     )
 }
 
@@ -84,15 +97,16 @@ Options:
   --cycles-per-char <N>  CPU cycles per display character (default: 1000)
   --max-cycles <N>       Maximum total cycles before the emulator exits
   --trace                Enable instruction trace (not yet implemented)
-  --bus-trace             Enable bus-level trace (not yet implemented)
-  --help, -h              Show this help message"
+  --bus-trace            Enable bus-level trace (not yet implemented)
+  --trace-limit <N>      Keep the last N trace records, 1..4096 (default: 64)
+  --help, -h             Show this help message"
     );
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut trace = false;
     let mut bus_trace = false;
-    let mut trace_limit = 64_usize;
+    let mut trace_limit = DEFAULT_TRACE_LIMIT;
     let mut max_steps = DEFAULT_MAX_STEPS;
     let args: Vec<String> = env::args().skip(1).collect();
     let mut args_iter = args.into_iter();
