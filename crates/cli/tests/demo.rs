@@ -85,7 +85,7 @@ fn cli_prints_cpu_results() {
 }
 
 #[test]
-fn cli_trace_has_before_after_and_instruction_and_total_cycles() {
+fn cli_trace_has_before_after_and_instruction_and_running_total() {
     let result = cli(&["--trace", "--max-steps", "54"]);
     assert!(result.status.success());
     let output = String::from_utf8(result.stdout).unwrap();

@@ -554,3 +554,48 @@ alternate-screen／line-wrap／清屏／光标定位／bracketed-paste 序列并
 - PTY 确认启动 `ESC[?2004h`、raw 模式及 alternate screen；Ctrl-C 退出码 0，确认 `ESC[?2004l`、离开 alternate screen、恢复自动换行，完整 termios 恢复。初版驱动在会话首领退出后查询 slave 触发 macOS `ENOTTY`；改由仍存活的 PTY 会话包装进程在 CLI 退出后检查 termios，最终完整场景通过。临时驱动已移除。
 
 仅验证本次字符规范化契约；未运行远程 CI，不扩大 Apple I 硬件兼容性声明。
+
+## 2026-09-11 主板刷新与显示时序（完整替换两处近似）
+
+本轮把 `crates/apple1` 的两处用户选定近似——"刷新不建模"与"固定字符延时"——一次性替换为按原图数字边沿驱动的板级模型；唯一运行模式即原板时序，没有保留兼容参数、别名或快进开关。**范围**：数字边沿模型，不声称模拟 TTL 传播延迟、单稳态容差或真实上电随机态。
+
+**依据**：Operation Manual 印刷页 8 REFRESH（每 65 周期 4 个刷新周期、Φ2 被抑制、CPU 保持 Φ1；与 RDY 无关）；原图 terminal sheet 1（drawing 00101）的 D6/D7 计数、H6/H10 选通、2504 循环存储、2519 行缓冲、C7 写入门控与 CR 清行电路；processor sheet 2（drawing 00100）的 CB2→DA、DA→PB7、RDA→B3→CB1；MC6820 印刷页 47 / scan leaf 48 Table 5 与 MC6821 Figure 18 的 CB2 输出模式。原件走线勘误另见 <https://www.willegal.net/appleii/apple1-hardware.htm>（D6/D7 若干输入浮空、VINH 两处标法同网）。
+
+**实现**
+
+- 新增 `crates/apple1/src/timing.rs`：14.31818 MHz 主时钟（一个 master tick 一个晶振周期）、D11 ÷14 字符时钟、D6/D7 的 65 槽水平序列（计数 95–159）、`H6 && H10` 在槽 34/44/54/64 选刷新、262 行垂直帧与 192 行可见区，行/场位置由单一 `vline` 派生以免两个计数器漂移。
+- `machine.rs`：公开面改为 `tick()/run_ticks()/master_ticks()/cpu_cycles()/video_frames()/io_pending()` 与 `Tick{cpu,refresh,frame_completed}`；刷新槽不调用 Φ2 相位推进，CPU 停在 Φ2、PIA 无 E、无总线访问；B3 单稳态 51 master tick（`ceil(3.5µs × 14.31818MHz)`），可重触发、在刷新期间照常计时；`reset()` 的保持与完成预算按**真实 CPU 周期**计。删除 `Apple1::cycle/run_cycles/total_cycles`。
+- `pia.rs`：CB2 输出握手按 CRB 位 5/4/3 建模（100 写脉冲由 CB1 有效沿释放、101 由下一个 E 释放、110/111 手动、0xx 输入不产生 strobe）；`e_rising_edge()` 由机器在真实 Φ2 调用；`data_lines()` 把未驱动线解析为 TTL 高；CA1/CB1 的有效沿按数据表语义修正为"位 1 选择离开低有效电平的跳变"（`asserted == true` 即引脚为低）。
+- `display.rs`：1024 槽循环存储（960 可见 + 64 消隐）、40 字符 2519 行缓冲、C7 请求锁存（DA 上升沿捕获、被接受时清除）、CR 逐槽清到行尾、消隐期清备用槽、滚动＝垂直重载前移显示原点。宿主文本投影另存并行数组，不参与控制逻辑。
+- CLI：删除 `--cycles-per-char` 与其测试；`Session` 分别累计会话 CPU 周期与主板时钟，总线 trace 增 `M=<会话主板时钟>` 前缀并保留 `C` 序号；批处理静默条件改为"无输出且 `io_pending()==false` 连续三个**完整视频帧**"，不再用固定周期数。
+
+**时序场景证据**（均为可重复断言，不是一次性观察）
+
+- 一个水平周期 910 master tick、65 个字符时钟、61 次真实 CPU 总线访问、4 个刷新窗；刷新窗内无任何 CPU 总线访问。
+- 字符接受时刻由光标槽决定：同一行内连续两个被接受字符的间隔恰为「一帧 + 一个字符时钟」（238,434 tick）；写入后需等终端扫到光标槽，实测常在 2000 tick 内仍未接受、而在下一圈接受。
+- 列 34 是刷新槽，其上的字符仍在 Φ2 被抑制时被接受，且 B3 脉冲长度仍为 51 master tick，不被刷新拉长。
+- CR 清行期间送入的字符顺延：`AB\rC` 得到 row0 `AB`、row1 `C`（列 0）、光标 (1,1)、输出 `AB\rC`。
+- 消隐期清槽：滚动后新底行全空，循环存储中对应槽被清零。
+- 真实 ROM 的 `$FFEF` 处 `2C 12 D0 / 30 FB`（`BIT`/`BMI`）确认 PB7=1 为忙。
+
+**命令与实际结果**
+
+- `cargo test -p hesper-apple1 --lib`：51 项通过（含 14 项显示、7 项时序、PIA 握手与有效沿）。
+- `cargo test -p hesper-apple1 --test machine`：24 项通过。
+- `cargo test -p hesper-apple1 --test timing`：7 项通过（跨设备边界：刷新停钟、刷新槽上的接受、一圈一字符、写入时刻与接受时刻分离、CLEAR SCREEN 与握手重叠、CR 清行中施加 RESET／CLEAR、错误保留已完成输出）。
+- `cargo test -p hesper --lib`：12 项通过；`cargo test -p hesper --test apple1`：5 项通过、10 项忽略；`cargo test -p hesper --test demo`：7 项通过。
+- `make verify`：**本地检查全部通过**（fmt、check --all-targets、workspace debug 189 项、workspace release 189 项、Clippy `-D warnings`、demo）。
+- `make wozmon-verify ROM=.cache/apple1/wozmon.bin`：256 字节，SHA-256 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`（未下载，用缓存）。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试 + 10 项真实 CLI 测试全部通过。
+- 真实管道（无速度参数）：`300: aB cD eF` 后 `300.302` → stdout 含完整 `0300: AB CD EF`、命令回显与 `[stopped]`，退出码 0。
+- 真实管道（原创程序经 Woz Monitor 的 ECHO 输出）：把 `A9 41 20 EF FF A9 42 20 EF FF 4C 00 03` 存入 `$0300` 后 `300R` → stdout 出现持续 `ABAB…`。
+- 真实 PTY（临时 Python `pty.fork` 驱动，解析真实 ANSI 还原网格，GRID_ROWS=30 以容纳状态行）：18 项全部通过——40 列网格、启动提示、26 行带标记文本并滚动、暂停／恢复、CLEAR SCREEN、RESET、重建机器、bracketed paste 输入、Ctrl-C 退出码 0、SIGTERM、`--max-cycles` 停止，以及重定向 stdout 无 ANSI 且含完整转储。会话首领退出时父进程持续读取 master fd 并 `waitpid(WNOHANG)` 回收（macOS 下不读取会卡住退出路径）。临时驱动未入库。
+
+**保留边界与不声称的内容**
+
+- 本轮是数字边沿模型：不模拟 TTL 传播延迟、74123 的元件容差与温度特性、DRAM 单元电荷保持本身、真实上电随机态。
+- 未实现 2513 字符字模、D1 像素移位寄存器与复合视频合成：屏幕是字符格投影。
+- D8/D9 垂直计数器 preset 的十进制值（图上 191）与滚动时的帧长变化未逐位复现（H18）；滚动只保证发生在同一垂直边界且可见内容／光标结果一致。
+- PIA 地址别名（H04）与 Port A/B 读回差异（H12）仍未实现。
+- CPU 执行语义未改动，因此未重跑 SingleStep 151 万／Klaus 三配置／246+419 pins 的完整外部一致性范围；`hesper-cpu6502` 自身的 workspace 测试（conformance/cycles/interrupts/pins/official/arithmetic/external）在本轮 `make verify` 中全绿。
+- 局部数字模型通过不等于实板示波器对照、模拟电气认证或远程 CI 通过；本轮未运行远程 CI，未提交或推送。

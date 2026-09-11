@@ -11,6 +11,26 @@
 
 未来 Apple I 与 Apple II 各自实现机器 Bus、内存映射和设备状态，复用 CPU。M2 先完善 CPU，机器层按路线图延后至 M3/M4；前端负责加载用户有权使用的资源、输入输出和调度。机器／CPU 不依赖浏览器；WebAssembly 的绑定和渲染到 M5 再建立。
 
+## Apple I 机器层（M3）
+
+`hesper-apple1` 把 CPU、内存映射 Bus、PIA、键盘与视频终端放在一个板级时钟模型下，`crates/cli` 只驱动这一个入口。机器层的公开面是窄的：
+
+```rust
+pub struct Tick { pub cpu: Option<Cycle>, pub refresh: bool, pub frame_completed: bool }
+Apple1::new(rom) / tick() / run_ticks(ticks) / reset()
+Apple1::master_ticks() / cpu_cycles() / video_frames() / io_pending()
+Apple1::set_reset_line(asserted) / reset_line_asserted() / clear_screen()
+Apple1::type_char() / type_str() / drain_output() / cpu() / bus() / bus_mut() / display() / keyboard()
+```
+
+- **一个 master tick 是一个 14.31818 MHz 晶振周期**（`crates/apple1/src/timing.rs`）。D11 的 ÷14 产生字符时钟；D6/D7 级联给出 65 槽水平序列，`H6 && H10` 在计数 129／139／149／159（槽 34／44／54／64）选出四个刷新槽。一个水平周期 910 master tick，其中 61 次真实 CPU 总线访问。
+- **刷新抑制 Φ2，不用 RDY**。刷新槽上 CPU 停在 Φ2、PIA 无 E、没有总线访问；板时钟、视频计数与 B3 单稳态照常推进。`tick().cpu` 只在真实 Φ2 完成时给出 `Cycle`，所以 `cpu_cycles()` 小于 `master_ticks()/14`。刷新不经 `Bus::read/write`，因此不改变 open bus 的上次读取值，也不产生伪造的 `stalled` 记录。
+- **`set_reset_line` 与 `begin_reset` 不混用**：前者是物理 RESET 输入（CPU、PIA 与键盘重同步都经它），后者是宿主同步入口。`Apple1::reset()` 是物理线路的同步封装，按**真实 CPU 周期**计保持与完成预算。
+- **PIA 的 CB2 是真实输出握手**（`pia.rs`）：CRB 位 5/4/3 选择模式，写 ORB 只在下一个 E 沿拉低 CB2，CB1 的有效沿（由 CRB 位 1 选择，方向按数据表定义的低电平有效）释放它。PB7 由 `DA = !CB2` 驱动；`data_lines()` 把未驱动线解析为 TTL 高。
+- **视频终端是循环存储模型**（`display.rs`）：1024 个六位字符槽（960 可见 + 64 消隐）、40 字符 2519 行缓冲、C7 请求锁存。字符只在光标槽被扫到时被接受（一圈 ≈ 一帧），CR 逐槽清到行尾，滚动由垂直重载前移显示原点完成。屏幕／光标／输出流是宿主文本投影，保存在不参与控制逻辑的并行数组里。
+- **机器重建**（Ctrl-N）归零两个时钟与显示；物理 RESET 不归零它们、不清屏、不丢弃已排队输入。
+- **不建模**：DRAM 单元电荷保持本身、TTL 传播延迟与单稳态容差、2513 字模与像素／视频合成、D8/D9 preset 的十进制值与其帧长影响。逐项边界见 `docs/apple1/hardware-evidence.md`。
+
 ## 状态与 RESET
 
 `Cpu::new()` / `Default` 约定 A/X/Y/SP/PC 为 0、六个存储标志为 false（调试 P 为 `$20`）。RAM 默认清零。它们是为可复现测试选择的初始值，**不声称真实硬件上电时拥有这些值**。

@@ -146,22 +146,6 @@ fn assert_rejected(output: &Output, expected: &str) {
 }
 
 #[test]
-fn zero_cycles_per_char_is_rejected() {
-    // A zero-cycle display timer used to make the busy countdown underflow
-    // and panic on the first character written.
-    let rom = TempFile::new("zero-delay-rom", &[0u8; 256]);
-    let output = run_apple1_cli(&["--rom", rom.path(), "--cycles-per-char", "0"], b"");
-    assert_rejected(&output, "--cycles-per-char requires a positive integer");
-}
-
-#[test]
-fn non_numeric_cycles_per_char_is_rejected() {
-    let rom = TempFile::new("bad-delay-rom", &[0u8; 256]);
-    let output = run_apple1_cli(&["--rom", rom.path(), "--cycles-per-char", "fast"], b"");
-    assert_rejected(&output, "--cycles-per-char requires a positive integer");
-}
-
-#[test]
 fn out_of_range_trace_limit_is_rejected() {
     let rom = TempFile::new("trace-limit-rom", &[0u8; 256]);
     for limit in ["0", "4097", "many"] {
@@ -215,6 +199,14 @@ fn right_size_but_wrong_rom_is_rejected() {
 /// Generous cycle ceiling for the real-ROM runs below: every one of them
 /// finishes its monitor commands long before this, and the ceiling keeps a
 /// regression from hanging the suite.
+///
+/// What it has to cover, in real CPU cycles: a boot of ~50 000, 2 000 per
+/// typed character, one full video frame (~238 000 master ticks, ~17 000
+/// CPU cycles) for every character the monitor prints — the video board
+/// clocks out at most one character per frame, ~60 characters/second as on
+/// the real machine — and, after each line, a drain that waits for three
+/// quiet frames (~51 000). The longest run here prints under 60 characters
+/// across two lines, so it needs roughly 1.2 million of these 2 million.
 const ROM_TEST_MAX_CYCLES: &str = "2000000";
 
 #[test]
@@ -340,11 +332,12 @@ fn oversized_program_is_rejected() {
 }
 
 /// Trace records the CLI kept, one per line on stderr, above the stop
-/// message.
+/// message. Bus records start with the board-clock `M=` marker, instruction
+/// records with `$`.
 fn trace_lines(output: &Output) -> Vec<String> {
     String::from_utf8_lossy(&output.stderr)
         .lines()
-        .filter(|line| line.starts_with('C') || line.starts_with('$'))
+        .filter(|line| line.starts_with('M') || line.starts_with('$'))
         .map(str::to_owned)
         .collect()
 }
@@ -375,6 +368,12 @@ fn a_bus_trace_reports_every_executed_cycle_including_the_reset_vector() {
         lines.len(),
         20,
         "20 executed cycles must produce 20 bus records, got: {lines:?}"
+    );
+    // Each bus record carries the board's master-tick marker ahead of the
+    // session's CPU-cycle index.
+    assert!(
+        lines.iter().all(|line| line.starts_with("M=")),
+        "every bus record must start with the board-clock marker, got: {lines:?}"
     );
     // The physical RESET sequence's own vector reads are real bus cycles.
     assert!(
@@ -459,9 +458,12 @@ fn the_trace_limit_bounds_both_kinds_together() {
 #[test]
 #[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn tracing_does_not_change_what_the_machine_does() {
+    // Both runs get the same generous budget so that the comparison covers
+    // the deposit and the examine dump actually completing, not two runs
+    // cut off at the same early point.
     let rom = RomFile::from_env("trace-neutral");
     let plain = run_apple1_cli(
-        &["--rom", rom.path(), "--max-cycles", "200000"],
+        &["--rom", rom.path(), "--max-cycles", ROM_TEST_MAX_CYCLES],
         b"300: AB CD EF\n300.302\n",
     );
     let traced = run_apple1_cli(
@@ -469,7 +471,7 @@ fn tracing_does_not_change_what_the_machine_does() {
             "--rom",
             rom.path(),
             "--max-cycles",
-            "200000",
+            ROM_TEST_MAX_CYCLES,
             "--trace",
             "--bus-trace",
         ],
@@ -491,13 +493,21 @@ fn tracing_does_not_change_what_the_machine_does() {
 fn an_unsupported_opcode_fails_with_the_trace_that_led_to_it() {
     // $02 is not an official NMOS opcode; the monitor's own RUN command
     // jumps straight into it.
+    //
+    // The budget must cover the run up to that jump. The video terminal
+    // takes one character per carousel lap, so every character the monitor
+    // prints costs about a frame (~17 000 real CPU cycles): the prompt and
+    // the two echoed command lines run to roughly twenty characters, the
+    // boot costs ~50 000, and the batch loop's three-frame quiet drain
+    // runs twice. Measured: the monitor jumps into $0300 at about 514 500
+    // CPU cycles, so 800 000 leaves roughly 1.5x margin.
     let rom = RomFile::from_env("bad-opcode");
     let output = run_apple1_cli(
         &[
             "--rom",
             rom.path(),
             "--max-cycles",
-            "200000",
+            "800000",
             "--bus-trace",
             "--trace-limit",
             "8",

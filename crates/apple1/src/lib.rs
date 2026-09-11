@@ -55,12 +55,19 @@
 //!
 //! # Clock
 //!
-//! The real board derives a nominal 1.023 MHz CPU clock from a 14.31818 MHz
-//! crystal (four times the NTSC color‑burst frequency) divided by 14. This
-//! crate is purely cycle‑counted like `hesper-cpu6502`; it does not throttle
-//! to wall‑clock time, and `cycles_per_char` approximates the video shift
-//! register's data‑dependent ready timing with a fixed cycle count rather
-//! than modeling the shift‑register position directly.
+//! Board time is counted in *master ticks*, one 14.31818 MHz crystal period
+//! each (see [`timing`]). D11 divides by 14 to produce the ~1.023 MHz
+//! character clock; the D6/D7 horizontal counters give the 65-slot line
+//! whose `H6 && H10` decode selects four refresh clocks. Like
+//! `hesper-cpu6502` this crate does not throttle to wall‑clock time, but it
+//! does not invent display timing either: a character is only taken when
+//! the video board's carousel reaches the cursor's slot, so a display write
+//! costs about a frame of board time.
+//!
+//! Every fourth of those 65 clocks suppresses the CPU's Φ2 output: the CPU
+//! holds Φ2, the PIA sees no enable, and no bus access happens, while the
+//! board clock, the video counters, and the B3 one-shot keep running.
+//! `tick().cpu` is therefore `None` on those clocks.
 //!
 //! # RDY scope
 //!
@@ -70,16 +77,20 @@
 //!
 //! The Apple-1 Operation Manual, Section III (DMA), documents RDY for
 //! single-stepping and slow ROM applications. Its REFRESH section instead
-//! describes suppressing Phi2 while holding Phi1. That refresh clock
-//! gating is not modeled here and must not be replaced by RDY stalls.
+//! describes suppressing Φ2 while holding Φ1, which is what [`timing`] and
+//! [`machine`] model. Refresh must not be replaced by RDY stalls: RDY stops
+//! the CPU for a device, refresh stops only Φ2 for the DRAM.
 //!
 //! The PIA model implements the register file (DDR, control, data, and interrupt
-//! flags) per the MC6820/MC6821 datasheets; Port A and Port B readback currently
-//! use a symmetric `(OR & DDR) | (pins & !DDR)` formula where the datasheets
-//! specify Port A reads actual pins always and Port B reads the output latch in
-//! output mode (see [`docs/apple1/hardware-evidence.md`] H12). External I/O
-//! (keyboard data, display timing) is wired in by the host through `Pia6821`
-//! setter methods; CA2/CB2 output-level handshaking is not yet modelled.
+//! flags) per the MC6820/MC6821 datasheets, plus Port B's CB2 output
+//! handshake — the write-strobe mode the Apple I terminal uses, in which an
+//! ORB write pulls CB2 low on the next enable and CB1's active edge releases
+//! it. Port A and Port B readback still share a symmetric
+//! `(OR & DDR) | (pins & !DDR)` formula where the datasheets specify Port A
+//! reads actual pins always and Port B reads the output latch in output mode
+//! (see [`docs/apple1/hardware-evidence.md`] H12). External I/O (keyboard
+//! data, the terminal's DA line) is wired in by [`machine`]; the host drives
+//! keys through `Keyboard` rather than touching the PIA directly.
 //!
 //! The host is responsible for acquiring and loading the Woz Monitor ROM.
 //! This crate never downloads, embeds, or ships that 256‑byte image; see
@@ -91,9 +102,10 @@ pub mod display;
 pub mod keyboard;
 pub mod machine;
 pub mod pia;
+pub mod timing;
 
 pub use bus::{Apple1Bus, RamLoadError, RomSizeError};
 pub use display::Display;
 pub use keyboard::Keyboard;
-pub use machine::Apple1;
+pub use machine::{Apple1, Tick};
 pub use pia::Pia6821;

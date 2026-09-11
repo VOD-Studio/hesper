@@ -60,6 +60,14 @@
 
 use std::fmt;
 
+/// CB2 control codes from CRB bits 5-3 (MC6820 Table 5 / MC6821 figures
+/// 10-12).  The Apple I terminal uses `100`: CB2 strobes on the first
+/// enable after an ORB write and is released by the CB1 acknowledge.
+const CB2_WRITE_STROBE_CB1: u8 = 0b100;
+const CB2_WRITE_STROBE_E: u8 = 0b101;
+const CB2_MANUAL_LOW: u8 = 0b110;
+const CB2_MANUAL_HIGH: u8 = 0b111;
+
 /// Four register addresses decoded from RS1/RS0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reg {
@@ -95,6 +103,20 @@ pub struct Pia6821 {
     crb: u8,
     pins_b: u8,
 
+    /// CB2 output level driven by the write-strobe handshake (CRB bits
+    /// 5-3 = 100/101).  Manual modes take their level straight from the
+    /// control bits and input modes from the pin, so this only holds the
+    /// handshake flip-flop's state.
+    cb2_out: bool,
+    /// An ORB write asked for a strobe; it fires on the next E edge, not
+    /// during the write itself.
+    cb2_armed: bool,
+    /// CRB bits 5-3 = 101: CB2 is low and the next E edge returns it high.
+    cb2_clear_on_e: bool,
+    /// CB2 pin level when CB2 is configured as an input.  The original
+    /// board leaves the pin pulled high when nothing drives it.
+    cb2_input: bool,
+
     // Control line input states (for edge detection)
     ca1: bool,
     _ca2_input: bool,
@@ -123,6 +145,10 @@ impl Pia6821 {
             ddrb: 0,
             crb: 0,
             pins_b: 0,
+            cb2_out: true,
+            cb2_armed: false,
+            cb2_clear_on_e: false,
+            cb2_input: true,
             ca1: false,
             _ca2_input: false,
             cb1: false,
@@ -149,6 +175,11 @@ impl Pia6821 {
     /// therefore always poll the flag, enabled or not — this is how the
     /// Woz Monitor itself reads it (`BIT`/`BPL`, no interrupt handler).
     ///
+    /// `asserted == true` means the pin is at its active **low** level, so
+    /// CRA bit 1 selects which transition of that level latches the flag:
+    /// 0 = into the active level (high-to-low), 1 = out of it
+    /// (low-to-high), exactly as the datasheet specifies.
+    ///
     /// While the RESET pin is held asserted the pin level is still tracked
     /// (it is an external line) but no flag can latch.
     pub fn set_ca1(&mut self, asserted: bool) {
@@ -157,11 +188,15 @@ impl Pia6821 {
         if self.reset_held {
             return;
         }
-        let rising = asserted && !prev;
-        let falling = !asserted && prev;
+        let into_active = asserted && !prev;
+        let out_of_active = !asserted && prev;
         let active_high = self.cra & 0x02 != 0;
 
-        let edge = if active_high { rising } else { falling };
+        let edge = if active_high {
+            out_of_active
+        } else {
+            into_active
+        };
         if edge {
             self.cra |= 0x80; // set IRQA1
         }
@@ -179,20 +214,114 @@ impl Pia6821 {
     /// [`Pia6821::set_ca1`]: the flag sets on the qualifying edge
     /// regardless of the interrupt enable bit, and never while RESET is
     /// held.
+    ///
+    /// With the write-strobe handshake selected (CRB bits 5-3 = 100) the
+    /// active edge is also what returns CB2 high. Software acknowledges
+    /// the handshake by reading the Port B data register, which clears the
+    /// flag; an acknowledge that arrives while the previous one is still
+    /// unread does not advance the handshake.
     pub fn set_cb1(&mut self, asserted: bool) {
         let prev = self.cb1;
         self.cb1 = asserted;
         if self.reset_held {
             return;
         }
-        let rising = asserted && !prev;
-        let falling = !asserted && prev;
+        let into_active = asserted && !prev;
+        let out_of_active = !asserted && prev;
         let active_high = self.crb & 0x02 != 0;
 
-        let edge = if active_high { rising } else { falling };
-        if edge {
+        let edge = if active_high {
+            out_of_active
+        } else {
+            into_active
+        };
+        if edge && self.crb & 0x80 == 0 {
             self.crb |= 0x80; // set IRQB1
+            if self.cb2_mode() == CB2_WRITE_STROBE_CB1 {
+                self.cb2_out = true;
+            }
         }
+    }
+
+    /// The CB2 handshake mode selected by CRB bits 5-3.
+    fn cb2_mode(&self) -> u8 {
+        (self.crb >> 3) & 0x07
+    }
+
+    /// The level present on the CB2 pin: driven by the handshake
+    /// flip-flop in the write-strobe modes, fixed by the control bits in
+    /// the manual modes, and taken from the pin in the input modes.
+    pub(crate) fn cb2_level(&self) -> bool {
+        match self.cb2_mode() {
+            CB2_MANUAL_LOW => false,
+            CB2_MANUAL_HIGH => true,
+            CB2_WRITE_STROBE_CB1 | CB2_WRITE_STROBE_E => self.cb2_out,
+            _ => self.cb2_input,
+        }
+    }
+
+    /// The PIA's E (enable) clock rose.  The machine calls this once per
+    /// real CPU Φ2 cycle, before that cycle's bus access, so a strobe
+    /// requested by an ORB write lands on the *next* enable.
+    pub(crate) fn e_rising_edge(&mut self) {
+        if self.reset_held {
+            return;
+        }
+        match self.cb2_mode() {
+            // Write strobe with CB1: CB2 goes low on the first E after an
+            // ORB write and CB1's active edge returns it high.
+            CB2_WRITE_STROBE_CB1 => {
+                if self.cb2_armed {
+                    self.cb2_armed = false;
+                    self.cb2_out = false;
+                }
+            }
+            // Write strobe with E: CB2 goes low on the first E after an
+            // ORB write and returns high on the following E.
+            CB2_WRITE_STROBE_E => {
+                if self.cb2_armed {
+                    self.cb2_armed = false;
+                    self.cb2_out = false;
+                    self.cb2_clear_on_e = true;
+                } else if self.cb2_clear_on_e {
+                    self.cb2_clear_on_e = false;
+                    self.cb2_out = true;
+                }
+            }
+            _ => {
+                self.cb2_armed = false;
+                self.cb2_clear_on_e = false;
+            }
+        }
+    }
+
+    /// Present the video board's DA line on PB7.
+    ///
+    /// The Apple I wires CB2 through an inverter to the terminal's DA
+    /// input and loops DA back to PB7, which is why the monitor polls bit
+    /// 7 of `$D012` to know when the terminal has taken the character.
+    pub(crate) fn set_display_ready(&mut self, da: bool) {
+        if da {
+            self.pins_b |= 0x80;
+        } else {
+            self.pins_b &= !0x80;
+        }
+    }
+
+    /// Whether an output handshake is still in flight: a strobe waiting
+    /// for its enable, or CB2 held low because the terminal has not taken
+    /// the character yet.
+    pub(crate) fn output_strobe_pending(&self) -> bool {
+        self.cb2_armed || !self.cb2_level()
+    }
+
+    /// The seven character data lines as the terminal sees them.
+    ///
+    /// Only lines configured as outputs are driven, and the original board
+    /// leaves several 7400 inputs open, so an undriven line reads as a
+    /// TTL high rather than as a bus fault.
+    pub(crate) fn data_lines(&self) -> u8 {
+        (self.orb & self.ddrb) | (!self.ddrb & 0x7f)
     }
 
     /// Whether Port A input pins are currently driven (bit 7 of all inputs).
@@ -238,6 +367,12 @@ impl Pia6821 {
         self.orb = 0;
         self.ddrb = 0;
         self.crb = 0;
+        // A strobe waiting for an enable that will never come is dropped,
+        // and CB2 is released to its idle level (CRB now selects input
+        // mode, so the pin floats high and PB7 reads "not ready").
+        self.cb2_armed = false;
+        self.cb2_clear_on_e = false;
+        self.cb2_out = true;
     }
 
     /// Whether the RESET pin is currently held asserted.
@@ -248,18 +383,6 @@ impl Pia6821 {
     /// Consume the "the CPU read Port A's peripheral data register" event.
     pub(crate) fn take_port_a_read(&mut self) -> bool {
         std::mem::take(&mut self.port_a_read)
-    }
-
-    /// The byte the Port B output pins are actually driving to the video
-    /// board, or `None` when nothing valid is being driven: RESET held,
-    /// CRB not selecting the output register, or PB0–PB6 not all
-    /// configured as outputs (the Apple I display takes seven data lines,
-    /// so a partly-input DDRB is not driving a character).
-    pub(crate) fn display_data(&self) -> Option<u8> {
-        if self.reset_held || self.crb & 0x04 == 0 || self.ddrb & 0x7F != 0x7F {
-            return None;
-        }
-        Some(self.orb & 0x7F)
     }
 
     // --- Bus-facing read / write ---
@@ -300,7 +423,7 @@ impl Pia6821 {
             Reg::PortAData => self.write_port_a_data(value),
             Reg::ControlA => self.cra = self.write_cr(self.cra, value),
             Reg::PortBData => self.write_port_b_data(value),
-            Reg::ControlB => self.crb = self.write_cr(self.crb, value),
+            Reg::ControlB => self.write_control_b(value),
         }
     }
 
@@ -335,6 +458,11 @@ impl Pia6821 {
     fn write_port_b_data(&mut self, value: u8) {
         if self.crb & 0x04 != 0 {
             self.orb = value;
+            // A write to the output register asks the CB2 handshake to
+            // strobe.  The strobe itself waits for the next E edge.
+            if matches!(self.cb2_mode(), CB2_WRITE_STROBE_CB1 | CB2_WRITE_STROBE_E) {
+                self.cb2_armed = true;
+            }
         } else {
             self.ddrb = value;
         }
@@ -346,6 +474,22 @@ impl Pia6821 {
         // Preserve read-only flags.
         let flags = old & 0xC0;
         (value & 0x3F) | flags
+    }
+
+    /// Apply a CRB write, restarting the CB2 handshake when the mode
+    /// changes: a strobe armed under the old mode must not fire under the
+    /// new one, and entering a write-strobe mode leaves CB2 idle high so
+    /// software sees the terminal as ready.
+    fn write_control_b(&mut self, value: u8) {
+        let new = self.write_cr(self.crb, value);
+        if (self.crb >> 3) & 0x07 != (new >> 3) & 0x07 {
+            self.cb2_armed = false;
+            self.cb2_clear_on_e = false;
+            if matches!((new >> 3) & 0x07, CB2_WRITE_STROBE_CB1 | CB2_WRITE_STROBE_E) {
+                self.cb2_out = true;
+            }
+        }
+        self.crb = new;
     }
 }
 
@@ -439,22 +583,31 @@ mod tests {
     #[test]
     fn ca1_edge_sets_irqa1_flag() {
         let mut pia = Pia6821::new();
-        // CRA: bit2=0, bit1=1 (active on rising edge), bit0=1 (IRQ enabled)
+        // CRA: bit 2 = 0 (DDR selected), bit 1 = 1 (flag on the active-low
+        // pin's low-to-high transition), bit 0 = 1 (IRQ enabled).
         pia.write(0xD011, 0x03);
 
-        // Prime ca1 high so the next edge is falling.
-        // The initial false→true IS a rising edge, so we accept the flag.
+        // Taking the pin to its active low level is not the qualifying
+        // transition under this selection.
         pia.set_ca1(true);
-        assert_eq!(pia.cra & 0x80, 0x80); // initial rising edge sets flag
-        pia.cra &= !0x80; // clear it manually for this test
+        assert_eq!(
+            pia.cra & 0x80,
+            0,
+            "entering the active level does not latch"
+        );
+        assert_eq!(pia.cra, 0x03);
 
-        // H→L edge: no flag (active edge is rising).
+        // Returning high is.
         pia.set_ca1(false);
-        assert_eq!(pia.cra & 0x80, 0);
-
-        // L→H edge: flag set.
-        pia.set_ca1(true);
         assert_eq!(pia.cra & 0x80, 0x80);
+
+        // The opposite selection latches on the other transition.
+        pia.cra = 0x00;
+        pia.set_ca1(true);
+        assert_eq!(pia.cra & 0x80, 0x80, "bit 1 = 0 latches on the low edge");
+        pia.cra = 0x00;
+        pia.set_ca1(false);
+        assert_eq!(pia.cra & 0x80, 0, "leaving the active level does not latch");
     }
 
     #[test]
@@ -465,12 +618,14 @@ mod tests {
         // regression for a prior bug where this crate gated the flag
         // itself on the enable bit, silently losing status edges whenever
         // software polled without enabling interrupts — as the Woz
-        // Monitor and this crate's `Keyboard`/`Display` models do.
+        // Monitor and this crate's `Keyboard` model do.
         let mut pia = Pia6821::new();
-        // CRA: bit1=1 (active on rising edge), bit0=0 (IRQ disabled).
+        // CRA: bit1=1 (active on the low-to-high transition), bit0=0 (IRQ
+        // disabled).
         pia.write(0xD011, 0x02);
 
         pia.set_ca1(true);
+        pia.set_ca1(false);
         assert_eq!(
             pia.cra & 0x80,
             0x80,
@@ -481,9 +636,9 @@ mod tests {
     #[test]
     fn reading_data_clears_irq_flags() {
         let mut pia = Pia6821::new();
-        pia.write(0xD011, 0x03); // rising edge, IRQ enabled
-        pia.set_ca1(false);
+        pia.write(0xD011, 0x03); // low-to-high active, IRQ enabled
         pia.set_ca1(true);
+        pia.set_ca1(false);
         assert_eq!(pia.cra & 0x80, 0x80);
 
         // Switch to OR so we read data, not DDR.
@@ -499,7 +654,9 @@ mod tests {
         pia.write(0xD011, 0x02);
         pia.write(0xD013, 0x02);
         pia.set_ca1(true);
+        pia.set_ca1(false);
         pia.set_cb1(true);
+        pia.set_cb1(false);
         assert_eq!(pia.cra & 0x80, 0x80);
         assert_eq!(pia.crb & 0x80, 0x80);
 
@@ -563,9 +720,9 @@ mod tests {
     #[test]
     fn control_register_preserves_readonly_flags_on_write() {
         let mut pia = Pia6821::new();
-        pia.write(0xD011, 0x03); // rising edge, IRQ enabled
-        pia.set_ca1(false);
+        pia.write(0xD011, 0x03); // low-to-high active, IRQ enabled
         pia.set_ca1(true);
+        pia.set_ca1(false);
         assert_eq!(pia.cra, 0x83); // flag set + config
 
         // Write only the DDR select bit — flags must survive.
@@ -581,6 +738,7 @@ mod tests {
         pia.write(0xD010, 0x55); // ORA
         pia.write(0xD012, 0x41); // ORB
         pia.set_ca1(true);
+        pia.set_ca1(false);
         assert_eq!(pia.cra & 0x80, 0x80);
 
         pia.set_reset_line(true);
@@ -596,8 +754,8 @@ mod tests {
         pia.write(0xD011, 0x07);
         pia.write(0xD010, 0x55);
         pia.write(0xD012, 0x7F);
-        pia.set_ca1(false);
         pia.set_ca1(true);
+        pia.set_ca1(false);
         assert_eq!(pia.cra, 0, "CRA must stay cleared while RESET is held");
         assert_eq!(pia.ora, 0);
         assert_eq!(pia.ddrb, 0);
@@ -610,8 +768,8 @@ mod tests {
         assert!(!pia.reset_asserted());
         pia.write(0xD011, 0x07);
         assert_eq!(pia.cra, 0x07);
-        pia.set_ca1(false);
         pia.set_ca1(true);
+        pia.set_ca1(false);
         assert_eq!(pia.cra & 0x80, 0x80, "edges latch again after release");
     }
 
@@ -631,29 +789,169 @@ mod tests {
         );
     }
 
-    #[test]
-    fn display_data_requires_or_select_and_seven_output_lines() {
-        let mut pia = Pia6821::new();
+    /// Apple I display setup: PB0-PB6 outputs, PB7 input, CRB selecting
+    /// the output register with the write-strobe-with-CB1 handshake and a
+    /// rising-edge CB1.
+    fn configured(pia: &mut Pia6821) {
         pia.write(0xD012, 0x7F); // DDRB: PB0-PB6 outputs
-        assert_eq!(pia.display_data(), None, "DDR still selected, no OR write");
+        pia.write(0xD013, 0x27); // CRB: mode 100, ORB, rising CB1
+    }
 
-        pia.write(0xD013, 0x04); // select ORB
-        pia.write(0xD012, 0xC1);
-        assert_eq!(pia.display_data(), Some(0x41), "bit 7 is not a data line");
+    #[test]
+    fn write_strobe_waits_for_the_enable_after_the_orb_write() {
+        let mut pia = Pia6821::new();
+        configured(&mut pia);
+        assert!(pia.cb2_level(), "the terminal starts ready");
 
-        // A port line configured as input is not driving the display.
-        pia.write(0xD013, 0x00); // select DDRB
-        pia.write(0xD012, 0x3F); // PB6 becomes an input
-        pia.write(0xD013, 0x04);
-        assert_eq!(pia.display_data(), None);
-
-        // Held RESET drives nothing.
-        pia.write(0xD013, 0x00);
-        pia.write(0xD012, 0x7F);
-        pia.write(0xD013, 0x04);
         pia.write(0xD012, 0x41);
-        assert_eq!(pia.display_data(), Some(0x41));
+        assert!(
+            pia.cb2_level(),
+            "writing the output register must not pull CB2 down by itself"
+        );
+        assert!(pia.output_strobe_pending(), "a strobe is waiting");
+
+        pia.e_rising_edge();
+        assert!(
+            !pia.cb2_level(),
+            "the first enable after the write pulls CB2 down"
+        );
+        assert!(
+            pia.output_strobe_pending(),
+            "CB2 low is still an unfinished handshake"
+        );
+    }
+
+    #[test]
+    fn a_control_or_ddr_access_does_not_ask_for_a_strobe() {
+        let mut pia = Pia6821::new();
+        pia.write(0xD012, 0x7F); // DDRB write
+        pia.write(0xD013, 0x27); // CRB write
+        let _ = pia.read(0xD012); // DDRB read
+        let _ = pia.read(0xD013); // CRB read
+        pia.e_rising_edge();
+        assert!(pia.cb2_level(), "only an ORB write arms the handshake");
+        assert!(!pia.output_strobe_pending());
+    }
+
+    #[test]
+    fn cb1_active_edge_releases_cb2_and_sets_the_flag() {
+        let mut pia = Pia6821::new();
+        configured(&mut pia);
+        pia.write(0xD012, 0x41);
+        pia.e_rising_edge();
+        assert!(!pia.cb2_level());
+
+        // The terminal's B3 pulse: CB1 goes low, then back high.
+        pia.set_cb1(true);
+        assert!(
+            !pia.cb2_level(),
+            "CB2 is released by the active edge, not the level"
+        );
+        pia.set_cb1(false);
+        assert!(pia.cb2_level(), "the rising CB1 edge returned CB2 high");
+        assert_eq!(pia.crb & 0x80, 0x80, "IRQB1 latched");
+        assert!(!pia.output_strobe_pending());
+    }
+
+    #[test]
+    fn an_unread_acknowledge_does_not_advance_the_handshake() {
+        let mut pia = Pia6821::new();
+        configured(&mut pia);
+        pia.write(0xD012, 0x41);
+        pia.e_rising_edge();
+
+        // First acknowledge: flag sets and CB2 returns high.
+        pia.set_cb1(true);
+        pia.set_cb1(false);
+        assert!(pia.cb2_level());
+
+        // Software has not read $D012, so the flag is still set: a second
+        // acknowledge must not be consumed.
+        pia.write(0xD012, 0x42);
+        pia.e_rising_edge();
+        assert!(!pia.cb2_level());
+        pia.set_cb1(true);
+        pia.set_cb1(false);
+        assert!(
+            !pia.cb2_level(),
+            "an acknowledge while the previous one is unread must not release CB2"
+        );
+
+        // Reading the data register clears the flag and lets the next
+        // acknowledge through.
+        let _ = pia.read(0xD012);
+        assert_eq!(pia.crb & 0x80, 0);
+        pia.set_cb1(true);
+        pia.set_cb1(false);
+        assert!(pia.cb2_level());
+    }
+
+    #[test]
+    fn write_strobe_with_e_returns_high_on_the_following_enable() {
+        let mut pia = Pia6821::new();
+        pia.write(0xD012, 0x7F);
+        pia.write(0xD013, 0x2F); // CRB: mode 101, ORB, rising CB1
+        pia.write(0xD012, 0x41);
+
+        pia.e_rising_edge();
+        assert!(!pia.cb2_level(), "the strobe enable pulls CB2 down");
+        pia.e_rising_edge();
+        assert!(pia.cb2_level(), "the next enable returns it high");
+        // This mode does not use CB1 to release the strobe.
+        pia.e_rising_edge();
+        assert!(pia.cb2_level());
+    }
+
+    #[test]
+    fn manual_cb2_modes_take_their_level_from_the_control_bits() {
+        let mut pia = Pia6821::new();
+        pia.write(0xD013, 0x37); // mode 110: manual low
+        assert!(!pia.cb2_level());
+        pia.write(0xD013, 0x3F); // mode 111: manual high
+        assert!(pia.cb2_level());
+
+        // A write strobe left over from a previous mode must not survive
+        // the mode change.
+        pia.write(0xD013, 0x27); // mode 100
+        pia.write(0xD012, 0x41);
+        pia.write(0xD013, 0x37); // switch to manual low before the enable
+        pia.e_rising_edge();
+        pia.write(0xD013, 0x3F); // manual high
+        assert!(pia.cb2_level());
+    }
+
+    #[test]
+    fn input_mode_leaves_cb2_to_the_pin_and_never_strobes() {
+        let mut pia = Pia6821::new();
+        pia.write(0xD012, 0x7F);
+        pia.write(0xD013, 0x07); // CRB: mode 000, ORB, rising CB1
+        assert!(pia.cb2_level(), "an undriven CB2 pin floats high");
+
+        pia.write(0xD012, 0x41);
+        pia.e_rising_edge();
+        assert!(pia.cb2_level(), "input mode has no output strobe");
+        assert!(!pia.output_strobe_pending());
+    }
+
+    #[test]
+    fn data_lines_drive_from_the_output_register_and_float_high_otherwise() {
+        let mut pia = Pia6821::new();
+        // No outputs configured: every line floats high.
+        assert_eq!(pia.data_lines(), 0x7F);
+
+        pia.write(0xD012, 0x0F); // PB0-PB3 outputs
+        pia.write(0xD013, 0x04); // select ORB
+        pia.write(0xD012, 0x55);
+        assert_eq!(
+            pia.data_lines(),
+            0x55 & 0x0F | 0x7F & !0x0F,
+            "only the driven lines follow the output register"
+        );
+
+        // Held RESET releases the output drivers.
         pia.set_reset_line(true);
-        assert_eq!(pia.display_data(), None);
+        assert_eq!(pia.data_lines(), 0x7F);
+        assert!(pia.cb2_level());
+        assert!(!pia.output_strobe_pending());
     }
 }

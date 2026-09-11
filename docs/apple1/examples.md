@@ -29,10 +29,11 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 | --- | --- |
 | `--rom <path>` | 必填，256 字节 Woz Monitor ROM |
 | `--program <path>` | 可选，启动时额外加载到 `$0000` 的程序 |
-| `--cycles-per-char <N>` | 显示节奏，默认 1000 周期/字符 |
-| `--max-cycles <N>` | 总周期预算上限，用完即退出 |
+| `--max-cycles <N>` | 真实 CPU 周期预算上限（不含刷新停钟的板级时间），用完即退出 |
 | `--trace` / `--bus-trace` | 指令／总线诊断，运行结束后写 stderr（不进入机器画面） |
 | `--trace-limit <N>` | 保留最近 N 条诊断记录，1..4096，默认 64；两种 trace 共用这个上限 |
+
+`--max-cycles` 计的是真实 CPU 总线周期；总线诊断每行以 `M=<会话主板时钟>` 开头，并按 `C<CPU 序号>` 续接，因此刷新停钟在 trace 里表现为 M 的间隔而不是伪造的读写记录。显示没有速度参数：终端固定按原板时序在光标槽接受字符。
 
 不带 `--max-cycles` 时正常启动交互式终端：
 
@@ -118,30 +119,36 @@ printf 'FF00.FF0F\r\n300: A9 2A 8D 12 D0 4C 05 03\r\n300R\r\n' \
 ```rust
 use hesper_apple1::Apple1;
 
+/// 一个视频帧的主板时钟数：262 条扫描线 × 65 个字符时钟 × 14 个主时钟。
+const FRAME_TICKS: u64 = 262 * 65 * 14;
+
 fn run(rom: &[u8; 256]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut machine = Apple1::new(rom, None)?; // None 用默认显示节奏
+    let mut machine = Apple1::new(rom)?;
     machine.reset()?; // 拉物理 RESET 线、保持、释放并跑完真实复位时序
 
-    // 启动阶段先跑够周期，收集到达提示符前产生的显示输出
-    let boot_output = machine.run_cycles(50_000)?;
+    // 时间为主板时钟。终端每圈循环存储（一帧）才接受一个字符，所以
+    // 推进量要按帧算，不能按"CPU 周期够了"估。
+    let boot_output = machine.run_ticks(8 * FRAME_TICKS)?;
     assert!(boot_output.contains(&b'\\'));
 
     // 逐字符输入一条命令（monitor 只认 CR 结尾，不是 LF）
     machine.type_str("FF00.FF0F\r");
 
     // 等一个**具体结果**，不要用"某一批没有输出"当作完成：机器空转时
-    // 同样没有输出。这里等两行完整的 16 字节转储。
+    // 同样没有输出。这里等完整的 16 字节转储。
     let mut output = Vec::new();
-    for _ in 0..100 {
-        output.extend_from_slice(&machine.run_cycles(10_000)?);
+    for _ in 0..40 {
+        output.extend_from_slice(&machine.run_ticks(FRAME_TICKS)?);
         let text = String::from_utf8_lossy(&output);
         if text.contains("FF00: D8 58") && text.contains("FF08: ") {
             return Ok(());
         }
     }
-    Err("dump did not complete within the cycle budget".into())
+    Err("dump did not complete within the board-time budget".into())
 }
 ```
+
+主机侧另有几个只读观察：`master_ticks()`（主板时钟总数）、`cpu_cycles()`（真实 CPU 总线周期数，含刷新停钟造成的缺口）、`video_frames()`（垂直终止计数产生的完整帧数）、`io_pending()`（未消费键盘输入、未完成握手、B3 脉冲或视频控制序列是否仍在进行）。`Apple1::tick()` 返回的 `Tick { cpu, refresh, frame_completed }` 中，`cpu` 只在真实 Φ2 完成时给出 `Cycle`。
 
 这与 `crates/apple1/tests/wozmon.rs` 里的测试用的是同一套 API；测试里的 `run_until(machine, budget, predicate)` 辅助函数就是上面这种"等具体结果"的封装，并在超预算时带最近周期轨迹、CPU 状态与屏幕内容失败。
 

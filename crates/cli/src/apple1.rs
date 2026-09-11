@@ -4,9 +4,12 @@
 //! (scripts, pipes, CI smoke checks) — the integration tests in
 //! `crates/cli/tests/apple1.rs` exercise the latter path.
 //!
-//! Every emulated cycle this host runs goes through [`Session::cycle`], so
+//! Every master tick this host runs goes through [`Session::tick`], so
 //! `--max-cycles` is an exact ceiling on the whole session: boot, RESET,
-//! recreate, and every input batch included.
+//! recreate, and every input batch included. One master tick is one
+//! 14.31818 MHz crystal period and 14 master ticks make one ~1.023 MHz CPU
+//! cycle; `--max-cycles` counts real CPU cycles, while a bus record's `M=`
+//! marker reports the session's master ticks.
 
 use std::{
     collections::VecDeque,
@@ -14,7 +17,6 @@ use std::{
     fmt::{self, Write as _},
     fs,
     io::{self, BufRead, IsTerminal, Write},
-    num::NonZeroU64,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -29,25 +31,26 @@ use crossterm::{
 use hesper_apple1::{
     Apple1, Apple1Bus,
     display::{COLUMNS, Display, ROWS},
-    machine::{RESET_COMPLETION_BUDGET, RESET_HOLD_CYCLES},
+    machine::{RESET_COMPLETION_BUDGET, RESET_HOLD_CYCLES, Tick},
 };
-use hesper_cpu6502::{CpuError, Cycle, StepKind};
+use hesper_cpu6502::{CpuError, StepKind};
 use sha2::{Digest, Sha256};
 use signal_hook::SigId;
 
 use crate::{format_bus_trace, format_instruction_trace};
 
-/// Cycles to run per idle tick while nothing new has arrived (a keystroke
-/// in the interactive loop, or after a line in the batch loop) and no
-/// budget check has fired. Large relative to a real 1 MHz Apple I because
-/// this crate does not throttle to wall-clock time (see
+/// Real CPU cycles to run per idle tick while nothing new has arrived (a
+/// keystroke in the interactive loop, or after a line in the batch loop)
+/// and no budget check has fired. Large relative to a real 1 MHz Apple I
+/// because this crate does not throttle to wall-clock time (see
 /// `crates/apple1/src/lib.rs`); it only bounds how much host-side work
 /// happens between input checks.
-const IDLE_BATCH_CYCLES: u64 = 2_000;
+const IDLE_BATCH_CPU_CYCLES: u64 = 2_000;
 
-/// Cycles to run immediately after RESET to reach the monitor's prompt
-/// (or whatever the loaded program prints first) before accepting input.
-const BOOT_BATCH_CYCLES: u64 = 50_000;
+/// Real CPU cycles to run immediately after RESET to reach the monitor's
+/// prompt (or whatever the loaded program prints first) before accepting
+/// input.
+const BOOT_BATCH_CPU_CYCLES: u64 = 50_000;
 
 /// The exact 256-byte Woz Monitor image this CLI accepts, by SHA-256.
 ///
@@ -116,13 +119,17 @@ impl TraceOptions {
 
 /// One CLI session over one machine at a time.
 ///
-/// `total_cycles` is this session's accumulated cycle count, deliberately
-/// separate from `Apple1::total_cycles`: recreating the machine (Ctrl-N)
-/// gives a fresh machine counter, but the session ceiling and its trace
-/// keep going.
+/// `total_cpu_cycles` is this session's accumulated real-CPU-cycle count,
+/// deliberately separate from the machine's own `cpu_cycles()`: recreating
+/// the machine (Ctrl-N) gives a fresh machine counter, but the session
+/// ceiling and its trace keep going. `total_master_ticks` (session board
+/// time, the trace's `M=` marker) and `total_frames` (completed video
+/// frames, the batch drain's quiet measure) carry over the same way.
 struct Session {
     machine: Apple1,
-    total_cycles: u64,
+    total_cpu_cycles: u64,
+    total_master_ticks: u64,
+    total_frames: u64,
     max_cycles: Option<u64>,
     trace: TraceOptions,
     recent: VecDeque<String>,
@@ -132,44 +139,63 @@ impl Session {
     fn new(machine: Apple1, max_cycles: Option<u64>, trace: TraceOptions) -> Self {
         Self {
             machine,
-            total_cycles: 0,
+            total_cpu_cycles: 0,
+            total_master_ticks: 0,
+            total_frames: 0,
             max_cycles,
             trace,
             recent: VecDeque::new(),
         }
     }
 
-    /// Cycles left in the session budget, or `None` when unlimited.
+    /// Real CPU cycles left in the session budget, or `None` when
+    /// unlimited.
     fn remaining(&self) -> Option<u64> {
         self.max_cycles
-            .map(|max| max.saturating_sub(self.total_cycles))
+            .map(|max| max.saturating_sub(self.total_cpu_cycles))
     }
 
-    /// The only place this host runs an emulated cycle. Returns `Ok(None)`
-    /// when the budget is exhausted, without touching the machine.
+    /// The only place this host advances the emulated board. Returns
+    /// `Ok(None)` when the budget is exhausted, without touching the
+    /// machine (budget 0 must not advance any machine time).
     ///
-    /// A cycle that ends in a CPU error still counts: its bus access
-    /// really happened (see `Apple1::cycle`). An unsupported opcode returns
-    /// no `Cycle` at all, so the records already kept are reported as they
-    /// are; no bus line is invented for the failed cycle.
-    fn cycle(&mut self) -> Result<Option<Cycle>, CpuError> {
+    /// A tick with no real CPU cycle (Φ1 phase, or a Φ2 suppressed by
+    /// refresh) still advances board time and video timing; it just does
+    /// not count against `--max-cycles`, and therefore records no trace
+    /// line. A tick that ends in a CPU error propagates the error without
+    /// counting: the bus access that failed produced no `Cycle` to report,
+    /// so no bus line is invented for it.
+    fn tick(&mut self) -> Result<Option<Tick>, CpuError> {
         if self.remaining() == Some(0) {
             return Ok(None);
         }
-        self.total_cycles += 1;
-        let cycle = self.machine.cycle()?;
+        let tick = self.machine.tick()?;
+        self.total_master_ticks += 1;
+        if tick.cpu.is_some() {
+            self.total_cpu_cycles += 1;
+        }
+        if tick.frame_completed {
+            self.total_frames += 1;
+        }
 
         // With both kinds off nothing is snapshotted, formatted, or queued.
-        if self.trace.bus {
+        if self.trace.bus
+            && let Some(cycle) = tick.cpu
+        {
             let state = self.machine.cpu().debug_state();
-            self.record(format_bus_trace(&cycle, &state, self.total_cycles));
+            self.record(format_bus_trace(
+                &cycle,
+                &state,
+                self.total_cpu_cycles,
+                Some(self.total_master_ticks),
+            ));
         }
         if self.trace.instructions
-            && let Some(step) = cycle.completed
+            && let Some(step) = tick.cpu.and_then(|cycle| cycle.completed)
         {
-            self.record(format_instruction_trace(&step, self.total_cycles));
+            self.record(format_instruction_trace(&step, self.total_cpu_cycles));
         }
-        Ok(Some(cycle))
+        Ok(Some(tick))
     }
 
     /// Keep the newest record, dropping the oldest past the limit.
@@ -189,25 +215,34 @@ impl Session {
         Ok(())
     }
 
-    /// Run up to `requested` cycles. Stops the moment the budget is
+    /// Run up to `requested_cpu_cycles` real CPU cycles. Ticks that advance
+    /// no CPU cycle (Φ1, refresh-suppressed Φ2) only move board time and do
+    /// not count toward the request. Stops the moment the budget is
     /// exhausted — including exactly at the end of the batch, so the host
     /// never accepts one more input or runs "one last batch" past the
     /// ceiling.
-    fn advance(&mut self, requested: u64) -> Result<Option<StopReason>, CpuError> {
-        for _ in 0..requested {
-            if self.cycle()?.is_none() {
-                return Ok(Some(StopReason::BudgetExceeded(self.total_cycles)));
+    fn advance(&mut self, requested_cpu_cycles: u64) -> Result<Option<StopReason>, CpuError> {
+        let mut completed = 0u64;
+        while completed < requested_cpu_cycles {
+            match self.tick()? {
+                None => return Ok(Some(StopReason::BudgetExceeded(self.total_cpu_cycles))),
+                Some(tick) => {
+                    if tick.cpu.is_some() {
+                        completed += 1;
+                    }
+                }
             }
         }
         if self.remaining() == Some(0) {
-            return Ok(Some(StopReason::BudgetExceeded(self.total_cycles)));
+            return Ok(Some(StopReason::BudgetExceeded(self.total_cpu_cycles)));
         }
         Ok(None)
     }
 
     /// Physical RESET driven cycle by cycle under the session budget: hold
-    /// the line for [`RESET_HOLD_CYCLES`], release it, then run until the
-    /// CPU reports its reset sequence complete.
+    /// the line for [`RESET_HOLD_CYCLES`] real CPU cycles, release it, then
+    /// run until the CPU reports its reset sequence complete within
+    /// [`RESET_COMPLETION_BUDGET`] real CPU cycles.
     ///
     /// Running out of budget during the hold, the release, or the vector
     /// read is an ordinary budget stop: the reset line keeps whatever state
@@ -216,17 +251,27 @@ impl Session {
     /// fixed-length reset with budget to spare.
     fn reset(&mut self) -> Result<Option<StopReason>, CpuError> {
         self.machine.set_reset_line(true);
-        for _ in 0..RESET_HOLD_CYCLES {
-            if self.cycle()?.is_none() {
-                return Ok(Some(StopReason::BudgetExceeded(self.total_cycles)));
+        let mut held = 0u64;
+        while held < RESET_HOLD_CYCLES {
+            match self.tick()? {
+                None => return Ok(Some(StopReason::BudgetExceeded(self.total_cpu_cycles))),
+                Some(tick) => {
+                    if tick.cpu.is_some() {
+                        held += 1;
+                    }
+                }
             }
         }
         self.machine.set_reset_line(false);
-        for _ in 0..RESET_COMPLETION_BUDGET {
-            match self.cycle()? {
-                None => return Ok(Some(StopReason::BudgetExceeded(self.total_cycles))),
-                Some(cycle) => {
-                    if let Some(step) = cycle.completed
+        let mut elapsed = 0u64;
+        while elapsed < RESET_COMPLETION_BUDGET {
+            match self.tick()? {
+                None => return Ok(Some(StopReason::BudgetExceeded(self.total_cpu_cycles))),
+                Some(tick) => {
+                    if tick.cpu.is_some() {
+                        elapsed += 1;
+                    }
+                    if let Some(step) = tick.cpu.and_then(|cycle| cycle.completed)
                         && step.kind == StepKind::Reset
                     {
                         return Ok(None);
@@ -245,7 +290,7 @@ impl Session {
     fn boot(&mut self) -> Result<Option<StopReason>, CpuError> {
         match self.reset()? {
             Some(stop) => Ok(Some(stop)),
-            None => self.advance(BOOT_BATCH_CYCLES),
+            None => self.advance(BOOT_BATCH_CPU_CYCLES),
         }
     }
 }
@@ -254,7 +299,6 @@ impl Session {
 pub fn run_apple1(
     rom_path: &str,
     program_path: Option<&str>,
-    cycles_per_char: NonZeroU64,
     max_cycles: Option<u64>,
     trace: bool,
     bus_trace: bool,
@@ -280,11 +324,11 @@ pub fn run_apple1(
 
     // 2. Build the machine and the session. Nothing has executed yet: with
     // `--max-cycles 0` the run stops here having reported zero cycles.
-    let machine = create_machine(&rom, program.as_deref(), cycles_per_char)?;
+    let machine = create_machine(&rom, program.as_deref())?;
     let mut session = Session::new(machine, max_cycles, trace_options);
 
     let outcome = if io::stdin().is_terminal() {
-        run_interactive(&mut session, &rom, program.as_deref(), cycles_per_char)
+        run_interactive(&mut session, &rom, program.as_deref())
     } else {
         run_batch(&mut session)
     };
@@ -351,15 +395,12 @@ fn hex(bytes: &[u8]) -> String {
     text
 }
 
-/// Construct a machine and load the optional program. Runs no cycle: RESET
-/// is the session's job, so it stays inside the cycle budget. Shared by the
-/// initial start and by the interactive loop's "recreate machine" command.
-fn create_machine(
-    rom: &[u8; 256],
-    program: Option<&[u8]>,
-    cycles_per_char: NonZeroU64,
-) -> Result<Apple1, Box<dyn Error>> {
-    let mut machine = Apple1::new(rom, Some(cycles_per_char))?;
+/// Construct a machine and load the optional program. Runs no master tick:
+/// RESET is the session's job, so it stays inside the cycle budget. Shared
+/// by the initial start and by the interactive loop's "recreate machine"
+/// command.
+fn create_machine(rom: &[u8; 256], program: Option<&[u8]>) -> Result<Apple1, Box<dyn Error>> {
+    let mut machine = Apple1::new(rom)?;
     if let Some(bytes) = program {
         machine
             .bus_mut()
@@ -373,8 +414,13 @@ fn create_machine(
 /// A real terminal never reaches this path (see `run_apple1`).
 ///
 /// The idle batches below only mean "the host stops advancing for now to
-/// read the next line": the emulated CPU is still running its polling
-/// loop, and nothing here treats quiet output as a halted program.
+/// read the next line": the emulated CPU is still running its polling loop,
+/// and nothing here treats quiet output as a halted program. The drain
+/// after each line is a generic host EOF-quiet policy: it waits for three
+/// complete video frames with no new output and no I/O in flight, then goes
+/// back to reading stdin. It reads no Woz Monitor private state, and it
+/// cannot decide whether an arbitrary program will ever print again — it
+/// only decides when this host stops waiting before the next line.
 fn run_batch(session: &mut Session) -> Result<StopReason, Box<dyn Error>> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -401,26 +447,32 @@ fn run_batch(session: &mut Session) -> Result<StopReason, Box<dyn Error>> {
         for ch in content.chars() {
             session.machine.type_char(ch as u8);
             if let Some(stop) =
-                advance_and_print(session, Boot::No(IDLE_BATCH_CYCLES), &mut stdout)?
+                advance_and_print(session, Boot::No(IDLE_BATCH_CPU_CYCLES), &mut stdout)?
             {
                 return Ok(stop);
             }
         }
         session.machine.type_char(b'\r');
-        if let Some(stop) = advance_and_print(session, Boot::No(IDLE_BATCH_CYCLES), &mut stdout)? {
+        if let Some(stop) =
+            advance_and_print(session, Boot::No(IDLE_BATCH_CPU_CYCLES), &mut stdout)?
+        {
             return Ok(stop);
         }
 
-        // Keep advancing until the machine has been quiet for a few
-        // batches, then go read the next line.
-        let mut quiet_batches = 0;
-        while quiet_batches < 3 {
-            let stop = session.advance(IDLE_BATCH_CYCLES * 5)?;
+        // Keep advancing until the machine has been quiet for three whole
+        // video frames, then go read the next line. A batch that produced
+        // output or still has I/O in flight (unread keyboard input, a
+        // display handshake mid-shift) resets the counter: only real,
+        // complete quiet frames count.
+        let mut quiet_frames = 0u64;
+        while quiet_frames < 3 {
+            let frames_before = session.total_frames;
+            let stop = session.advance(IDLE_BATCH_CPU_CYCLES)?;
             let output = session.machine.drain_output();
-            if output.is_empty() {
-                quiet_batches += 1;
+            if output.is_empty() && !session.machine.io_pending() {
+                quiet_frames += session.total_frames - frames_before;
             } else {
-                quiet_batches = 0;
+                quiet_frames = 0;
                 print_output(&output, &mut stdout)?;
             }
             if let Some(stop) = stop {
@@ -712,7 +764,6 @@ fn run_interactive(
     session: &mut Session,
     rom: &[u8; 256],
     program: Option<&[u8]>,
-    cycles_per_char: NonZeroU64,
 ) -> Result<StopReason, Box<dyn Error>> {
     let view = if io::stdout().is_terminal() {
         View::Grid
@@ -762,7 +813,7 @@ fn run_interactive(
                         announce(view, label, &mut status, &mut redraw, &mut stdout)?;
                     }
                     Action::Recreate => {
-                        session.machine = create_machine(rom, program, cycles_per_char)?;
+                        session.machine = create_machine(rom, program)?;
                         announce(view, "[NEW MACHINE]", &mut status, &mut redraw, &mut stdout)?;
                         let stop = session.boot()?;
                         present(view, session, &mut redraw, &mut stdout)?;
@@ -794,7 +845,7 @@ fn run_interactive(
 
         let mut stop = None;
         if !paused {
-            stop = session.advance(IDLE_BATCH_CYCLES)?;
+            stop = session.advance(IDLE_BATCH_CPU_CYCLES)?;
             present(view, session, &mut redraw, &mut stdout)?;
         }
         draw_if_needed(view, session, &status, &mut redraw, &mut stdout)?;
@@ -874,8 +925,6 @@ fn print_output(output: &[u8], stdout: &mut impl Write) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use hesper_apple1::Pia6821;
-
     use super::*;
 
     /// Minimal original ROM whose reset vector points at RAM $0000; the
@@ -893,7 +942,7 @@ mod tests {
 
     fn session_with(max_cycles: Option<u64>, trace: TraceOptions) -> Session {
         let rom = test_rom(0x0000);
-        let machine = create_machine(&rom, Some(SPIN), NonZeroU64::new(50).unwrap()).unwrap();
+        let machine = create_machine(&rom, Some(SPIN)).unwrap();
         Session::new(machine, max_cycles, trace)
     }
 
@@ -915,8 +964,9 @@ mod tests {
             session.boot().unwrap(),
             Some(StopReason::BudgetExceeded(0))
         ));
-        assert_eq!(session.total_cycles, 0);
-        assert_eq!(session.machine.total_cycles(), 0);
+        assert_eq!(session.total_cpu_cycles, 0);
+        assert_eq!(session.machine.cpu_cycles(), 0);
+        assert_eq!(session.machine.master_ticks(), 0);
     }
 
     #[test]
@@ -928,7 +978,7 @@ mod tests {
                 matches!(stop, Some(StopReason::BudgetExceeded(total)) if total == budget),
                 "budget {budget} must stop at exactly {budget} cycles"
             );
-            assert_eq!(session.total_cycles, budget);
+            assert_eq!(session.total_cpu_cycles, budget);
         }
     }
 
@@ -941,12 +991,12 @@ mod tests {
         assert!(matches!(stop, Some(StopReason::BudgetExceeded(80))));
 
         // Asking for more must not execute anything else.
-        assert!(session.cycle().unwrap().is_none());
+        assert!(session.tick().unwrap().is_none());
         assert!(matches!(
             session.advance(1_000).unwrap(),
             Some(StopReason::BudgetExceeded(80))
         ));
-        assert_eq!(session.total_cycles, 80);
+        assert_eq!(session.total_cpu_cycles, 80);
     }
 
     #[test]
@@ -956,13 +1006,14 @@ mod tests {
         // batch), nowhere near enough for two.
         let mut session = spinning_session(Some(60_000));
         assert!(session.boot().unwrap().is_none());
-        let before = session.total_cycles;
-        assert!(before >= BOOT_BATCH_CYCLES);
+        let before = session.total_cpu_cycles;
+        assert!(before >= BOOT_BATCH_CPU_CYCLES);
 
-        session.machine = create_machine(&rom, Some(SPIN), NonZeroU64::new(50).unwrap()).unwrap();
-        assert_eq!(session.machine.total_cycles(), 0, "the machine is new");
+        session.machine = create_machine(&rom, Some(SPIN)).unwrap();
+        assert_eq!(session.machine.cpu_cycles(), 0, "the machine is new");
+        assert_eq!(session.machine.master_ticks(), 0, "the machine is new");
         assert_eq!(
-            session.total_cycles, before,
+            session.total_cpu_cycles, before,
             "the session's own count must not reset with the machine"
         );
 
@@ -977,10 +1028,10 @@ mod tests {
     fn an_unlimited_session_runs_every_requested_cycle() {
         let mut session = spinning_session(None);
         assert!(session.reset().unwrap().is_none());
-        let after_reset = session.total_cycles;
+        let after_reset = session.total_cpu_cycles;
         assert!(session.advance(1_000).unwrap().is_none());
-        assert_eq!(session.total_cycles, after_reset + 1_000);
-        assert_eq!(session.machine.total_cycles(), session.total_cycles);
+        assert_eq!(session.total_cpu_cycles, after_reset + 1_000);
+        assert_eq!(session.machine.cpu_cycles(), session.total_cpu_cycles);
     }
 
     #[test]
@@ -1001,12 +1052,12 @@ mod tests {
             4,
             "the limit caps both kinds together, not each separately"
         );
-        // The newest record belongs to the most recent cycle, and a bus
-        // record precedes the completion it belongs to.
+        // The newest record belongs to the most recent CPU cycle, and a
+        // bus record precedes the completion it belongs to.
+        let index = session.total_cpu_cycles;
         let last = session.recent.back().unwrap();
         assert!(
-            last.starts_with(&format!("C{:06}", session.total_cycles))
-                || last.contains(&format!("total={}", session.total_cycles)),
+            last.contains(&format!("C{index:06}")) || last.contains(&format!("total={index}")),
             "unexpected newest record: {last}"
         );
     }
@@ -1020,16 +1071,55 @@ mod tests {
         assert!(!session.trace.enabled());
     }
 
-    /// A display whose screen holds `text`, one character per completed
-    /// shift-out (CR moves to the next line, as on real hardware).
-    fn display_showing(text: &[u8]) -> Display {
-        let mut display = Display::new(NonZeroU64::new(1).unwrap());
-        let mut pia = Pia6821::new();
-        for &byte in text {
-            display.on_write(byte);
-            display.tick(&mut pia);
-        }
-        display
+    /// A machine whose screen already holds `text`, produced by a tiny RAM
+    /// program that writes each byte to Port B and waits for the display's
+    /// DA (PB7) handshake before the next one, exactly as the monitor's
+    /// ECHO routine does, then paces itself so a CR's clear-to-EOL fill can
+    /// finish before the next write. A zero byte ends the list.
+    ///
+    /// Reaching the screen through the machine keeps these host rendering
+    /// tests independent of how the board implements the shift register,
+    /// but it also means waiting for real video timing: the terminal takes
+    /// a character only while the scanner clocks the cursor's slot, so each
+    /// character costs about one frame (~238 000 master ticks, ~60
+    /// characters/second, as on the real machine). The budget below is
+    /// five frames, enough for the short strings used here. The session
+    /// drives the reset and the advance, so the program starts the way a
+    /// real run does.
+    fn machine_showing(text: &[u8]) -> Apple1 {
+        let mut program = vec![
+            0xA2, 0x00, // LDX #$00
+            0xA9, 0x7F, // LDA #$7F
+            0x8D, 0x12, 0xD0, // STA $D012  (DDRB: PB0-PB6 out, PB7 = DA in)
+            0xA9, 0xA7, // LDA #$A7
+            0x8D, 0x13, 0xD0, // STA $D013  (CRB: CB2 write-strobe handshake)
+            0xBD, 0x24, 0x00, // loop: LDA $0024,X
+            0xF0, 0x10, // BEQ done ($0021)
+            0x2C, 0x12, 0xD0, // wait: BIT $D012  (PB7 = DA; BIT preserves A)
+            0x30, 0xFB, // BMI wait  (the monitor's ECHO spin)
+            0x8D, 0x12, 0xD0, // STA $D012
+            0xA0, 0xC8, // LDY #$C8
+            0x88, // dly: DEY
+            0xD0, 0xFD, // BNE dly  (~1 000 CPU cycles: outlast a CR fill)
+            0xE8, // INX
+            0xD0, 0xEB, // BNE loop ($000C)
+            0x4C, 0x21, 0x00, // done: JMP done
+        ];
+        program.extend_from_slice(text);
+        program.push(0x00);
+
+        let mut session = Session::new(
+            create_machine(&test_rom(0x0000), Some(&program)).unwrap(),
+            None,
+            TraceOptions {
+                instructions: false,
+                bus: false,
+                limit: 64,
+            },
+        );
+        assert!(session.reset().unwrap().is_none());
+        assert!(session.advance(80_000).unwrap().is_none());
+        session.machine
     }
 
     /// The text a frame wrote at each absolute position, as
@@ -1059,9 +1149,9 @@ mod tests {
 
     #[test]
     fn a_wide_terminal_does_not_reflow_the_forty_column_grid() {
-        let display = display_showing(b"AB\rC");
+        let machine = machine_showing(b"AB\rC");
         let mut frame = Vec::new();
-        draw_screen(&display, "[PAUSED]", (80, 30), &mut frame).unwrap();
+        draw_screen(machine.display(), "[PAUSED]", (80, 30), &mut frame).unwrap();
         let cells = frame_cells(&frame);
 
         let rows: Vec<u16> = cells.iter().map(|&(row, _, _)| row).collect();
@@ -1089,9 +1179,9 @@ mod tests {
 
     #[test]
     fn a_twenty_four_row_window_draws_no_status_row() {
-        let display = display_showing(b"A");
+        let machine = machine_showing(b"A");
         let mut frame = Vec::new();
-        draw_screen(&display, "[RESET]", (40, 24), &mut frame).unwrap();
+        draw_screen(machine.display(), "[RESET]", (40, 24), &mut frame).unwrap();
         let cells = frame_cells(&frame);
         assert!(
             cells.iter().all(|&(row, _, _)| usize::from(row) < ROWS),
@@ -1106,9 +1196,9 @@ mod tests {
     #[test]
     fn a_small_window_clips_the_grid_and_hides_an_offscreen_cursor() {
         // Cursor ends at row 1, column 1 — outside a 1x1 window.
-        let display = display_showing(b"AB\rC");
+        let machine = machine_showing(b"AB\rC");
         let mut frame = Vec::new();
-        draw_screen(&display, "[PAUSED]", (20, 10), &mut frame).unwrap();
+        draw_screen(machine.display(), "[PAUSED]", (20, 10), &mut frame).unwrap();
         let cells = frame_cells(&frame);
         assert_eq!(cells.len(), 10 + 1, "10 visible rows plus the cursor move");
         for (_, _, text) in &cells[..10] {
@@ -1116,7 +1206,7 @@ mod tests {
         }
 
         let mut tiny = Vec::new();
-        draw_screen(&display, "", (1, 1), &mut tiny).unwrap();
+        draw_screen(machine.display(), "", (1, 1), &mut tiny).unwrap();
         let tiny = String::from_utf8(tiny).unwrap();
         assert!(
             tiny.ends_with(HIDE_CURSOR),
@@ -1131,10 +1221,10 @@ mod tests {
 
     #[test]
     fn a_zero_sized_window_emits_nothing() {
-        let display = display_showing(b"A");
+        let machine = machine_showing(b"A");
         for size in [(0, 24), (40, 0), (0, 0)] {
             let mut frame = Vec::new();
-            draw_screen(&display, "[RESET]", size, &mut frame).unwrap();
+            draw_screen(machine.display(), "[RESET]", size, &mut frame).unwrap();
             assert!(
                 frame.is_empty(),
                 "size {size:?} must not emit any coordinate command"
@@ -1143,19 +1233,21 @@ mod tests {
     }
 
     #[test]
-    fn control_bytes_on_the_machine_screen_are_drawn_as_blanks() {
-        // ESC and a bell byte are ordinary screen cells to the machine; the
-        // host terminal must never receive them.
-        let display = display_showing(&[b'A', 0x1B, 0x07, b'B']);
+    fn a_non_printable_screen_code_is_drawn_as_a_blank() {
+        // 0x7F is a screen cell the host terminal cannot render; the
+        // carousel refuses only codes below $20, so $7F is the one stored
+        // value outside printable ASCII the machine can hold. It still
+        // takes its cell, and no non-printable byte may reach the terminal.
+        let machine = machine_showing(&[b'A', 0x7F, b'B']);
         let mut frame = Vec::new();
-        draw_screen(&display, "", (40, 24), &mut frame).unwrap();
+        draw_screen(machine.display(), "", (40, 24), &mut frame).unwrap();
         let cells = frame_cells(&frame);
-        assert_eq!(&cells[0].2[..4], "A  B", "control bytes still take a cell");
+        assert_eq!(&cells[0].2[..3], "A B", "the cell is kept but blanked");
         assert!(
-            !cells
-                .iter()
-                .any(|(_, _, text)| text.contains('\u{1b}') || text.contains('\u{7}')),
-            "no emulated control byte may reach the terminal"
+            !cells.iter().any(|(_, _, text)| text.contains('\u{1b}')
+                || text.contains('\u{7}')
+                || text.contains('\u{7f}')),
+            "no non-printable machine byte may reach the terminal"
         );
     }
 }

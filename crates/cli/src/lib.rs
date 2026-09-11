@@ -40,14 +40,28 @@ pub fn format_instruction_trace(step: &Step, total: u64) -> String {
 }
 
 /// One bus cycle with the CPU's internal observation for that cycle.
-pub fn format_bus_trace(cycle: &Cycle, state: &DebugState, total: u64) -> String {
+///
+/// `total` is the host's accumulated real CPU-cycle index; `master`, when
+/// the host tracks one, is its board master-tick count and prefixes the
+/// line with an `M=` marker. A host with no board clock (the demo) passes
+/// `None` and gets the unchanged line.
+pub fn format_bus_trace(
+    cycle: &Cycle,
+    state: &DebugState,
+    total: u64,
+    master: Option<u64>,
+) -> String {
     let direction = if cycle.bus.direction == Direction::Read {
         'R'
     } else {
         'W'
     };
+    let marker = match master {
+        Some(m) => format!("M={m:08} "),
+        None => String::new(),
+    };
     format!(
-        "C{total:06} {direction} ${:04X}={:02X} SYNC={} stalled={} | next={:?}/{:?} pins={:?} latches={:?}",
+        "{marker}C{total:06} {direction} ${:04X}={:02X} SYNC={} stalled={} | next={:?}/{:?} pins={:?} latches={:?}",
         cycle.bus.address,
         cycle.bus.data,
         cycle.bus.sync,

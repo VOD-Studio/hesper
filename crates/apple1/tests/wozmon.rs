@@ -18,16 +18,25 @@
 #[path = "support/wozmon_rom.rs"]
 mod wozmon_rom;
 
-use std::{collections::VecDeque, fmt::Write as _, num::NonZeroU64};
+use std::{collections::VecDeque, fmt::Write as _};
 
 use hesper_apple1::Apple1;
 use hesper_cpu6502::{Cycle, DebugState};
 
-/// Cycles allowed for any single wait. ~1 second of real Apple I time,
-/// orders of magnitude more than any monitor command needs.
-const WAIT_BUDGET: u64 = 1_000_000;
+/// Master ticks in one complete video frame (262 scan lines of 65 character
+/// clocks, each 14 crystal periods).
+const FRAME_TICKS: u64 = 262 * 65 * 14;
 
-/// Cycles between output drains / predicate checks.
+/// Frames any single wait may take. The terminal takes at most one
+/// character per carousel lap, so each printed character costs about a
+/// frame; the longest wait here is an examine command whose command echo
+/// plus two eight-byte dump lines run to well under a hundred characters.
+const WAIT_FRAMES: u64 = 100;
+
+/// Master ticks allowed for any single wait.
+const WAIT_BUDGET: u64 = WAIT_FRAMES * FRAME_TICKS;
+
+/// Master ticks between output drains / predicate checks.
 const CHECK_INTERVAL: u64 = 1_000;
 
 /// Cycle records kept for failure reporting.
@@ -37,6 +46,10 @@ const TRACE_KEEP: usize = 64;
 /// output accumulated so far. Panics with the recent bus trace, CPU state
 /// and screen contents on a CPU error or an exhausted budget — a wait that
 /// never completes is a failure, never a silent pass.
+///
+/// The budget is board time, because that is what the terminal costs:
+/// each printed character is only taken when the carousel reaches the
+/// cursor's slot.
 fn run_until(
     machine: &mut Apple1,
     budget: u64,
@@ -49,12 +62,18 @@ fn run_until(
     while executed < budget {
         let chunk = CHECK_INTERVAL.min(budget - executed);
         for _ in 0..chunk {
-            match machine.cycle() {
-                Ok(cycle) => {
-                    if recent.len() == TRACE_KEEP {
-                        recent.pop_front();
+            match machine.tick() {
+                Ok(tick) => {
+                    if let Some(cycle) = tick.cpu {
+                        if recent.len() == TRACE_KEEP {
+                            recent.pop_front();
+                        }
+                        recent.push_back((
+                            machine.master_ticks(),
+                            cycle,
+                            machine.cpu().debug_state(),
+                        ));
                     }
-                    recent.push_back((machine.total_cycles(), cycle, machine.cpu().debug_state()));
                 }
                 Err(err) => {
                     output.extend(machine.drain_output());
@@ -78,7 +97,7 @@ fn run_until(
             machine,
             &output,
             &recent,
-            &format!("wait budget of {budget} cycles exhausted")
+            &format!("wait budget of {budget} master ticks exhausted")
         )
     );
 }
@@ -91,7 +110,13 @@ fn report(
 ) -> String {
     let mut text = String::new();
     let _ = writeln!(text, "{why}");
-    let _ = writeln!(text, "total cycles: {}", machine.total_cycles());
+    let _ = writeln!(
+        text,
+        "master ticks: {} ({} CPU cycles, {} frames)",
+        machine.master_ticks(),
+        machine.cpu_cycles(),
+        machine.video_frames()
+    );
     let _ = writeln!(text, "registers: {:?}", machine.cpu().registers());
     let _ = writeln!(text, "output so far: {:?}", String::from_utf8_lossy(output));
     let _ = writeln!(text, "screen:");
@@ -101,8 +126,8 @@ fn report(
     let (cursor_row, cursor_col) = machine.display().cursor();
     let _ = writeln!(text, "cursor: ({cursor_row}, {cursor_col})");
     let _ = writeln!(text, "last {} cycles:", recent.len());
-    for (total, cycle, state) in recent {
-        let _ = writeln!(text, "  C{total} {cycle:?} | {state:?}");
+    for (master, cycle, state) in recent {
+        let _ = writeln!(text, "  M{master} {cycle:?} | {state:?}");
     }
     text
 }
@@ -140,7 +165,7 @@ fn has_full_dump_line(output: &[u8], prefix: &str, bytes: usize) -> bool {
 /// monitor's complete prompt: backslash followed by CR.
 fn boot() -> (Apple1, Vec<u8>) {
     let rom = wozmon_rom::load();
-    let mut machine = Apple1::new(&rom, NonZeroU64::new(100)).unwrap();
+    let mut machine = Apple1::new(&rom).unwrap();
     machine.reset().unwrap();
     let output = run_until(&mut machine, WAIT_BUDGET, |_, out| {
         out.windows(2).any(|pair| pair == [0x5C, 0x0D])

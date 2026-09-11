@@ -43,11 +43,11 @@ SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`
 - M76 规格页（leaf 1）：40×24、自动滚动、1.023/0.960 MHz 时钟、4096 DRAM
 - M76 印刷页 7 HARDWARE NOTES（leaf 8）：PIA 的 RS0←A0/RS1←A1/CS0←A4/CS1←+5V/CS2←$DXXX 译码；CB2 反相成 DA→PB7 反馈；RDA 经 74123 3.5 μs→CB1
 - M76 印刷页 8（leaf 9）：REFRESH（每 65 周期 4 周期刷新、Φ2 抑制≠RDY）、SOFTWARE CONSIDERATIONS（含 PB7 极性矛盾——正文说 "1=ready" 但 monitor 代码 `BIT DSP / BMI ECHO` 实际为 PB7=1=busy）
-- M76 Section III / HOW TO EXPAND THE APPLE SYSTEM：扩展连接器提供 RDY；DMA 段落说明 RDY 用于单步或慢速 ROM。当前固定文本配置没有此类扩展，也没有设备驱动 CPU RDY，因此将机器级 RDY 保持验收判为不适用。该结论限定于所选模拟配置，不声称原板不存在 RDY、不推断所有板型的 RDY 物理接线，也不替代原理图逐页核对。REFRESH 中的 Φ2 抑制仍是独立、未建模的时钟行为。
+- M76 Section III / HOW TO EXPAND THE APPLE SYSTEM：扩展连接器提供 RDY；DMA 段落说明 RDY 用于单步或慢速 ROM。当前固定文本配置没有此类扩展，也没有设备驱动 CPU RDY，因此将机器级 RDY 保持验收判为不适用。该结论限定于所选模拟配置，不声称原板不存在 RDY、不推断所有板型的 RDY 物理接线，也不替代原理图逐页核对。REFRESH 的 Φ2 抑制已按该节的原图数字边沿建模（`crates/apple1/src/timing.rs`）：每 65 个字符时钟有四个刷新槽抑制 Φ2、CPU 停在 Φ2 且 PIA 无 E，板时钟、视频与单稳态继续推进。
 - M76 Sheet 2/3 PROCESSOR SECTION（leaf 14）：6502+PIA(6820@A4)+PROM(MMI 6301)+RAM+跳线；RESET 接 CPU/PIA/B4-11
 - M76 Sheet 1/3 TERMINAL SECTION（leaf 13）：2513 字符发生器、2504 移位寄存器、CLEAR SCREEN
 - M76 Sheet 3/3 POWER SUPPLY（leaf 10）：RESET 按钮接地、CLEAR SCREEN 按钮接 +5V
-- P20 印刷页 45–50：MC6820 MPU 接口、内部寄存器选择、控制字、中断/握手表
+- P20 印刷页 45–50：MC6820 MPU 接口、内部寄存器选择、控制字、中断/握手表；Table 5（CA2/CB2 输出模式）本次在**印刷页 47 / scan leaf 48** 逐条复核
 - P21 印刷页 8–10：Table 1 内部寻址（bit 2 对读写双方选择 DDR/数据寄存器）、Port A/B 硬件差异（A 读引脚、B 输出模式读锁存）、控制字格式
 
 ### 测试程序

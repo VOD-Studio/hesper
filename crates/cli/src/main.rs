@@ -1,12 +1,9 @@
-use std::{
-    collections::VecDeque, env, error::Error, fmt::Write as _, num::NonZeroU64, process::ExitCode,
-};
+use std::{collections::VecDeque, env, error::Error, fmt::Write as _, process::ExitCode};
 
 use hesper::{
     DEFAULT_MAX_STEPS, DemoEvent, apple1::run_apple1, format_bus_trace, format_instruction_trace,
     format_registers, run_demo_with_trace,
 };
-use hesper_apple1::display::DEFAULT_CYCLES_PER_CHAR;
 
 /// Trace records kept by default when `--trace`/`--bus-trace` is on.
 const DEFAULT_TRACE_LIMIT: usize = 64;
@@ -14,7 +11,6 @@ const DEFAULT_TRACE_LIMIT: usize = 64;
 fn run_apple1_subcommand(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let mut rom: Option<String> = None;
     let mut program: Option<String> = None;
-    let mut cycles_per_char: NonZeroU64 = DEFAULT_CYCLES_PER_CHAR;
     let mut max_cycles: Option<u64> = None;
     let mut trace = false;
     let mut bus_trace = false;
@@ -27,13 +23,6 @@ fn run_apple1_subcommand(mut args: impl Iterator<Item = String>) -> Result<(), B
             }
             "--program" => {
                 program = Some(args.next().ok_or("--program requires a file path")?);
-            }
-            "--cycles-per-char" => {
-                cycles_per_char = args
-                    .next()
-                    .ok_or("--cycles-per-char requires a positive integer")?
-                    .parse()
-                    .map_err(|_| "--cycles-per-char requires a positive integer")?;
             }
             "--max-cycles" => {
                 max_cycles = Some(
@@ -68,7 +57,6 @@ fn run_apple1_subcommand(mut args: impl Iterator<Item = String>) -> Result<(), B
     run_apple1(
         &rom_path,
         program.as_deref(),
-        cycles_per_char,
         max_cycles,
         trace,
         bus_trace,
@@ -84,8 +72,7 @@ Usage: hesper apple1 --rom <path> [OPTIONS]
 Options:
   --rom <path>           Path to the 256-byte Woz Monitor ROM (required)
   --program <path>       Optional program file to load into RAM at $0000
-  --cycles-per-char <N>  CPU cycles per display character (default: 1000)
-  --max-cycles <N>       Maximum total cycles before the emulator exits
+  --max-cycles <N>       Maximum total CPU cycles before the emulator exits
   --trace                Enable instruction trace
   --bus-trace            Enable bus-level trace
   --trace-limit <N>      Keep the last N trace records, 1..4096 (default: 64)
@@ -147,7 +134,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         let line = match event {
             DemoEvent::Instruction(step) if trace => Some(format_instruction_trace(&step, total)),
             DemoEvent::Cycle { cycle, state } if bus_trace => {
-                Some(format_bus_trace(&cycle, &state, total))
+                Some(format_bus_trace(&cycle, &state, total, None))
             }
             _ => None,
         };
