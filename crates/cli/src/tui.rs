@@ -547,7 +547,27 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: String) {
-        if self.page != Page::Apple1 || self.overlay.is_some() {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.page == Page::Config {
+            let path = match self.form.focus {
+                ConfigFocus::Rom => &mut self.form.rom,
+                ConfigFocus::Program => &mut self.form.program,
+                _ => return,
+            };
+            if text.chars().any(char::is_control) {
+                self.form.status =
+                    Some("路径粘贴未接收：请使用不含换行或控制字符的单行路径".into());
+            } else {
+                // Paths are literal text, including spaces and shell syntax.
+                path.push_str(&text);
+                self.form.status = None;
+            }
+            self.dirty = true;
+            return;
+        }
+        if self.page != Page::Apple1 {
             return;
         }
         let mut bytes = Vec::new();
@@ -2060,6 +2080,52 @@ mod tests {
         app.handle_paste("a\r\nb\nc\t\u{1b}".into());
         assert_eq!(app.input.into_iter().collect::<Vec<_>>(), b"a\rb\rc");
         assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn path_paste_targets_only_the_focused_field_and_preserves_literal_text() {
+        let mut app = App::new(None);
+        app.page = Page::Config;
+        app.form.rom = "/rom/".into();
+        app.form.program.clear();
+        app.form.focus = ConfigFocus::Rom;
+        let path = "中文 目录/$HOME/$(literal)`name`.bin";
+        app.handle_event(Event::Paste(path.into()));
+        assert_eq!(app.form.rom, format!("/rom/{path}"));
+        assert!(app.form.program.is_empty());
+        app.form.focus = ConfigFocus::Program;
+        app.handle_event(Event::Paste("程序 file.bin".into()));
+        assert_eq!(app.form.program, "程序 file.bin");
+        assert!(app.input.is_empty());
+        for focus in [
+            ConfigFocus::Validate,
+            ConfigFocus::Launch,
+            ConfigFocus::Cancel,
+        ] {
+            app.form.focus = focus;
+            app.handle_event(Event::Paste("ignored".into()));
+        }
+        app.form.focus = ConfigFocus::Rom;
+        app.overlay = Some(Overlay::QuitConfirm);
+        app.handle_event(Event::Paste("ignored".into()));
+        assert_eq!(app.form.rom, format!("/rom/{path}"));
+        assert_eq!(app.form.program, "程序 file.bin");
+        assert!(app.session.is_none());
+    }
+
+    #[test]
+    fn multiline_and_control_path_pastes_are_rejected_without_partial_edits() {
+        let mut app = App::new(None);
+        app.page = Page::Config;
+        app.form.rom = "/original/rom.bin".into();
+        app.form.focus = ConfigFocus::Rom;
+        for paste in ["part\nnext", "part\rnext", "part\0next", "part\u{1b}[31m"] {
+            app.handle_event(Event::Paste(paste.into()));
+            assert_eq!(app.form.rom, "/original/rom.bin");
+            assert!(app.form.status.as_deref().unwrap().contains("未接收"));
+            assert!(!app.exit);
+            assert!(app.overlay.is_none());
+        }
     }
 
     #[test]
