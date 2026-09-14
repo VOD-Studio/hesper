@@ -86,6 +86,11 @@ enum Overlay {
         selected: usize,
     },
     RebootConfirm,
+    ReplaceConfirm {
+        resources: Box<Resources>,
+        save_path: bool,
+        confirmed: bool,
+    },
     QuitConfirm,
     Error(String),
     Browser {
@@ -305,12 +310,7 @@ impl App {
     fn validate_and_save(&mut self) -> Option<Resources> {
         match self.validate_resources() {
             Ok(resources) => {
-                self.config.apple1.rom_path = Some(resources.rom_path.clone());
-                match self.save_config() {
-                    Ok(()) => self.form.status = Some("ROM 已校验，路径已保存".into()),
-                    Err(error) => self.form.status = Some(format!("配置未保存：{error}")),
-                }
-                self.dirty = true;
+                self.save_rom_path(&resources);
                 Some(resources)
             }
             Err(error) => {
@@ -321,51 +321,81 @@ impl App {
         }
     }
 
+    fn save_rom_path(&mut self, resources: &Resources) {
+        self.config.apple1.rom_path = Some(resources.rom_path.clone());
+        self.form.status = Some(match self.save_config() {
+            Ok(()) => "ROM 已校验，路径已保存".into(),
+            Err(error) => format!("配置未保存：{error}"),
+        });
+        self.dirty = true;
+    }
+
     fn start_configured(&mut self, save_path: bool) {
-        let resources = if save_path {
-            self.validate_and_save()
-        } else {
-            match self.validate_resources() {
-                Ok(resources) => Some(resources),
-                Err(error) => {
-                    self.form.status = Some(error);
-                    None
-                }
+        match self.validate_resources() {
+            Ok(resources) => self.request_start(resources, save_path),
+            Err(error) => {
+                self.form.status = Some(error);
+                self.dirty = true;
             }
-        };
-        let Some(resources) = resources else {
-            return;
-        };
+        }
+    }
+
+    fn request_start(&mut self, resources: Resources, save_path: bool) {
+        if self.has_active_session() {
+            self.overlay = Some(Overlay::ReplaceConfirm {
+                resources: Box::new(resources),
+                save_path,
+                confirmed: false,
+            });
+            self.dirty = true;
+        } else {
+            self.start_resources(resources, save_path);
+        }
+    }
+
+    fn start_resources(&mut self, resources: Resources, save_path: bool) {
         let machine = match create_machine(&resources.rom, resources.program.as_deref()) {
             Ok(machine) => machine,
             Err(error) => {
                 self.form.status = Some(error.to_string());
+                self.dirty = true;
                 return;
             }
         };
-        let trace = TraceOptions::new(
-            self.launch.trace,
-            self.launch.bus_trace,
-            self.launch.trace_limit.max(1),
-        );
-        let mut session = Session::new(machine, self.launch.max_cycles, trace);
-        match session.boot() {
+        if save_path {
+            self.save_rom_path(&resources);
+        }
+        if let Some(session) = &mut self.session {
+            // Replacing resources is still part of this process's bounded
+            // session: never replenish its budget or discard its trace.
+            session.recreate(machine);
+        } else {
+            let trace = TraceOptions::new(
+                self.launch.trace,
+                self.launch.bus_trace,
+                self.launch.trace_limit.max(1),
+            );
+            self.session = Some(Session::new(machine, self.launch.max_cycles, trace));
+        }
+        self.resources = Some(resources);
+        self.page = Page::Apple1;
+        self.previous_page = Page::Center;
+        self.input.clear();
+        let session = self.session.as_mut().expect("session just installed");
+        let result = session.boot();
+        let _ = session.machine_mut().drain_output();
+        match result {
             Ok(stop) => {
-                let _ = session.machine_mut().drain_output();
-                self.session = Some(session);
-                self.resources = Some(resources);
-                self.page = Page::Apple1;
-                self.previous_page = Page::Center;
-                self.user_paused = false;
                 self.faulted = false;
                 self.fatal_error = None;
-                self.input.clear();
-                self.notify("[NEW MACHINE] 已启动");
                 if let Some(stop) = stop {
                     self.stop(stop);
+                } else {
+                    self.notify("[NEW MACHINE] 已启动");
                 }
             }
             Err(error) => {
+                self.faulted = true;
                 let message = format!("Apple-1 启动失败：{error}");
                 self.fatal_error = Some(message.clone());
                 self.error(message);
@@ -827,6 +857,31 @@ impl App {
                 KeyCode::Enter => self.reboot(),
                 KeyCode::Esc => {}
                 _ => self.overlay = Some(Overlay::RebootConfirm),
+            },
+            Overlay::ReplaceConfirm {
+                resources,
+                save_path,
+                mut confirmed,
+            } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    if confirmed {
+                        self.start_resources(*resources, save_path);
+                    }
+                }
+                _ => {
+                    match key.code {
+                        KeyCode::Left => confirmed = false,
+                        KeyCode::Right => confirmed = true,
+                        KeyCode::Tab | KeyCode::BackTab => confirmed = !confirmed,
+                        _ => {}
+                    }
+                    self.overlay = Some(Overlay::ReplaceConfirm {
+                        resources,
+                        save_path,
+                        confirmed,
+                    });
+                }
             },
             Overlay::Menu {
                 mut kind,
@@ -1585,6 +1640,19 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &Overlay, theme: &Th
             frame.render_widget(Paragraph::new(lines).block(theme.block(format!("{heading}  ←/→ 切换主菜单"))).style(theme.panel()), popup);
         }
         Overlay::RebootConfirm => frame.render_widget(Paragraph::new("重新上电会丢弃当前 RAM 和设备状态；会话周期预算与 trace 保留。\nEnter 确认  Esc 取消").block(theme.block("确认重新上电")).style(theme.panel()).wrap(Wrap { trim: false }), popup),
+        Overlay::ReplaceConfirm { resources, confirmed, .. } => {
+            let lines = vec![
+                Line::from("替换会丢弃当前 RAM、设备状态和输入队列；会话周期预算与 trace 保留。"),
+                Line::from(format!("ROM：{}", resources.rom_path.display())),
+                Line::from("←/→ 或 Tab 选择；Enter 执行；Esc 取消"),
+                Line::from(vec![
+                    Span::styled("[取消]", if !confirmed { theme.selected() } else { theme.base() }),
+                    Span::raw("  "),
+                    Span::styled("[替换并启动]", if *confirmed { theme.selected() } else { theme.base() }),
+                ]),
+            ];
+            frame.render_widget(Paragraph::new(lines).block(theme.block("确认替换当前会话")).style(theme.panel()).wrap(Wrap { trim: false }), popup);
+        }
         Overlay::QuitConfirm => frame.render_widget(Paragraph::new("退出会结束本次进程内会话。\nEnter 确认  Esc 取消").block(theme.block("确认退出")).style(theme.panel()), popup),
         Overlay::Error(error) => frame.render_widget(Paragraph::new(format!("{error}\n\nEnter / Esc 关闭")).block(theme.block("错误")).style(theme.panel()).wrap(Wrap { trim: false }), popup),
         Overlay::Browser { target, directory, entries, selected, error } => {
@@ -1655,6 +1723,135 @@ fn truncate_path(value: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    fn resources(path: &str) -> Resources {
+        Resources {
+            rom: test_rom(),
+            program: Some(vec![0x4c, 0x00, 0x00]),
+            rom_path: PathBuf::from(path),
+        }
+    }
+
+    fn app_with_session(budget: u64) -> App {
+        let mut app = App::new(None);
+        app.config = AppConfig::default();
+        app.config_path = None;
+        app.terminal_size = (120, 40);
+        app.page = Page::Apple1;
+        let resources = resources("/original/rom.bin");
+        app.config.apple1.rom_path = Some(resources.rom_path.clone());
+        let mut session = Session::new(
+            create_machine(&resources.rom, resources.program.as_deref()).unwrap(),
+            Some(budget),
+            TraceOptions::new(false, true, 64),
+        );
+        session.advance(20).unwrap();
+        session
+            .machine_mut()
+            .bus_mut()
+            .load_ram(0x0300, &[0xab])
+            .unwrap();
+        app.session = Some(session);
+        app.resources = Some(resources);
+        app.user_paused = true;
+        app.input.push_back(b'A');
+        app
+    }
+
+    #[test]
+    fn replacement_cancel_preserves_machine_resources_config_and_input() {
+        for cancel in [KeyCode::Esc, KeyCode::Enter] {
+            let mut app = app_with_session(100_000);
+            app.page = Page::Config;
+            let before_registers = app.session.as_ref().unwrap().machine().cpu().registers();
+            app.request_start(resources("/replacement/rom.bin"), true);
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::ReplaceConfirm {
+                    confirmed: false,
+                    ..
+                })
+            ));
+            app.handle_key(KeyEvent::new(cancel, KeyModifiers::NONE));
+            let session = app.session.as_ref().unwrap();
+            assert_eq!(session.total_cpu_cycles(), 20);
+            assert_eq!(session.machine().cpu().registers(), before_registers);
+            assert_eq!(session.machine().bus().ram_slice()[0x0300], 0xab);
+            assert_eq!(
+                app.resources.as_ref().unwrap().rom_path,
+                Path::new("/original/rom.bin")
+            );
+            assert_eq!(
+                app.config.apple1.rom_path.as_deref(),
+                Some(Path::new("/original/rom.bin"))
+            );
+            assert!(
+                app.form.status.is_none(),
+                "cancellation must not attempt a config write"
+            );
+            assert_eq!(app.input, VecDeque::from(*b"A"));
+            assert!(app.user_paused);
+            assert_eq!(app.page, Page::Config);
+            assert!(app.overlay.is_none());
+        }
+    }
+
+    #[test]
+    fn confirmed_replacement_keeps_the_session_budget_and_existing_trace() {
+        let mut app = app_with_session(25);
+        let mut before_trace = Vec::new();
+        app.session
+            .as_ref()
+            .unwrap()
+            .write_trace(&mut before_trace)
+            .unwrap();
+        assert!(!before_trace.is_empty());
+        app.request_start(resources("/replacement/rom.bin"), false);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let session = app.session.as_ref().unwrap();
+        assert_eq!(session.total_cpu_cycles(), 25);
+        assert_eq!(session.remaining(), Some(0));
+        assert_eq!(session.machine().cpu_cycles(), 5);
+        assert_eq!(session.machine().bus().ram_slice()[0x0300], 0);
+        let mut trace = Vec::new();
+        session.write_trace(&mut trace).unwrap();
+        assert!(trace.starts_with(&before_trace));
+        assert!(app.input.is_empty());
+        assert!(app.user_paused);
+        assert!(app.exit);
+        assert_eq!(
+            app.stop_message.as_deref(),
+            Some("[max cycles reached: 25]")
+        );
+        assert!(
+            app.notification.is_none(),
+            "an incomplete boot must not announce success"
+        );
+    }
+
+    #[test]
+    fn replacement_boot_error_retains_a_faulted_machine_for_recovery() {
+        let mut app = app_with_session(100_000);
+        let mut replacement = resources("/replacement/rom.bin");
+        replacement.program = Some(vec![0x02]);
+        app.request_start(replacement, false);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.faulted);
+        assert!(!app.running());
+        assert!(app.session.as_ref().unwrap().total_cpu_cycles() >= 20);
+        assert!(
+            app.fatal_error
+                .as_deref()
+                .unwrap()
+                .contains("unsupported opcode")
+        );
+        assert_eq!(
+            app.resources.as_ref().unwrap().rom_path,
+            Path::new("/replacement/rom.bin")
+        );
+    }
 
     #[test]
     fn narrow_terminal_is_safe() {
