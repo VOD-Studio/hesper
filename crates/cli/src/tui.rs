@@ -24,7 +24,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -99,7 +99,7 @@ enum Overlay {
         target: PathTarget,
         directory: PathBuf,
         entries: Vec<DirEntry>,
-        selected: usize,
+        state: ListState,
         error: Option<String>,
     },
 }
@@ -953,27 +953,29 @@ impl App {
                 target,
                 directory,
                 entries,
-                mut selected,
+                mut state,
                 error,
             } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Up => {
-                    selected = selected.saturating_sub(1);
+                    state.select(Some(state.selected().unwrap_or(0).saturating_sub(1)));
                     self.overlay = Some(Overlay::Browser {
                         target,
                         directory,
                         entries,
-                        selected,
+                        state,
                         error,
                     });
                 }
                 KeyCode::Down => {
-                    selected = (selected + 1).min(entries.len().saturating_sub(1));
+                    state.select(Some(
+                        (state.selected().unwrap_or(0) + 1).min(entries.len().saturating_sub(1)),
+                    ));
                     self.overlay = Some(Overlay::Browser {
                         target,
                         directory,
                         entries,
-                        selected,
+                        state,
                         error,
                     });
                 }
@@ -982,7 +984,7 @@ impl App {
                     self.overlay = Some(browser(target, parent));
                 }
                 KeyCode::Enter => {
-                    if let Some(entry) = entries.get(selected) {
+                    if let Some(entry) = state.selected().and_then(|index| entries.get(index)) {
                         if entry.directory {
                             self.overlay = Some(browser(target, entry.path.clone()));
                         } else if let Some(text) = entry.path.to_str() {
@@ -999,7 +1001,7 @@ impl App {
                             target,
                             directory,
                             entries,
-                            selected,
+                            state,
                             error,
                         });
                     }
@@ -1009,7 +1011,7 @@ impl App {
                         target,
                         directory,
                         entries,
-                        selected,
+                        state,
                         error,
                     })
                 }
@@ -1111,7 +1113,7 @@ impl App {
                 .alignment(Alignment::Center),
             rows[4],
         );
-        if let Some(overlay) = &self.overlay {
+        if let Some(overlay) = &mut self.overlay {
             draw_overlay(frame, area, overlay, &theme);
         }
         self.dirty = false;
@@ -1206,14 +1208,14 @@ fn browser(target: PathTarget, directory: PathBuf) -> Overlay {
             target,
             directory,
             entries,
-            selected: 0,
+            state: ListState::default().with_selected(Some(0)),
             error: None,
         },
         Err(error) => Overlay::Browser {
             target,
             directory,
             entries: Vec::new(),
-            selected: 0,
+            state: ListState::default(),
             error: Some(error),
         },
     }
@@ -1655,7 +1657,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     );
 }
 
-fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &Overlay, theme: &Theme) {
+fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme: &Theme) {
     let width = area.width.saturating_sub(8).clamp(20, 70);
     let height = match overlay {
         Overlay::Menu { kind, .. } => (menu_entries(*kind).len() as u16 + 3).min(area.height),
@@ -1751,7 +1753,7 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &Overlay, theme: &Th
             target,
             directory,
             entries,
-            selected,
+            state,
             error,
         } => {
             let header = format!(
@@ -1766,32 +1768,39 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &Overlay, theme: &Th
                     usize::from(popup.width.saturating_sub(6))
                 )
             );
-            let mut lines = vec![Line::from(
-                "Backspace 上一级；Enter 进入目录或选择文件；Esc 返回",
-            )];
+            let block = theme.block(header);
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+            let rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(u16::from(error.is_some())),
+                Constraint::Min(0),
+            ])
+            .split(inner);
+            frame.render_widget(
+                Paragraph::new("Backspace 上一级；Enter 选择；Esc 返回").style(theme.panel()),
+                rows[0],
+            );
             if let Some(error) = error {
-                lines.push(Line::from(Span::styled(error, theme.status())));
+                frame.render_widget(
+                    Paragraph::new(error.as_str()).style(theme.status()),
+                    rows[1],
+                );
             }
-            for (index, entry) in entries.iter().enumerate().take(15) {
+            let items = entries.iter().map(|entry| {
                 let label = if entry.directory {
                     format!("{}/", entry.name)
                 } else {
                     entry.name.clone()
                 };
-                lines.push(Line::from(Span::styled(
-                    truncate_path(&label, usize::from(popup.width.saturating_sub(6))),
-                    if index == *selected {
-                        theme.selected()
-                    } else {
-                        theme.base()
-                    },
-                )));
-            }
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .block(theme.block(header))
-                    .style(theme.panel()),
-                popup,
+                ListItem::new(truncate_path(&label, usize::from(rows[2].width)))
+            });
+            frame.render_stateful_widget(
+                List::new(items)
+                    .style(theme.panel())
+                    .highlight_style(theme.selected()),
+                rows[2],
+                state,
             );
         }
     }
@@ -2126,6 +2135,58 @@ mod tests {
             assert!(!app.exit);
             assert!(app.overlay.is_none());
         }
+    }
+
+    #[test]
+    fn file_browser_scrolls_with_selection_and_selects_the_visible_file() {
+        let mut app = App::new(None);
+        app.page = Page::Config;
+        app.overlay = Some(Overlay::Browser {
+            target: PathTarget::Rom,
+            directory: PathBuf::from("/files"),
+            entries: (0..512)
+                .map(|index| {
+                    let name = format!("entry-{index:03}.bin");
+                    DirEntry {
+                        path: PathBuf::from("/files").join(&name),
+                        name,
+                        directory: false,
+                    }
+                })
+                .collect(),
+            state: ListState::default().with_selected(Some(0)),
+            error: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        for _ in 0..20 {
+            app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("entry-020.bin"));
+        assert!(!text.contains("entry-000.bin"));
+        // Navigation is bounded at both ends, and resizing preserves a
+        // visible selection even when the viewport becomes narrower.
+        for _ in 0..512 {
+            app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        terminal.backend_mut().resize(44, 30);
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(buffer_text(terminal.backend().buffer()).contains("entry-511.bin"));
+        for _ in 0..512 {
+            app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        }
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(buffer_text(terminal.backend().buffer()).contains("entry-000.bin"));
+        for _ in 0..17 {
+            app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(buffer_text(terminal.backend().buffer()).contains("entry-017.bin"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.form.rom, "/files/entry-017.bin");
+        assert!(app.overlay.is_none());
     }
 
     #[test]
