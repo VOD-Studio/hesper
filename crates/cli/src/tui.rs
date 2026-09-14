@@ -142,7 +142,7 @@ struct DemoView {
 
 struct App {
     page: Page,
-    previous_page: Page,
+    page_history: Vec<Page>,
     overlay: Option<Overlay>,
     config: AppConfig,
     config_path: Option<PathBuf>,
@@ -195,7 +195,7 @@ impl App {
         let direct = launch.direct;
         Self {
             page: if direct { Page::Config } else { Page::Center },
-            previous_page: Page::Center,
+            page_history: Vec::new(),
             overlay: None,
             config,
             config_path,
@@ -380,8 +380,7 @@ impl App {
             self.session = Some(Session::new(machine, self.launch.max_cycles, trace));
         }
         self.resources = Some(resources);
-        self.page = Page::Apple1;
-        self.previous_page = Page::Center;
+        self.open_page(Page::Apple1);
         self.input.clear();
         let session = self.session.as_mut().expect("session just installed");
         let result = session.boot();
@@ -467,19 +466,44 @@ impl App {
     }
 
     fn return_to_center(&mut self) {
-        self.page = Page::Center;
+        self.open_page(Page::Center);
         self.overlay = None;
+    }
+
+    fn open_page(&mut self, page: Page) {
+        if page == self.page {
+            return;
+        }
+        if matches!(page, Page::Info | Page::Help | Page::Settings) {
+            if let Some(index) = self
+                .page_history
+                .iter()
+                .position(|previous| *previous == page)
+            {
+                // Revisit the existing level instead of creating a cycle.
+                self.page_history.truncate(index);
+            } else {
+                self.page_history.push(self.page);
+            }
+        } else {
+            self.page_history.clear();
+        }
+        // At most the origin and two other auxiliary pages are retained.
+        self.page = page;
+        self.dirty = true;
+    }
+
+    fn return_to_previous_page(&mut self) {
+        self.page = self.page_history.pop().unwrap_or(Page::Center);
         self.dirty = true;
     }
 
     fn open_help(&mut self) {
-        self.previous_page = self.page;
-        self.page = Page::Help;
-        self.dirty = true;
+        self.open_page(Page::Help);
     }
 
     fn run_demo(&mut self) {
-        self.page = Page::Demo;
+        self.open_page(Page::Demo);
         self.demo = Some(
             match run_demo_with_trace(crate::DEFAULT_MAX_STEPS, |_, _| {}) {
                 Ok(result) => DemoView {
@@ -675,8 +699,7 @@ impl App {
             },
             Page::Info | Page::Help => {
                 if key.code == KeyCode::Esc {
-                    self.page = self.previous_page;
-                    self.dirty = true;
+                    self.return_to_previous_page();
                 }
             }
             Page::Settings => self.settings_key(key),
@@ -694,9 +717,9 @@ impl App {
             KeyCode::Enter => {
                 if self.selected_machine == 0 {
                     if self.session.is_some() {
-                        self.page = Page::Apple1;
+                        self.open_page(Page::Apple1);
                     } else if self.form.rom.is_empty() {
-                        self.page = Page::Config;
+                        self.open_page(Page::Config);
                     } else {
                         self.start_configured(true);
                     }
@@ -704,8 +727,8 @@ impl App {
                     self.run_demo();
                 }
             }
-            KeyCode::Char('c') | KeyCode::Char('C') => self.page = Page::Config,
-            KeyCode::Char('i') | KeyCode::Char('I') => self.page = Page::Info,
+            KeyCode::Char('c') | KeyCode::Char('C') => self.open_page(Page::Config),
+            KeyCode::Char('i') | KeyCode::Char('I') => self.open_page(Page::Info),
             KeyCode::F(1) => self.open_help(),
             _ => {}
         }
@@ -823,7 +846,7 @@ impl App {
     fn settings_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                self.page = self.previous_page;
+                self.return_to_previous_page();
             }
             KeyCode::Up => self.settings_row = self.settings_row.saturating_sub(1),
             KeyCode::Down => self.settings_row = (self.settings_row + 1).min(4),
@@ -1024,11 +1047,11 @@ impl App {
         match (kind, selected) {
             (MenuKind::Emulator, 0) => self.return_to_center(),
             (MenuKind::Emulator, 1) => {
-                self.page = Page::Config;
+                self.open_page(Page::Config);
             }
             (MenuKind::Emulator, 2) => self.run_demo(),
             (MenuKind::Session, 0) => {
-                self.page = Page::Apple1;
+                self.open_page(Page::Apple1);
             }
             (MenuKind::Session, 1) => {
                 self.user_paused = !self.user_paused;
@@ -1046,8 +1069,7 @@ impl App {
             (MenuKind::Session, 5) => self.return_to_center(),
             (MenuKind::Session, 6) => self.overlay = Some(Overlay::QuitConfirm),
             (MenuKind::Display, 0) => {
-                self.previous_page = self.page;
-                self.page = Page::Settings;
+                self.open_page(Page::Settings);
             }
             (MenuKind::Help, 0) => self.open_help(),
             _ => {}
@@ -1684,7 +1706,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。粘贴仅在机器屏幕页生效，CR/LF 会规范为单个 CR。";
+    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页可粘贴单行路径；机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("帮助"))
@@ -2364,6 +2386,52 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         assert!(status_text(&terminal).contains("[故障]"));
         assert!(status_text(&terminal).contains("[CLEAR]"));
+    }
+
+    #[test]
+    fn reopening_auxiliary_pages_preserves_the_original_return_destination() {
+        for (kind, page) in [
+            (MenuKind::Help, Page::Help),
+            (MenuKind::Display, Page::Settings),
+        ] {
+            let mut app = app_with_session(100_000);
+            for _ in 0..20 {
+                app.handle_key(KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
+                app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+                if kind == MenuKind::Display {
+                    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+                }
+                app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                assert_eq!(app.page, page);
+                assert_eq!(app.page_history, [Page::Apple1]);
+            }
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(app.page, Page::Apple1);
+            assert!(app.page_history.is_empty());
+            assert!(app.user_paused);
+        }
+    }
+
+    #[test]
+    fn nested_help_and_settings_return_without_cycles_or_stale_history() {
+        let mut app = app_with_session(100_000);
+        app.execute_menu(MenuKind::Display, 0);
+        app.execute_menu(MenuKind::Help, 0);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.page, Page::Settings);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.page, Page::Apple1);
+        for _ in 0..20 {
+            app.open_help();
+            app.execute_menu(MenuKind::Display, 0);
+            app.open_help();
+            assert_eq!(app.page_history, [Page::Apple1]);
+        }
+        app.return_to_center();
+        app.center_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.page, Page::Center);
+        assert!(app.page_history.is_empty());
     }
 
     #[test]
