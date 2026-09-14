@@ -49,7 +49,7 @@ make wozmon                               # 下载并校验到 .cache/apple1/woz
 cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin
 ```
 
-也可以先运行 `cargo run -p hesper`，在启动中心选择 Apple-1；首次使用在配置页输入 ROM 路径并校验。TUI 配置只保存 ROM 路径和显示偏好，不保存机器内存或会话。
+也可以先运行 `cargo run -p hesper`，在启动中心选择 Apple-1。配置页用方向键或 Tab / Shift+Tab 选择字段，Enter 进入编辑，再按 Enter 确认，Esc 放弃本次编辑；路径可按 F4 浏览。编辑时支持左右键、Home / End、Ctrl+U 清空和单行粘贴。完成后选择“校验并保存”或“启动”。TUI 配置只保存 ROM 路径和显示偏好，不保存机器内存或会话。
 
 ## Workspace 结构
 

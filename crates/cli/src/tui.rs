@@ -162,13 +162,74 @@ enum ConfigFocus {
     Cancel,
 }
 
+impl ConfigFocus {
+    fn adjacent(self, backwards: bool) -> Self {
+        let fields = [
+            Self::Rom,
+            Self::Program,
+            Self::ProgramAddress,
+            Self::Validate,
+            Self::Launch,
+            Self::Cancel,
+        ];
+        let index = fields.iter().position(|field| *field == self).unwrap();
+        fields[(index + if backwards { fields.len() - 1 } else { 1 }) % fields.len()]
+    }
+}
+
+#[derive(Debug)]
+struct ConfigEdit {
+    text: String,
+    /// UTF-8 byte boundary; terminal placement uses display-cell width.
+    cursor: usize,
+}
+
+impl ConfigEdit {
+    fn new(text: String) -> Self {
+        let cursor = text.len();
+        Self { text, cursor }
+    }
+
+    fn insert(&mut self, text: &str) {
+        self.text.insert_str(self.cursor, text);
+        self.cursor += text.len();
+    }
+
+    fn previous(&self) -> usize {
+        self.text[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(index, _)| index)
+    }
+
+    fn next(&self) -> usize {
+        self.cursor
+            + self.text[self.cursor..]
+                .chars()
+                .next()
+                .map_or(0, char::len_utf8)
+    }
+}
+
 #[derive(Debug)]
 struct ConfigForm {
     rom: String,
     program: String,
     program_address: String,
     focus: ConfigFocus,
+    edit: Option<ConfigEdit>,
     status: Option<String>,
+}
+
+impl ConfigForm {
+    fn focused_text(&mut self) -> Option<&mut String> {
+        match self.focus {
+            ConfigFocus::Rom => Some(&mut self.rom),
+            ConfigFocus::Program => Some(&mut self.program),
+            ConfigFocus::ProgramAddress => Some(&mut self.program_address),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -250,6 +311,7 @@ impl App {
                 program,
                 program_address: format!("0x{:04X}", launch.program_address),
                 focus: ConfigFocus::Rom,
+                edit: None,
                 status: None,
             },
             session: None,
@@ -552,6 +614,7 @@ impl App {
             }
         } else {
             self.page_history.clear();
+            self.form.edit = None;
         }
         // At most the origin and two other auxiliary pages are retained.
         self.page = page;
@@ -592,10 +655,13 @@ impl App {
     }
 
     fn open_browser(&mut self, target: PathTarget) {
-        let text = match target {
-            PathTarget::Rom => &self.form.rom,
-            PathTarget::Program => &self.form.program,
-        };
+        let text = self.form.edit.as_ref().map_or_else(
+            || match target {
+                PathTarget::Rom => &self.form.rom,
+                PathTarget::Program => &self.form.program,
+            },
+            |edit| &edit.text,
+        );
         let directory = Path::new(text)
             .parent()
             .filter(|path| path.is_dir())
@@ -640,11 +706,13 @@ impl App {
             return;
         }
         if self.page == Page::Config {
-            let (field, label) = match self.form.focus {
-                ConfigFocus::Rom => (&mut self.form.rom, "路径"),
-                ConfigFocus::Program => (&mut self.form.program, "路径"),
-                ConfigFocus::ProgramAddress => (&mut self.form.program_address, "地址"),
-                _ => return,
+            let Some(edit) = &mut self.form.edit else {
+                return;
+            };
+            let label = if self.form.focus == ConfigFocus::ProgramAddress {
+                "地址"
+            } else {
+                "路径"
             };
             if text.chars().any(char::is_control) {
                 self.form.status = Some(format!(
@@ -652,7 +720,7 @@ impl App {
                 ));
             } else {
                 // Paths are literal text, including spaces and shell syntax.
-                field.push_str(&text);
+                edit.insert(&text);
                 self.form.status = None;
             }
             self.dirty = true;
@@ -927,10 +995,6 @@ impl App {
     }
 
     fn config_key(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Esc {
-            self.return_to_center();
-            return;
-        }
         if key.code == KeyCode::F(4) {
             match self.form.focus {
                 ConfigFocus::Rom => self.open_browser(PathTarget::Rom),
@@ -939,61 +1003,88 @@ impl App {
             }
             return;
         }
-        if key.code == KeyCode::Tab {
-            self.form.focus = match self.form.focus {
-                ConfigFocus::Rom => ConfigFocus::Program,
-                ConfigFocus::Program => ConfigFocus::ProgramAddress,
-                ConfigFocus::ProgramAddress => ConfigFocus::Validate,
-                ConfigFocus::Validate => ConfigFocus::Launch,
-                ConfigFocus::Launch => ConfigFocus::Cancel,
-                ConfigFocus::Cancel => ConfigFocus::Rom,
-            };
-            self.dirty = true;
-            return;
-        }
-        match self.form.focus {
-            ConfigFocus::Rom | ConfigFocus::Program | ConfigFocus::ProgramAddress => {
-                let text = match self.form.focus {
-                    ConfigFocus::Rom => &mut self.form.rom,
-                    ConfigFocus::Program => &mut self.form.program,
-                    ConfigFocus::ProgramAddress => &mut self.form.program_address,
-                    _ => unreachable!(),
-                };
-                match key.code {
-                    KeyCode::Backspace => {
-                        text.pop();
-                        self.form.status = None;
+        if let Some(edit) = &mut self.form.edit {
+            match key.code {
+                KeyCode::Esc => {
+                    self.form.edit = None;
+                    self.form.status = None;
+                }
+                KeyCode::Enter => {
+                    let edit = self.form.edit.take().unwrap();
+                    if let Some(field) = self.form.focused_text() {
+                        *field = edit.text;
                     }
-                    KeyCode::Char('u' | 'U') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        text.clear();
-                        self.form.status = None;
-                    }
-                    KeyCode::Enter => {
-                        self.form.focus = match self.form.focus {
-                            ConfigFocus::Rom => ConfigFocus::Program,
-                            ConfigFocus::Program => ConfigFocus::ProgramAddress,
-                            _ => ConfigFocus::Validate,
-                        };
-                    }
-                    KeyCode::Char(ch)
-                        if !key
+                    self.form.status = None;
+                }
+                KeyCode::Left => edit.cursor = edit.previous(),
+                KeyCode::Right => edit.cursor = edit.next(),
+                KeyCode::Home => edit.cursor = 0,
+                KeyCode::End => edit.cursor = edit.text.len(),
+                KeyCode::Backspace => {
+                    let start = edit.previous();
+                    edit.text.drain(start..edit.cursor);
+                    edit.cursor = start;
+                    self.form.status = None;
+                }
+                KeyCode::Delete => {
+                    edit.text.drain(edit.cursor..edit.next());
+                    self.form.status = None;
+                }
+                KeyCode::Char('u' | 'U') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    edit.text.clear();
+                    edit.cursor = 0;
+                    self.form.status = None;
+                }
+                KeyCode::Char(ch)
+                    if !ch.is_control()
+                        && !key
                             .modifiers
                             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                    {
-                        text.push(ch);
+                {
+                    edit.insert(&ch.to_string());
+                    self.form.status = None;
+                }
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => self.return_to_center(),
+            KeyCode::Up | KeyCode::BackTab => self.form.focus = self.form.focus.adjacent(true),
+            KeyCode::Down | KeyCode::Tab => {
+                self.form.focus = self
+                    .form
+                    .focus
+                    .adjacent(key.modifiers.contains(KeyModifiers::SHIFT));
+            }
+            KeyCode::Left | KeyCode::Right
+                if matches!(
+                    self.form.focus,
+                    ConfigFocus::Validate | ConfigFocus::Launch | ConfigFocus::Cancel
+                ) =>
+            {
+                self.form.focus = match (self.form.focus, key.code) {
+                    (ConfigFocus::Validate, KeyCode::Left) => ConfigFocus::Cancel,
+                    (ConfigFocus::Cancel, KeyCode::Right) => ConfigFocus::Validate,
+                    (_, KeyCode::Left) => self.form.focus.adjacent(true),
+                    _ => self.form.focus.adjacent(false),
+                };
+            }
+            KeyCode::Enter => match self.form.focus {
+                ConfigFocus::Validate => {
+                    let _ = self.validate_and_save();
+                }
+                ConfigFocus::Launch => self.start_configured(true),
+                ConfigFocus::Cancel => self.return_to_center(),
+                _ => {
+                    if let Some(text) = self.form.focused_text().cloned() {
+                        self.form.edit = Some(ConfigEdit::new(text));
                         self.form.status = None;
                     }
-                    _ => {}
                 }
-            }
-            ConfigFocus::Validate if key.code == KeyCode::Enter => {
-                let _ = self.validate_and_save();
-            }
-            ConfigFocus::Launch if key.code == KeyCode::Enter => self.start_configured(true),
-            ConfigFocus::Cancel if key.code == KeyCode::Enter => self.return_to_center(),
+            },
             _ => {}
         }
-        self.dirty = true;
     }
 
     fn settings_key(&mut self, key: KeyEvent) {
@@ -1165,11 +1256,14 @@ impl App {
                         if entry.directory {
                             self.overlay = Some(browser(target, entry.path.clone()));
                         } else if let Some(text) = entry.path.to_str() {
-                            if target == PathTarget::Rom {
+                            if let Some(edit) = &mut self.form.edit {
+                                *edit = ConfigEdit::new(text.to_owned());
+                            } else if target == PathTarget::Rom {
                                 self.form.rom = text.to_owned();
                             } else {
                                 self.form.program = text.to_owned();
                             }
+                            self.form.status = None;
                         } else {
                             self.error("选中的文件路径不是 UTF-8，不能写入配置");
                         }
@@ -1489,12 +1583,32 @@ fn footer(app: &App, width: u16, theme: &Theme) -> Line<'static> {
                 ("F3", "侧栏"),
                 ("Ctrl+C", "退出"),
             ],
-            Page::Config => vec![
-                ("Enter", "确认"),
-                ("Tab", "切换"),
-                ("F4", "浏览"),
-                ("Esc", "返回"),
-            ],
+            Page::Config => {
+                let field = matches!(
+                    app.form.focus,
+                    ConfigFocus::Rom | ConfigFocus::Program | ConfigFocus::ProgramAddress
+                );
+                let mut hints = if app.form.edit.is_some() {
+                    vec![
+                        ("Enter", "确认"),
+                        ("Esc", "取消编辑"),
+                        ("Ctrl+U", "清空"),
+                        (theme.horizontal_keys(), "光标"),
+                        ("Home/End", "首尾"),
+                    ]
+                } else {
+                    vec![
+                        ("Enter", if field { "编辑" } else { "执行" }),
+                        ("Esc", "返回"),
+                        (vertical, "选择"),
+                        ("Tab/S-Tab", "切换"),
+                    ]
+                };
+                if matches!(app.form.focus, ConfigFocus::Rom | ConfigFocus::Program) {
+                    hints.push(("F4", "浏览"));
+                }
+                hints
+            }
             Page::Demo => vec![("R", "重跑"), ("Esc", "返回"), ("F10", "菜单")],
             Page::Settings => vec![
                 (
@@ -2001,50 +2115,183 @@ fn projected(byte: u8) -> char {
     }
 }
 
-fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
-    let focused = |field| {
-        if app.form.focus == field {
-            theme.selected()
-        } else {
-            theme.text()
+/// Keep the caret inside the field even for long paths and wide characters.
+fn edit_view(edit: &ConfigEdit, width: u16) -> (&str, u16) {
+    let mut start = edit.cursor;
+    let mut cells = 0;
+    for (index, ch) in edit.text[..edit.cursor].char_indices().rev() {
+        let next = ch.to_string().width();
+        if cells + next >= usize::from(width) {
+            break;
         }
-    };
-    let title = "Apple-1 启动配置";
-    let path = app.config_path.as_ref().map_or_else(
-        || "配置文件：不可用".into(),
-        |path| format!("配置文件：{}", path.display()),
-    );
-    let lines = vec![
-        Line::from("ROM 必须是已固定 SHA-256 的 256 B Woz Monitor 镜像。"),
-        Line::from(vec![
-            Span::styled("ROM 路径: ", theme.muted()),
-            Span::styled(&app.form.rom, focused(ConfigFocus::Rom)),
-        ]),
-        Line::from(vec![
-            Span::styled("程序路径（可选）: ", theme.muted()),
-            Span::styled(&app.form.program, focused(ConfigFocus::Program)),
-        ]),
-        Line::from(vec![
-            Span::styled("程序加载地址: ", theme.muted()),
-            Span::styled(
-                format!("[{}]", app.form.program_address),
-                focused(ConfigFocus::ProgramAddress),
-            ),
-        ]),
-        Line::from("地址格式：十进制 / 0xE000 / $E000；Tab 切换，Ctrl+U 清空字段。"),
-        Line::from("F4 浏览路径目录；目录最多显示 512 项，不递归扫描。"),
-        Line::from(Span::styled("[校验并保存]", focused(ConfigFocus::Validate))),
-        Line::from(Span::styled("[启动]", focused(ConfigFocus::Launch))),
-        Line::from(Span::styled("[取消]", focused(ConfigFocus::Cancel))),
-        Line::from(path),
-        Line::from(app.form.status.as_deref().unwrap_or("")),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(theme.block(title))
-            .style(theme.text())
-            .wrap(Wrap { trim: false }),
+        cells += next;
+        start = index;
+    }
+    (&edit.text[start..], cells as u16)
+}
+
+fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
+    let card = centered(
+        Rect::new(0, 0, area.width.saturating_sub(4).min(96), 26),
         area,
+    );
+    let block = theme.block(" 启动配置 ").padding(Padding::new(2, 2, 1, 1));
+    let inner = block.inner(card);
+    frame.render_widget(block, card);
+    let rows = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(4),
+        Constraint::Length(4),
+        Constraint::Length(4),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Apple-1", theme.title()),
+            Span::styled("  /  启动资源", theme.muted()),
+        ])),
+        rows[0],
+    );
+    for (index, (focus, label, value, placeholder, hint)) in [
+        (
+            ConfigFocus::Rom,
+            "01  ROM 镜像 · 必填",
+            app.form.rom.as_str(),
+            "选择 Woz Monitor 镜像",
+            "Woz Monitor · 256 B · 启动时校验镜像",
+        ),
+        (
+            ConfigFocus::Program,
+            "02  程序文件 · 可选",
+            app.form.program.as_str(),
+            "未选择程序",
+            "留空则只启动 Woz Monitor",
+        ),
+        (
+            ConfigFocus::ProgramAddress,
+            "03  加载地址",
+            app.form.program_address.as_str(),
+            "输入程序加载地址",
+            "十进制 / 0xE000 / $E000",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let field_rows =
+            Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).split(rows[index + 1]);
+        let selected = app.form.focus == focus;
+        let edit = app.form.edit.as_ref().filter(|_| selected);
+        let active = selected && app.overlay.is_none();
+        let mut block = theme.block(format!(" {label} "));
+        if active {
+            let style = if edit.is_some() {
+                theme.status()
+            } else {
+                theme.title()
+            };
+            block = block.border_style(style).title_style(style).title(
+                Line::from(if edit.is_some() {
+                    " 编辑中 "
+                } else {
+                    " Enter 编辑 "
+                })
+                .right_aligned(),
+            );
+        }
+        let input = block.inner(field_rows[0]).inner(Margin::new(1, 0));
+        frame.render_widget(block, field_rows[0]);
+        if let Some(edit) = edit {
+            let (visible, cursor) = edit_view(edit, input.width);
+            frame.render_widget(Paragraph::new(visible).style(theme.text()), input);
+            if active && input.width > 0 {
+                frame.set_cursor_position((input.x + cursor, input.y));
+            }
+        } else {
+            let (text, style) = if value.is_empty() {
+                (placeholder.to_owned(), theme.muted())
+            } else {
+                (truncate_path(value, usize::from(input.width)), theme.text())
+            };
+            frame.render_widget(
+                Paragraph::new(text).style(if active { theme.selected() } else { style }),
+                input,
+            );
+        }
+        frame.render_widget(
+            Paragraph::new(format!(" {hint}")).style(theme.muted()),
+            field_rows[1],
+        );
+    }
+    let status = app
+        .form
+        .status
+        .as_deref()
+        .unwrap_or(if app.form.edit.is_some() {
+            "Enter 确认修改，Esc 放弃本次编辑。"
+        } else {
+            "选择字段后按 Enter 编辑；路径也可用 F4 浏览。"
+        });
+    frame.render_widget(
+        Paragraph::new(status)
+            .style(if app.form.status.is_some() {
+                theme.status()
+            } else {
+                theme.muted()
+            })
+            .wrap(Wrap { trim: false }),
+        rows[4],
+    );
+    let buttons = Layout::horizontal([
+        Constraint::Length(14),
+        Constraint::Length(2),
+        Constraint::Length(10),
+        Constraint::Length(2),
+        Constraint::Length(8),
+    ])
+    .split(rows[5]);
+    for (index, (focus, label)) in [
+        (ConfigFocus::Validate, "校验并保存"),
+        (ConfigFocus::Launch, "启动"),
+        (ConfigFocus::Cancel, "取消"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let selected = app.form.focus == focus && app.overlay.is_none();
+        let style = if selected {
+            theme.primary()
+        } else if focus == ConfigFocus::Launch {
+            theme.title()
+        } else {
+            theme.muted()
+        };
+        frame.render_widget(
+            Paragraph::new(label)
+                .centered()
+                .block(theme.block("").border_style(if selected {
+                    theme.title()
+                } else {
+                    theme.muted()
+                }))
+                .style(style),
+            buttons[index * 2],
+        );
+    }
+    let path = app
+        .config_path
+        .as_ref()
+        .map_or_else(|| "不可用".into(), |path| path.display().to_string());
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("配置文件"),
+            Line::from(truncate_path(&path, usize::from(rows[6].width))),
+        ])
+        .style(theme.muted()),
+        rows[6],
     );
 }
 
@@ -2108,7 +2355,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n鼠标：点击顶栏展开下拉菜单，移动选择，点击菜单项执行；再次点击标题或点击外部收起。显示设置可开关鼠标菜单，旧配置若已关闭，可用 F10 进入设置开启。\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页可粘贴单行路径；机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
+    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n鼠标：点击顶栏展开下拉菜单，移动选择，点击菜单项执行；再次点击标题或点击外部收起。显示设置可开关鼠标菜单，旧配置若已关闭，可用 F10 进入设置开启。\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页：方向键或 Tab/Shift+Tab 选择，Enter 进入编辑，再按 Enter 确认，Esc 取消编辑。编辑时可粘贴单行文本，左右键/Home/End 移动光标，Ctrl+U 清空；路径可按 F4 浏览。机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("帮助"))
@@ -2457,6 +2704,149 @@ mod tests {
     }
 
     #[test]
+    fn config_fields_require_enter_and_escape_cancels_only_the_edit() {
+        let mut app = App::new(None);
+        app.page = Page::Config;
+        app.terminal_size = (120, 40);
+        app.form.rom = "/rom.bin".into();
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_event(Event::Paste("ignored".into()));
+        assert_eq!(app.form.rom, "/rom.bin", "selection must not edit a field");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.page, Page::Config, "Escape cancels editing first");
+        assert_eq!(app.form.rom, "/rom.bin");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.form.focus, ConfigFocus::Program);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_event(Event::Paste("/program.bin".into()));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.form.program, "/program.bin");
+        assert_eq!(app.form.focus, ConfigFocus::Program);
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.form.focus, ConfigFocus::Rom);
+    }
+
+    #[test]
+    fn config_edit_moves_and_deletes_at_unicode_boundaries() {
+        let mut app = App::new(None);
+        app.page = Page::Config;
+        app.terminal_size = (120, 40);
+        app.form.rom = "原始.bin".into();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        app.handle_event(Event::Paste("甲乙.bin".into()));
+        for key in [KeyCode::Home, KeyCode::Right, KeyCode::Delete] {
+            app.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
+        }
+        app.handle_event(Event::Paste("丙".into()));
+        assert_eq!(app.form.edit.as_ref().unwrap().text, "甲丙.bin");
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.form.edit.as_ref().unwrap().text, "甲.bin");
+        // Navigation and modified host shortcuts cannot mutate or commit a draft.
+        for key in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Up, KeyCode::Down] {
+            app.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+        assert_eq!(app.form.focus, ConfigFocus::Rom);
+        assert_eq!(app.form.rom, "原始.bin");
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        app.handle_event(Event::Paste(".bak".into()));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.form.rom, "甲.bin.bak");
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn config_layout_keeps_actions_and_edit_cursor_visible_after_resize() {
+        for mode in [ColorMode::Truecolor, ColorMode::Mono] {
+            let mut app = App::new(None);
+            app.page = Page::Config;
+            app.config.ui.color_mode = mode;
+            app.form.rom = format!("/{}wozmon.bin", "很长的目录/".repeat(30));
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            assert!(!terminal.backend().cursor_visible());
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            for (width, height) in [(180, 50), (80, 30), (44, 30), (120, 40)] {
+                terminal.backend_mut().resize(width, height);
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let text = buffer_text(terminal.backend().buffer()).replace(' ', "");
+                for label in [
+                    "校验并保存",
+                    "启动",
+                    "取消",
+                    "配置文件",
+                    "编辑中",
+                    "wozmon.bin",
+                ] {
+                    assert!(text.contains(label), "{width}x{height}: {label}");
+                }
+                assert!(terminal.backend().cursor_visible());
+                let caret = terminal.backend().cursor_position();
+                assert!(caret.x < width - 3 && caret.y < height - 2);
+                let theme = Theme::from_config(&app.config);
+                let hints = footer(&app, width, &theme).to_string();
+                assert!(hints.contains("Enter 确认") && hints.contains("Esc 取消编辑"));
+                app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let home = terminal.backend().cursor_position();
+                assert_eq!(home.y, caret.y);
+                assert!(home.x < caret.x);
+                app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+            }
+            app.handle_key(KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            assert!(!terminal.backend().cursor_visible());
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            assert!(terminal.backend().cursor_visible());
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            assert!(!terminal.backend().cursor_visible());
+            assert_eq!(app.page, Page::Config);
+        }
+    }
+
+    #[test]
+    fn config_browser_returns_to_the_draft_and_escape_restores_the_original() {
+        let mut app = App::new(None);
+        app.page = Page::Config;
+        app.terminal_size = (120, 40);
+        app.form.rom = "/original.bin".into();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Browser {
+                target: PathTarget::Rom,
+                ..
+            })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.form.edit.is_some());
+        app.overlay = Some(Overlay::Browser {
+            target: PathTarget::Rom,
+            directory: PathBuf::from("/files"),
+            entries: vec![DirEntry {
+                path: PathBuf::from("/files/selected.bin"),
+                name: "selected.bin".into(),
+                directory: false,
+            }],
+            state: ListState::default().with_selected(Some(0)),
+            error: None,
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
+        assert_eq!(app.form.edit.as_ref().unwrap().text, "/files/selected.bin");
+        assert_eq!(app.form.rom, "/original.bin");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.form.rom, "/original.bin");
+        assert_eq!(app.page, Page::Config);
+    }
+
+    #[test]
     fn program_address_field_supports_navigation_editing_and_single_line_paste() {
         let mut app = App::new(Some(Apple1Launch {
             program_address: 0xE000,
@@ -2473,21 +2863,22 @@ mod tests {
         }
         app.handle_key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
         assert!(app.overlay.is_none(), "an address is not a file path");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        assert!(app.form.program_address.is_empty());
+        assert!(app.form.edit.as_ref().unwrap().text.is_empty());
         for ch in "0xE001".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         app.handle_event(Event::Paste("0".into()));
-        assert_eq!(app.form.program_address, "0xE000");
+        assert_eq!(app.form.edit.as_ref().unwrap().text, "0xE000");
         assert_eq!(
-            parse_program_address(&app.form.program_address).unwrap(),
+            parse_program_address(&app.form.edit.as_ref().unwrap().text).unwrap(),
             0xE000
         );
         for paste in ["\n300", "\r300", "\0", "\u{1b}"] {
             app.handle_event(Event::Paste(paste.into()));
-            assert_eq!(app.form.program_address, "0xE000");
+            assert_eq!(app.form.edit.as_ref().unwrap().text, "0xE000");
             assert!(
                 app.form
                     .status
@@ -2500,14 +2891,22 @@ mod tests {
         assert_eq!(app.form.program, "/program.bin");
         assert!(app.input.is_empty());
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.form.focus, ConfigFocus::Validate);
-        for expected in [ConfigFocus::Launch, ConfigFocus::Cancel, ConfigFocus::Rom] {
+        assert!(app.form.edit.is_none());
+        assert_eq!(app.form.program_address, "0xE000");
+        assert_eq!(app.form.focus, ConfigFocus::ProgramAddress);
+        for expected in [
+            ConfigFocus::Validate,
+            ConfigFocus::Launch,
+            ConfigFocus::Cancel,
+            ConfigFocus::Rom,
+        ] {
             app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
             assert_eq!(app.form.focus, expected);
         }
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.form.focus, ConfigFocus::ProgramAddress);
+        assert_eq!(app.form.focus, ConfigFocus::Rom);
+        assert!(app.form.edit.is_none());
     }
 
     #[test]
@@ -2904,15 +3303,20 @@ mod tests {
     fn path_paste_targets_only_the_focused_field_and_preserves_literal_text() {
         let mut app = App::new(None);
         app.page = Page::Config;
+        app.terminal_size = (120, 40);
         app.form.rom = "/rom/".into();
         app.form.program.clear();
         app.form.focus = ConfigFocus::Rom;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let path = "中文 目录/$HOME/$(literal)`name`.bin";
         app.handle_event(Event::Paste(path.into()));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.form.rom, format!("/rom/{path}"));
         assert!(app.form.program.is_empty());
         app.form.focus = ConfigFocus::Program;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_event(Event::Paste("程序 file.bin".into()));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.form.program, "程序 file.bin");
         assert!(app.input.is_empty());
         for focus in [
@@ -2924,6 +3328,7 @@ mod tests {
             app.handle_event(Event::Paste("ignored".into()));
         }
         app.form.focus = ConfigFocus::Rom;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.overlay = Some(Overlay::QuitConfirm);
         app.handle_event(Event::Paste("ignored".into()));
         assert_eq!(app.form.rom, format!("/rom/{path}"));
@@ -2935,11 +3340,14 @@ mod tests {
     fn multiline_and_control_path_pastes_are_rejected_without_partial_edits() {
         let mut app = App::new(None);
         app.page = Page::Config;
+        app.terminal_size = (120, 40);
         app.form.rom = "/original/rom.bin".into();
         app.form.focus = ConfigFocus::Rom;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         for paste in ["part\nnext", "part\rnext", "part\0next", "part\u{1b}[31m"] {
             app.handle_event(Event::Paste(paste.into()));
             assert_eq!(app.form.rom, "/original/rom.bin");
+            assert_eq!(app.form.edit.as_ref().unwrap().text, "/original/rom.bin");
             assert!(app.form.status.as_deref().unwrap().contains("未接收"));
             assert!(!app.exit);
             assert!(app.overlay.is_none());

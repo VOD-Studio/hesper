@@ -719,3 +719,16 @@ BASIC 文件来自用户本地 `~/Downloads/basic-c.bin`，SHA-256 为 `e423c5c1
 - `cargo build --locked -p hesper --release`：release 二进制已更新。macOS PTY 在 44×30 和 120×40 下仅运行 `hesper tui`，通过配置页输入用户本地 `basic-c.bin` 路径及地址：`0x10000` 显示格式错误，`0xE001` 显示整段越界，改为 `0xE000` 后成功启动；`E000R` / `PRINT 1+2` 实际输出 `3`。宽屏另将地址改为十进制 `57344` 后确认替换会话，BASIC 输出 `5`；重新上电后再次运行输出 `7`。退出恢复 termios、备用屏和 bracketed paste，既有配置文件内容不变。转录和屏幕文本：`.cache/tui-address-qa/pty-results.log`、`editable-address-44-*.txt`、`editable-address-120-*.txt` 及 `.ansi`。
 
 未修改 CPU/Apple I 机器行为或 BASIC 镜像；未运行完整外部 CPU corpus、远程 CI、Linux/Windows 或原生桌面终端视觉验收。本轮按功能点本地提交，未 push。
+
+
+## 2026-09-14 — 配置表单布局与显式编辑
+
+基于 `8c2e115` 的可编辑加载地址继续调整，配置页改成居中、最大 96 列的卡片；字段、说明、操作按钮与配置文件路径分区。方向键及 Tab/Shift+Tab 负责选择，Enter 进入草稿编辑，Enter 确认后保留焦点，Esc 放弃草稿；未进入编辑时不接收文字或粘贴。输入支持 UTF-8 边界上的光标移动、Home/End、删除和单行粘贴；长路径按显示宽度跟随光标，菜单或浏览器打开时隐藏表单光标。F4 在编辑时选中的文件仍属于草稿，可以撤销。
+
+验证结果：
+
+- `cargo test --locked -p hesper --lib tui::tests`：33 项通过。新增回归覆盖未确认前防误输入、Esc 撤销、中文光标与删除、浏览器返回草稿，以及 44×30、80×30、120×40、180×50 下按钮、路径尾部与光标可见；包含彩色和单色模式、菜单覆盖与恢复。误输入用例在修复前确实失败。
+- `make verify`：格式、全目标检查、workspace debug/release 测试、Clippy、demo 和 diff 检查通过。转录：`.cache/tui-qa/config-form-verify.log`。
+- macOS cmux 原生终端运行本次 debug 二进制，实际检查卡片布局、蓝色选择态、黄色编辑态与可见光标；方向键进入程序字段，Enter 后输入中文路径，Esc 后恢复未选择程序；加载地址清空并输入 `0xE000`，Enter 确认后停留当前字段。测试退出，无资源启动或配置保存操作。
+
+这次原生终端验证仅覆盖配置编辑流程，不代表完整 P01–P16、Linux/Windows 或远程 CI 验收。未改 CPU 或 Apple I 机器行为，未添加依赖。本轮按功能点本地提交，未 push。
