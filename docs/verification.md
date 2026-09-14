@@ -801,3 +801,22 @@ BASIC 文件来自用户本地 `~/Downloads/basic-c.bin`，SHA-256 为 `e423c5c1
 许可证（6 个 MIT、2 个 Custom License），其余 34 个页面——包括全部历史磁带程序与 Apple BASIC——未声明；
 仓库按站点发布原样保留、逐文件记录来源与哈希，不主张新的许可证、公有领域状态或额外兼容性。未运行完整
 外部 CPU corpus、远程 CI、Linux/Windows 或原生桌面终端视觉验收。本轮按功能点本地提交，未 push。
+
+
+## 2026-09-14：Apple I 现状复核与文档同步
+
+本次文档更新前，在同一会话核对了当前源码并实际运行以下命令；这些结果属于当前固定配置，不扩展为完整硬件或全部预置程序的兼容性认证：
+
+- `cargo test --workspace --locked --offline`：239 项通过、20 项真实 ROM 测试按约定 ignored。
+- `cargo test --workspace --release --locked --offline`：同样 239 项通过、20 项 ignored。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：使用既有本地 ROM，4 项机器测试与 16 项 CLI 测试全部通过；未下载或修改 ROM。
+- `cargo build --locked --offline -p hesper` 后运行真实 debug 二进制：Woz Monitor 写入并回读 `$0300` 的 `AB CD EF`；`--bus-trace --trace-limit 4` 只在 stderr 保留 4 条记录；Huston BASIC 的 `PRINT 6*7` 输出 `42`，行号循环输出 `1、4、9`；15 Puzzle 输出标题及 `INSTRUCTIONS (Y/N)?`。这些场景在 8000000 周期预算内正常结束；`little-tower` 因超出单一 RAM 分组以退出码 1 被拒绝。
+- macOS 真实 PTY（120×40）：从配置页选择预置、左右切换四个分类、确认替换已有会话后启动 Huston BASIC；机器字符屏出现 `>PRINT 6*7` 和独立结果行 `42`。正常退出码为 0，ICANON/ECHO 恢复，输出包含离开备用屏和关闭 bracketed paste 的序列。
+
+PTY 复核发现此前缓存脚本 `.cache/presets-library-qa/pty_picker.py` 的 BASIC 判据过宽：在整个终端网格搜索 `42` 会命中侧栏周期数，机器只回显 `E0` 时就可能报告成功。因此上节的“29 项断言通过”不能单独证明 BASIC 计算完成。本次临时副本将判据限定为机器字符屏单元去空白后严格等于 `42`，重新执行后观察到完整命令和结果。缓存脚本未改，临时副本已删除；这不是 BASIC 执行器故障，也不是原生桌面终端的视觉验收。
+
+随后仅更新文档：README 补齐 Apple I 能力、依赖方向、ROM 联调命令与预置限制；路线图移除已失效的刷新／固定字符延时／CB2 缺口描述；架构摘要同步三个 crate 的职责；硬件依据明确 H12 差异在 Port A 输出模式，而非 Port B 输出锁存读回。H12、H18 和视频／电气边界仍保留，未勾选 M3 整体验收。历史测试结果和提交状态不因本次文档同步而改写。
+
+文档检查：4 份说明的 44 个本地链接及相应锚点、代码围栏和末尾换行通过检查；Bun Markdown 渲染通过，表格列数一致。`cargo run --locked --offline -p hesper -- apple1 --help` 与 `--list-presets` 实际执行成功，确认 README 使用的选项、预置 id 和 BASIC 启动命令。
+
+未修改源码、测试或程序资产，未新增依赖；文档更新后未重跑 Rust 全套检查或完整外部 CPU corpus，未运行远程 CI、Linux/Windows 或原生桌面终端视觉验收。本轮按功能点本地提交，未 push。

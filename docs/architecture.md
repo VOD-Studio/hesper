@@ -2,14 +2,14 @@
 
 ## 边界
 
-依赖方向为 CLI／未来前端 → 宿主或机器层 → `hesper-cpu6502`。M0～M2 只建立 CPU 库和 CLI 两个 crate。
+依赖方向为 CLI／TUI → 演示宿主或 Apple I 机器层 → `hesper-cpu6502` → 外部 `Bus`。当前 workspace 包含 CPU、Apple I 与 CLI 三个 crate。
 
 - **CPU 库**：寄存器、状态、指令解释、寻址、栈、复位、周期数量及错误。`instruction.rs` 为显式 opcode／寻址／周期表，`cpu.rs` 保存状态及 ALU 语义，`cpu/cycle.rs` 推进总线阶段；不使用解码宏或多层指令对象。
-- **Bus**：`read(&mut self, addr: u16) -> u8` / `write(&mut self, addr: u16, value: u8)`。可变读取为未来设备副作用预留空间。CPU 不持有 Bus，`cycle`、`step` 和 `reset` 接收外部 `&mut dyn Bus`，便于测试、替换内存和组合设备。
+- **Bus**：`read(&mut self, addr: u16) -> u8` / `write(&mut self, addr: u16, value: u8)`。读取可以产生设备副作用，例如消费键盘数据或清除 PIA 标志。CPU 不持有 Bus，`cycle`、`step` 和 `reset` 接收外部 `&mut dyn Bus`，便于测试、替换内存和组合设备。
 - **Ram**：独立的全零 64 KiB 数组 Bus；模拟访问以 `u16` 地址进行，宿主 `load` 检查整段范围，失败不写入。`as_slice` 仅用于这个 RAM 的无副作用宿主检查，不是通用设备读取接口。
-- **CLI**：`src/lib.rs` 包含实际演示字节和有限步数 runner，供入口与集成测试共用；`main.rs` 负责参数、输出和退出码。runner 从复位向量启动，CPU 逐条写出结果，完成地址和预算都由宿主决定。
+- **CLI／TUI**：`crates/cli/src/lib.rs` 包含演示字节和有限步数 runner；`main.rs` 负责命令分流、参数和退出码，`apple1.rs` 管理 Apple I 资源、会话预算、文本交互和诊断，`tui.rs` 提供启动中心与终端界面。`presets.rs` 保存内置程序元数据和多块加载信息。CPU／机器层不处理文件、宿主终端或墙钟节流。
 
-未来 Apple I 与 Apple II 各自实现机器 Bus、内存映射和设备状态，复用 CPU。M2 先完善 CPU，机器层按路线图延后至 M3/M4；前端负责加载用户有权使用的资源、输入输出和调度。机器／CPU 不依赖浏览器；WebAssembly 的绑定和渲染到 M5 再建立。
+Apple I 已实现独立机器 Bus、内存映射、设备状态和板级时钟，复用 CPU；Apple II 与浏览器仍为规划。前端负责加载用户有权使用的资源、输入输出和调度。机器／CPU 不依赖浏览器；CPU 的 Wasm 目标编译检查不代表浏览器前端已实现。
 
 ## Apple I 机器层（M3）
 

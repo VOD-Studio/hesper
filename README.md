@@ -4,13 +4,15 @@
   <img src="assets/hesper-logo.png" alt="Hesper logo" width="360">
 </p>
 
-Hesper 是一个使用 Rust 编写的 NMOS 6502 模拟器项目。目前包含一个机器无关、逐周期执行的 CPU 核心，以及用于演示和验证核心行为的命令行程序。
+Hesper 是一个使用 Rust 编写的经典计算机模拟器项目，包含机器无关、逐周期执行的 NMOS 6502 核心、Apple I 文本机器模型，以及中文 TUI 和可脚本化的 CLI。
 
-当前实现聚焦官方 NMOS 6502 指令、总线周期、中断、RDY/SO 和物理 RESET。Apple I 文本系统（Woz Monitor + PIA 键盘/显示、40×24 屏幕、真实终端网格视图）可实际交互使用，但**整体验收尚未勾选**：视频板 DRAM 刷新时钟不建模、显示忙时延时是固定近似、配置资料未逐页核对原始手册（见 [`docs/roadmap.md`](docs/roadmap.md) 的 M3 已知缺口）。Apple II 与浏览器前端尚未开始。
+CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASIC 和部分预置程序，**M3 整体验收仍未完成**。主板刷新停钟、CB2 显示握手和循环存储视频时序已实现，剩余差异主要是 PIA Port A 读回、滚动时的垂直计数器重载与帧长，以及字符格之外的视频／电气模型。具体范围见 [`docs/roadmap.md`](docs/roadmap.md) 和 [`硬件依据与差异`](docs/apple1/hardware-evidence.md)。Apple II 与浏览器前端尚未开始。
 
 无参数在 stdin/stdout 都是终端时进入中文 TUI 启动中心；重定向任一流时仍运行可脚本化的内置演示。Apple I 的 TUI 按键约定见 [`docs/apple1/examples.md`](docs/apple1/examples.md)：Ctrl-R 是物理 RESET，Ctrl-L 是键盘上的 CLEAR SCREEN 按钮，Ctrl-P 暂停/继续，Ctrl-N 重建机器，Ctrl-C/Ctrl-D 退出。
 
 ## 特性
+
+### CPU 核心
 
 - 151 个官方 NMOS 6502 opcode
 - 单周期与半周期驱动接口
@@ -18,10 +20,21 @@ Hesper 是一个使用 Rust 编写的 NMOS 6502 模拟器项目。目前包含�
 - IRQ、NMI、BRK、RDY、SO 和物理 RESET 时序
 - 二进制及 NMOS 十进制 ADC/SBC
 - 外部 `Bus` 接口；CPU 不持有内存或设备
-- 无第三方运行时依赖，禁止 `unsafe`
+- CPU 核心无第三方运行时依赖；整个 workspace 禁止 `unsafe`
 - 有限步数、周期预算和有界诊断 trace
 
 兼容范围不包括非官方 opcode、65C02 或 NES 2A03。Visual6502 对照固定于 revD；通过这些场景不等同于所有 NMOS 修订的硬件认证。
+
+### Apple I 文本系统
+
+- 固定 8 KiB RAM：`$0000–$0FFF` 与 `$E000–$EFFF` 两组独立可写内存；Woz Monitor ROM 位于 `$FF00–$FFFF`
+- PIA 键盘／显示寄存器及地址镜像；`$D0F2` 与 `$D012` 共用 Port B 和读取副作用
+- 14.31818 MHz 主时钟推进；每 65 个字符时钟有 4 个刷新槽抑制 CPU Φ2，不用 RDY 模拟刷新
+- CB2→DA→PB7、RDA→CB1 显示握手；1024 槽循环存储投影为 40×24 字符屏，支持换行、清行和滚动，字符在光标槽被扫到时接收，无固定字符延时参数
+- 分离物理 RESET、CLEAR SCREEN 与重新上电；暂停／恢复、输入排队、会话周期预算及有界指令／总线 trace
+- TUI 程序选择、文件浏览、可编辑加载地址、下拉菜单与鼠标操作；管道和重定向使用文本宿主
+
+这是字符级数字模型，不是像素或电气级仿真。原始手册、原理图和 PIA 数据表的指定页已有核对记录；未实现 2513 字模、像素移位与复合视频，DRAM 电荷保持、上电状态和单稳态容差也不在当前模型内。磁带接口、扩展卡和完整机器存档尚未实现。
 
 ## 快速开始
 
@@ -42,7 +55,7 @@ cargo run -p hesper -- demo --bus-trace --trace-limit 4
 cargo run -p hesper -- demo --help
 ```
 
-Apple I Woz Monitor 交互（需安装 Bun，并自行确认 ROM 使用权限）：
+Apple I Woz Monitor 交互（仅下载工具需要 Bun；请自行确认 ROM 使用权限，也可通过 `--rom` 提供已有的 256 字节、哈希匹配的 Woz Monitor 镜像）：
 
 ```sh
 make wozmon                               # 下载并校验到 .cache/apple1/wozmon.bin
@@ -61,15 +74,17 @@ cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset basic-hust
 cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset hamurabi
 ```
 
-预置程序随可执行文件内置，无需保留原始下载文件。镜像来源、逐文件 SHA-256、启动命令与许可证说明见 [`预置资源说明`](crates/cli/assets/README.md)。
+预置程序随可执行文件内置，无需保留原始下载文件；Woz Monitor ROM 仍由用户提供。**收录 42 个预置不代表全部兼容**：`little-tower` 需要未建模的 `$1000–$1FFF` 扩展 RAM，当前会明确拒绝加载；其余预置通过内存范围校验，但没有逐个程序的完整功能验收。
+
+镜像来源、逐文件 SHA-256、启动命令与许可证说明见 [`预置资源说明`](crates/cli/assets/README.md)。其中 8 个来源页面声明了许可证，34 个未声明；公开下载、记录来源和哈希不等于再分发授权已明确。
 
 ## Workspace 结构
 
 ```text
 crates/
 ├── cpu6502/   # NMOS 6502 CPU、Bus/Ram、周期执行器及一致性测试
-├── cli/       # 内置演示、Apple I 交互式命令行入口与输出
-└── apple1/    # Apple I 机器模型：MC6821 PIA、地址译码 Bus、显示/键盘设备
+├── cli/       # 中文 TUI、文本 CLI、演示宿主、程序预置与资源加载
+└── apple1/    # Apple I 主板时钟、地址译码 Bus、PIA、显示与键盘
 
 tools/         # 固定外部数据准备及 Visual6502 重放工具
 docs/          # 架构、opcode、路线图、来源和验证记录
@@ -82,14 +97,16 @@ docs/          # 架构、opcode、路线图、来源和验证记录
 依赖方向为：
 
 ```text
-CLI 入口 → 演示宿主 → hesper-cpu6502 → 外部 Bus
+CLI / TUI
+├─ 内置演示宿主 → hesper-cpu6502 → Ram
+└─ Apple I 会话 → hesper-apple1 → hesper-cpu6502 → Apple1Bus
 ```
 
-CPU 核心不负责程序加载、设备所有权、停止条件、日志或展示。宿主持有 `Bus`，并通过 `Cpu::half_cycle`、`Cpu::cycle` 或 `Cpu::step` 驱动执行。
+CPU 核心不负责程序加载、设备所有权、停止条件、日志或展示，通过外部 `Bus` 访问内存和设备。演示宿主直接驱动 CPU；Apple I 机器层持有 CPU、Bus 和设备，由 `Apple1::tick` 统一推进板级时钟。CLI／TUI 负责资源加载、输入输出、宿主调度和停止条件。
 
-每个执行阶段对应一次真实总线访问。dummy read、RMW 的两次写入、RDY 重读、引脚采样和 RESET 同步都是可观察契约，不能仅按最终寄存器结果简化。
+每个 CPU 执行阶段对应一次真实总线访问。dummy read、RMW 的两次写入、RDY 重读、引脚采样和 RESET 同步都是可观察契约，不能仅按最终寄存器结果简化。Apple I 的刷新停钟不推进 CPU 总线阶段，但视频和板级时钟继续运行。
 
-公共 API 由 [`crates/cpu6502/src/lib.rs`](crates/cpu6502/src/lib.rs) 导出。详细行为边界见 [`docs/architecture.md`](docs/architecture.md)。
+CPU 公共 API 由 [`crates/cpu6502/src/lib.rs`](crates/cpu6502/src/lib.rs) 导出，Apple I 入口见 [`crates/apple1/src/lib.rs`](crates/apple1/src/lib.rs)。详细行为边界见 [`docs/architecture.md`](docs/architecture.md)。
 
 ## 开发与验证
 
@@ -115,12 +132,22 @@ cargo clippy --workspace --all-targets -- -D warnings
 - 672 条固定 SingleStep 样例
 - 246 组 IRQ/NMI/RDY/SO revD 总线观察
 - 419 组物理 RESET revD 总线观察
+- Apple I 内存映射、PIA 握手、主板刷新、屏幕与 RESET 的原创程序回归
+- CLI 加载／诊断，以及 TUI 输入、布局、程序选择和会话生命周期回归
 
 `cargo test --workspace` 不包含验证脚本自身的回归、需要 Woz ROM 的 `#[ignore]` 测试和全量外部一致性。`tools/` 下 5 个脚本（3 个数据准备、Woz ROM 下载、Visual6502 重放驱动）的回归测试用 Bun 运行，冷缓存时会真实下载固定上游数据，因此不并入 `make verify`：
 
 ```sh
 make tools-test        # 等价于 bun test tools/
 ```
+
+真实 Woz Monitor 联调单独显式运行，使用已有 ROM，不自动下载；缺文件或哈希不符会失败：
+
+```sh
+make wozmon-tests ROM=.cache/apple1/wozmon.bin
+```
+
+本地验证包括监控程序读写／执行、BASIC 算术与行号循环、部分预置启动和真实 PTY 交互。实际执行范围和结果见 [`docs/verification.md`](docs/verification.md) 的对应日期记录；普通测试通过不代表全部预置、全部硬件窗口或跨平台终端都已验收。
 
 ## 全量 CPU 一致性验证
 
@@ -140,7 +167,7 @@ bun tools/verify_visual6502.ts
 cargo test -p hesper-cpu6502 --test pins --release
 ```
 
-前者证明固定上游模型能重现仓库观察，后者证明 Hesper CPU 与这些观察一致。详细数据来源、哈希、许可证、成功条件和单用例重放命令见 [`crates/cpu6502/tests/data/README.md`](crates/cpu6502/tests/data/README.md)。最新本地执行结果见 [`docs/verification.md`](docs/verification.md) 的最后一节。
+前者证明固定上游模型能重现仓库观察，后者证明 Hesper CPU 与这些观察一致。详细数据来源、哈希、许可证、成功条件和单用例重放命令见 [`crates/cpu6502/tests/data/README.md`](crates/cpu6502/tests/data/README.md)。本地执行结果见 [`docs/verification.md`](docs/verification.md) 的相关记录；CPU 全量验证与 Apple I 联调分别报告。
 
 ## 文档
 
@@ -151,4 +178,6 @@ cargo test -p hesper-cpu6502 --test pins --release
 - [`docs/verification.md`](docs/verification.md)：按时间记录的本地验证证据
 - [`docs/apple1/apple-1-overview.md`](docs/apple1/apple-1-overview.md)：Apple I 硬件、Woz Monitor 与历史背景全面介绍
 - [`docs/apple1/examples.md`](docs/apple1/examples.md)：Apple I CLI 与库 API 使用示例
+- [`docs/apple1/hardware-evidence.md`](docs/apple1/hardware-evidence.md)：一手资料核对、实现对应关系与已知硬件差异
+- [`crates/cli/assets/README.md`](crates/cli/assets/README.md)：内置程序的来源、加载范围、哈希与许可证记录
 - [`AGENTS.md`](AGENTS.md)：面向代码助手和贡献者的仓库规则
