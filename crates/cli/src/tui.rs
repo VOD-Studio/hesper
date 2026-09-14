@@ -1095,15 +1095,23 @@ impl App {
         }
         let continuous = if self.faulted {
             "故障"
-        } else if self.user_paused || !self.running() && self.page == Page::Apple1 {
-            "暂停"
-        } else if self.page == Page::Apple1 {
+        } else if self.running() {
             "运行中"
+        } else if self.has_active_session() {
+            "暂停"
         } else {
             "就绪"
         };
-        let status = self.transient_status().unwrap_or_else(|| continuous.into());
-        frame.render_widget(Paragraph::new(status).style(theme.status()), rows[3]);
+        let status =
+            Layout::horizontal([Constraint::Length(10), Constraint::Min(0)]).split(rows[3]);
+        frame.render_widget(
+            Paragraph::new(format!("[{continuous}]")).style(theme.status()),
+            status[0],
+        );
+        frame.render_widget(
+            Paragraph::new(self.transient_status().unwrap_or_default()).style(theme.status()),
+            status[1],
+        );
         frame.render_widget(
             Paragraph::new(footer(self.page, theme.ascii))
                 .style(theme.muted())
@@ -1111,7 +1119,7 @@ impl App {
             rows[4],
         );
         if let Some(overlay) = &mut self.overlay {
-            draw_overlay(frame, area, overlay, &theme);
+            draw_overlay(frame, rows[2], overlay, &theme);
         }
         self.dirty = false;
     }
@@ -2307,6 +2315,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn status_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, 28)].symbol())
+            .collect::<String>()
+            .replace(' ', "")
+    }
+
+    #[test]
+    fn reset_notification_and_expiry_leave_the_paused_status_visible() {
+        let mut app = app_with_session(100_000);
+        app.reset();
+        let cycles = app.session.as_ref().unwrap().total_cpu_cycles();
+        let mut terminal = Terminal::new(TestBackend::new(44, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let status = status_text(&terminal);
+        assert!(status.contains("[暂停]"));
+        assert!(status.contains("[RESET]"));
+        app.notification.as_mut().unwrap().1 = Instant::now() - Duration::from_secs(1);
+        app.advance();
+        assert!(
+            app.dirty,
+            "expiry must redraw without a keypress or CPU cycle"
+        );
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let status = status_text(&terminal);
+        assert!(status.contains("[暂停]"));
+        assert!(!status.contains("[RESET]"));
+        assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), cycles);
+    }
+
+    #[test]
+    fn status_stays_visible_with_long_notifications_and_overlays() {
+        let mut app = app_with_session(100_000);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        app.user_paused = false;
+        app.notify("[CLEAR] ".repeat(100));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(status_text(&terminal).contains("[运行中]"));
+        app.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(status_text(&terminal).contains("[暂停]"));
+        app.faulted = true;
+        app.error("CPU 错误");
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(status_text(&terminal).contains("[故障]"));
+        assert!(status_text(&terminal).contains("[CLEAR]"));
     }
 
     #[test]
