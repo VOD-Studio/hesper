@@ -106,6 +106,7 @@ impl fmt::Display for StopReason {
 ///
 /// Both kinds share one bounded queue: `--trace-limit` caps total records,
 /// so diagnostics stay bounded no matter how long the machine runs.
+#[derive(Debug)]
 pub(crate) struct TraceOptions {
     instructions: bool,
     bus: bool,
@@ -113,12 +114,15 @@ pub(crate) struct TraceOptions {
 }
 
 impl TraceOptions {
-    pub(crate) fn new(instructions: bool, bus: bool, limit: usize) -> Self {
-        Self {
+    pub(crate) fn new(instructions: bool, bus: bool, limit: usize) -> Result<Self, &'static str> {
+        if !TRACE_LIMIT_RANGE.contains(&limit) {
+            return Err("--trace-limit requires 1..4096");
+        }
+        Ok(Self {
             instructions,
             bus,
             limit,
-        }
+        })
     }
 
     fn enabled(&self) -> bool {
@@ -334,14 +338,7 @@ pub fn run_apple1(
 ) -> Result<(), Box<dyn Error>> {
     // Checked here too, not only in the argument parser: a direct library
     // call must not be able to install an unbounded diagnostic queue.
-    if !TRACE_LIMIT_RANGE.contains(&trace_limit) {
-        return Err("--trace-limit requires 1..4096".into());
-    }
-    let trace_options = TraceOptions {
-        instructions: trace,
-        bus: bus_trace,
-        limit: trace_limit,
-    };
+    let trace_options = TraceOptions::new(trace, bus_trace, trace_limit)?;
 
     // 1. Load and fully validate ROM and optional program (exact ROM
     // identity, program fits in RAM) before any machine state exists to
@@ -896,7 +893,7 @@ mod tests {
         let session = Session::new(
             create_machine(&test_rom(0), None).unwrap(),
             Some(0),
-            TraceOptions::new(false, false, 64),
+            TraceOptions::new(false, false, 64).unwrap(),
         );
         let view = View::for_stdout(true, Some("dumb"));
         let mut output = Vec::new();

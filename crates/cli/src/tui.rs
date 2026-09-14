@@ -41,7 +41,7 @@ const MIN_WIDTH: u16 = 44;
 const MIN_HEIGHT: u16 = 30;
 
 /// Options accepted by `hesper apple1` when that command opens the TUI.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Apple1Launch {
     pub rom: Option<PathBuf>,
     pub program: Option<PathBuf>,
@@ -52,6 +52,20 @@ pub struct Apple1Launch {
     /// Set by the CLI for `hesper apple1`; no-argument TUI startup leaves it
     /// false so the center is always shown first.
     pub direct: bool,
+}
+
+impl Default for Apple1Launch {
+    fn default() -> Self {
+        Self {
+            rom: None,
+            program: None,
+            max_cycles: None,
+            trace: false,
+            bus_trace: false,
+            trace_limit: 64,
+            direct: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,6 +370,18 @@ impl App {
     }
 
     fn start_resources(&mut self, resources: Resources, save_path: bool) {
+        let trace = match TraceOptions::new(
+            self.launch.trace,
+            self.launch.bus_trace,
+            self.launch.trace_limit,
+        ) {
+            Ok(trace) => trace,
+            Err(error) => {
+                self.form.status = Some(error.into());
+                self.dirty = true;
+                return;
+            }
+        };
         let machine = match create_machine(&resources.rom, resources.program.as_deref()) {
             Ok(machine) => machine,
             Err(error) => {
@@ -372,11 +398,6 @@ impl App {
             // session: never replenish its budget or discard its trace.
             session.recreate(machine);
         } else {
-            let trace = TraceOptions::new(
-                self.launch.trace,
-                self.launch.bus_trace,
-                self.launch.trace_limit.max(1),
-            );
             self.session = Some(Session::new(machine, self.launch.max_cycles, trace));
         }
         self.resources = Some(resources);
@@ -1148,6 +1169,10 @@ impl App {
 }
 
 pub fn run(launch: Option<Apple1Launch>) -> Result<(), Box<dyn Error>> {
+    let launch = launch.unwrap_or_default();
+    // Reject invalid library arguments before acquiring terminal modes or
+    // installing a session, just like the text-mode public entry point.
+    TraceOptions::new(launch.trace, launch.bus_trace, launch.trace_limit)?;
     if !io::stdin().is_terminal()
         || !io::stdout().is_terminal()
         || std::env::var("TERM").ok().as_deref() == Some("dumb")
@@ -1158,7 +1183,7 @@ pub fn run(launch: Option<Apple1Launch>) -> Result<(), Box<dyn Error>> {
     let guard = TerminalGuard::enter(TerminalMode::Tui, &terminated)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::new(launch);
+    let mut app = App::new(Some(launch));
     if app.launch.direct && !app.form.rom.is_empty() {
         app.start_configured(false);
     }
@@ -1979,6 +2004,28 @@ mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
 
+    #[test]
+    fn public_tui_entry_rejects_invalid_trace_limits_before_terminal_setup() {
+        for trace_limit in [0, 4097, usize::MAX] {
+            for enabled in [false, true] {
+                let launch = Apple1Launch {
+                    trace_limit,
+                    trace: enabled,
+                    bus_trace: enabled,
+                    ..Apple1Launch::default()
+                };
+                assert_eq!(
+                    run(Some(launch)).unwrap_err().to_string(),
+                    "--trace-limit requires 1..4096"
+                );
+            }
+        }
+        assert_eq!(Apple1Launch::default().trace_limit, 64);
+        for limit in [1, 64, 4096] {
+            assert!(TraceOptions::new(true, true, limit).is_ok());
+        }
+    }
+
     fn resources(path: &str) -> Resources {
         Resources {
             rom: test_rom(),
@@ -2052,7 +2099,7 @@ mod tests {
         let mut session = Session::new(
             create_machine(&resources.rom, resources.program.as_deref()).unwrap(),
             Some(budget),
-            TraceOptions::new(false, true, 64),
+            TraceOptions::new(false, true, 64).unwrap(),
         );
         session.advance(20).unwrap();
         session
@@ -2480,7 +2527,7 @@ mod tests {
         app.session = Some(Session::new(
             create_machine(&test_rom(), Some(&[0x4c, 0x00, 0x00])).unwrap(),
             None,
-            TraceOptions::new(false, false, 64),
+            TraceOptions::new(false, false, 64).unwrap(),
         ));
         assert!(app.running());
         app.apple_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));

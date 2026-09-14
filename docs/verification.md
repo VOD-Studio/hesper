@@ -618,3 +618,29 @@ alternate-screen／line-wrap／清屏／光标定位／bracketed-paste 序列并
 - P01 的“启动中心出现”和 P14 的“外部信号清理”已实测；P02–P13、P15–P16 的完整人工键盘/ROM/resize 矩阵尚未逐项在桌面终端实测。自动化覆盖了其中的入口、配置、粘贴、暂停、极小尺寸、预算和文本流回归，但不替代人工视觉验收。
 
 未执行 commit、push、MR、远程 CI 或发布。未验证 Linux/Windows，也没有把上述未测 PTY 流程标为通过。
+
+## 2026-09-14 TUI review 九项修复
+
+基线为 `05bdbb6`，开始时工作区干净。按用户要求逐功能点本地提交，改动限于 CLI 宿主及其测试：
+
+- 配置页替换机器前使用已经校验的资源打开确认框，默认取消；取消不修改当前机器、启动资源或保存配置。确认替换沿用同一 `Session`，保留累计预算和 trace；启动错误保留可恢复的故障机器。
+- F2/Ctrl+N 等按键引起的状态变化立即请求绘制。重新上电默认取消；确认框为提示和按钮保留固定空间，避免窄窗口或长路径挤掉操作。
+- 路径粘贴按配置表单焦点接收，保留中文、空格和字面 shell 符号；多行或控制字符整体拒绝并提示。
+- 文件浏览器使用 Ratatui `ListState` 跟随选中项滚动，覆盖第 16 项之后及 512 项边界。
+- 旧 Apple-1 交互入口在 `TERM=dumb` 下使用文本流，不再启用屏幕控制。
+- 显式真彩色、256 色、单色分别使用对应调色板；auto 保守探测能力并尊重 `NO_COLOR`，显式偏好可覆盖 auto。退出时恢复 Crossterm 原有色彩策略。ASCII 边框使用 `+/-/|`，默认边框使用圆角字符。
+- 持续状态和瞬时通知分区显示；弹窗限制在内容区，运行、暂停、故障状态保持可见。
+- 帮助、设置、信息页保留有界返回历史，重复打开和重访已有层级不产生导航循环。
+- `TraceOptions` 构造统一校验 `1..=4096`；公共 TUI 入口在终端初始化前拒绝非法参数，`Apple1Launch::default()` 使用 64 条的默认上限。
+
+本轮实际验证：
+
+- `cargo test --locked -p hesper --lib --test demo --test apple1`：34 项 library 测试、9 项 demo 测试、5 项非 ROM Apple-1 测试通过；10 项 ROM 测试在此命令中按约定忽略。新增 17 项回归测试，使用原创最小 ROM/程序和 `TestBackend`，常规测试不依赖外部 ROM。
+- `make verify`：格式、全目标检查、workspace debug/release 测试、Clippy、demo 和 diff 检查全部通过。转录位于忽略目录 `.cache/tui-review/verify-fixed.log`。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试及 10 项 CLI 真实 ROM 测试全部通过，使用既有本地 ROM，未下载。转录位于 `.cache/tui-review/wozmon-fixed.log`。
+- `cargo build --locked -p hesper --release`：通过。
+- macOS PTY 分组回归，release 二进制、`120×40`：启动通知过期后 F2/Ctrl+N 立即可见、重新上电默认取消、暂停时 RESET 状态与通知同时可见且通知自动过期、重复帮助返回、配置替换确认与取消、中文/空格路径粘贴、浏览并选择第 18 个文件，均通过实际事件和输出断言。
+- PTY 色彩回归：`NO_COLOR=1` 时显式 Truecolor 输出 RGB 序列；Ansi256 输出 indexed 序列且无 RGB；切到 Mono 清除颜色；Ascii 不再输出线框字符。三组 PTY 在 SIGTERM 后均观测到备用屏和 bracketed-paste 清理序列；外层 PTY 宿主在 Hesper 退出后、终端会话关闭前比较 termios，确认恢复原值。相关转录为 `.cache/tui-review/{interaction,paths,colors}-fixed.ansi`。
+- `TERM=dumb` PTY 运行在 60,000 周期正常退出，输出没有 ESC 字节；转录为 `.cache/tui-review/term-dumb-fixed.ansi`。
+
+`44×30` 最小布局、缩小窗口、确认按钮可见性和浏览器边界另由 `TestBackend` 验证。上述 PTY 和 buffer 证据不等于完整桌面终端字体/视觉验收；未实测 Linux/Windows，未运行远程 CI。此次按要求执行本地提交，未 push、创建 MR 或发布。
