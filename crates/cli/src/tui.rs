@@ -1112,16 +1112,15 @@ impl App {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Length(1),
-                Constraint::Length(26),
+                Constraint::Min(26),
                 Constraint::Length(1),
                 Constraint::Length(1),
             ])
             .split(area);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("HESPER", theme.title()),
+                Span::styled("  HESPER", theme.title()),
                 Span::styled("  经典计算机模拟器", theme.muted()),
-                Span::styled("                                      ", theme.base()),
             ]))
             .style(theme.base()),
             rows[0],
@@ -1462,10 +1461,30 @@ fn draw_menu_bar(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
 }
 
 fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
-        .split(area);
+    let width = area.width.saturating_sub(4).min(104);
+    let wide = width >= 76;
+    let height = area.height.min(if wide { 20 } else { 24 });
+    let content = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 3,
+        width,
+        height,
+    };
+    let regions = if wide {
+        Layout::horizontal([
+            Constraint::Length(26),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+    } else {
+        Layout::vertical([
+            Constraint::Length(7),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+    }
+    .split(content);
+    let columns = [regions[0], regions[2]];
     let machines = ["Apple-1", "6502 内置演示"];
     let items: Vec<ListItem<'_>> = machines
         .iter()
@@ -2389,9 +2408,39 @@ mod tests {
     fn status_text(terminal: &Terminal<TestBackend>) -> String {
         let buffer = terminal.backend().buffer();
         (0..buffer.area.width)
-            .map(|x| buffer[(x, 28)].symbol())
+            .map(|x| buffer[(x, buffer.area.height - 2)].symbol())
             .collect::<String>()
             .replace(' ', "")
+    }
+
+    #[test]
+    fn resizing_anchors_the_footer_and_preserves_the_machine_screen() {
+        let mut app = app_with_session(100_000);
+        app.config.ui.color_mode = ColorMode::Truecolor;
+        let screen_bg = Theme::from_config(&app.config).screen_bg;
+        let before = *app.session.as_ref().unwrap().machine().display().screen();
+        for (width, height) in [(44, 30), (80, 30), (120, 40), (180, 50)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            assert!(status_text(&terminal).contains("[暂停]"));
+            let buffer = terminal.backend().buffer();
+            let footer = (0..width)
+                .map(|x| buffer[(x, height - 1)].symbol())
+                .collect::<String>();
+            assert!(footer.replace(' ', "").contains("F1帮助"));
+            let screen_rows = buffer
+                .content
+                .chunks(usize::from(width))
+                .filter(|row| row.iter().filter(|cell| cell.bg == screen_bg).count() >= COLUMNS)
+                .count();
+            // The 24 character rows and the display's two border rows.
+            assert_eq!(screen_rows, ROWS + 2);
+            assert_eq!(
+                app.session.as_ref().unwrap().machine().display().screen(),
+                &before
+            );
+            assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), 20);
+        }
     }
 
     #[test]
