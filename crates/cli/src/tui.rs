@@ -1398,7 +1398,14 @@ fn footer(app: &App, width: u16, theme: &Theme) -> Line<'static> {
             ],
             Page::Demo => vec![("R", "重跑"), ("Esc", "返回"), ("F10", "菜单")],
             Page::Settings => vec![
-                ("Enter", "切换"),
+                (
+                    "Enter",
+                    if app.settings_row == 4 {
+                        "保存"
+                    } else {
+                        "切换"
+                    },
+                ),
                 ("Esc", "返回"),
                 (vertical, "选择"),
                 ("F10", "菜单"),
@@ -1753,14 +1760,21 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 
 fn draw_apple1(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     let show_sidebar = app.config.ui.sidebar && area.width >= 80;
+    let width = area.width.min(if show_sidebar { 92 } else { 44 });
+    let content = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(26) / 3,
+        width,
+        height: area.height.min(26),
+    };
     let sections = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(44), Constraint::Min(1)])
-        .split(area);
-    let screen_area = if show_sidebar { sections[0] } else { area };
+        .split(content);
+    let screen_area = if show_sidebar { sections[0] } else { content };
     let screen_rect = Rect {
         x: screen_area.x.saturating_add(1),
-        y: screen_area.y,
+        y: content.y,
         width: 42.min(screen_area.width.saturating_sub(2)),
         height: 26.min(screen_area.height),
     };
@@ -1782,7 +1796,6 @@ fn draw_apple1(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         if show_sidebar {
             let registers = session.machine().cpu().registers();
             let details = vec![
-                "机器状态".to_owned(),
                 format!("PC  ${:04X}", registers.pc),
                 format!("A   ${:02X}", registers.a),
                 format!("X   ${:02X}", registers.x),
@@ -1804,8 +1817,9 @@ fn draw_apple1(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             ];
             frame.render_widget(
                 Paragraph::new(details.join("\n"))
-                    .block(theme.block("状态"))
-                    .style(theme.text()),
+                    .block(theme.block(" 会话状态 ").padding(Padding::new(1, 1, 1, 1)))
+                    .style(theme.text())
+                    .wrap(Wrap { trim: false }),
                 sections[1],
             );
         }
@@ -2715,7 +2729,8 @@ mod tests {
     fn resizing_anchors_the_footer_and_preserves_the_machine_screen() {
         let mut app = app_with_session(100_000);
         app.config.ui.color_mode = ColorMode::Truecolor;
-        let screen_bg = Theme::from_config(&app.config).screen_bg;
+        let theme = Theme::from_config(&app.config);
+        let screen_bg = theme.screen_bg;
         let before = *app.session.as_ref().unwrap().machine().display().screen();
         for (width, height) in [(44, 30), (80, 30), (120, 40), (180, 50)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2733,6 +2748,18 @@ mod tests {
                 .count();
             // The 24 character rows and the display's two border rows.
             assert_eq!(screen_rows, ROWS + 2);
+            if width >= 80 {
+                let sidebar_rows = buffer
+                    .content
+                    .chunks(usize::from(width))
+                    .take(usize::from(height - 2))
+                    .filter(|row| row.iter().any(|cell| cell.bg == theme.panel))
+                    .count();
+                assert_eq!(
+                    sidebar_rows, screen_rows,
+                    "sidebar must align with the screen"
+                );
+            }
             assert_eq!(
                 app.session.as_ref().unwrap().machine().display().screen(),
                 &before

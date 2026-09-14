@@ -644,3 +644,25 @@ alternate-screen／line-wrap／清屏／光标定位／bracketed-paste 序列并
 - `TERM=dumb` PTY 运行在 60,000 周期正常退出，输出没有 ESC 字节；转录为 `.cache/tui-review/term-dumb-fixed.ansi`。
 
 `44×30` 最小布局、缩小窗口、确认按钮可见性和浏览器边界另由 `TestBackend` 验证。上述 PTY 和 buffer 证据不等于完整桌面终端字体/视觉验收；未实测 Linux/Windows，未运行远程 CI。此次按要求执行本地提交，未 push、创建 MR 或发布。
+
+
+## 2026-09-14 — TUI 视觉布局与上下文提示
+
+本轮基于 `3ae3779`，按截图反馈调整宿主 TUI，未修改 CPU、主板时序或会话预算：
+
+- 根布局随窗口高度伸展，状态与快捷键位于最后两行。启动中心限宽 104 列，宽屏列表固定 26 列；不足 80 列时改为上下排列，主操作始终保留独立行。
+- 模拟器名称、介绍、CPU、显示、RAM、ROM 校验状态与实际资源路径分行呈现。Enter 随资源和会话状态执行配置、启动、返回保留会话或运行演示；无效资源进入配置页并显示错误。已有会话仍使用已加载的资源，不重新依赖原文件。
+- 文字样式继承所在面板的背景，消除黑色文字底块；列表、菜单和设置的选中项突出整行，主操作使用独立强调样式。保留 Truecolor、Ansi256、Mono 和 ASCII 边框选择。
+- 顶部菜单只在获得菜单焦点时高亮。底栏跟随页面、弹窗及暂停状态切换提示；窄屏按优先级省略完整提示，不裁掉半个快捷键。就绪、运行、暂停、故障使用不同强调程度；短暂通知与持续状态保持独立。
+- Apple-1 运行区限宽 92 列；隐藏侧栏时为 44 列。屏幕与状态面板对齐，均为 26 行外框，内部字符屏保持 40×24；缩放不改变机器状态。
+
+实际验证结果：
+
+- `cargo test --locked -p hesper --lib tui::tests`：23 项通过。本轮增加 3 项交互/布局回归，覆盖最小尺寸、宽窄布局分界、长中文路径与警告、Enter 的实际去向、菜单焦点及上下文快捷键；缩放同时断言完整字符屏、侧栏对齐、屏幕内容和累计周期不变。
+- `make verify`：fmt、全目标 check、workspace debug/release 测试、Clippy `-D warnings`、demo 与 diff 检查全部通过。最终转录：`.cache/tui-visual-qa/verify-final.log`。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试与 10 项 CLI 真实 ROM 测试通过。使用既有本地 ROM，未下载。转录：`.cache/tui-visual-qa/wozmon.log`。
+- `cargo build --release --locked -p hesper`：通过，release 二进制已更新。
+- release 二进制的 macOS PTY 检查：`44×30`、`80×30`、`120×40`、`180×50` 均通过启动中心、列表切换、真实 demo 结果、菜单、缩小至 `40×24` 后恢复的断言；另验证真实 ROM 启动、暂停与 RESET、返回保留会话、无效 ROM 的可见配置错误。转录：`.cache/tui-visual-qa/visual-results.log`。
+- 复跑前轮 PTY 交互回归：F2/Ctrl+N、默认取消、通知过期、帮助返回、资源替换确认、中文路径粘贴、文件浏览滚动、色彩模式与 ASCII 均通过；SIGTERM 后 termios、备用屏、bracketed paste 恢复。转录：`.cache/tui-visual-qa/regression-results.log`。
+
+视觉证据：将实际 PTY 输出的字符、前景色、背景色和强调样式重绘为 PNG，检查宽屏/窄屏启动中心、菜单与运行页。代表图位于 `.cache/tui-visual-qa/launcher-120x40-apple1.png`、`launcher-44x30-apple1.png` 和 `apple1-reset.png`。这些是终端输出重绘图；电脑控制工具因安全限制拒绝访问 Ghostty，未完成 Ghostty 原生窗口和字体的视觉验收。未实测 Linux/Windows 或运行远程 CI。本轮按功能点本地提交，未 push。
