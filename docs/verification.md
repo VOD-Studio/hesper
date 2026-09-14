@@ -745,3 +745,59 @@ BASIC 文件来自用户本地 `~/Downloads/basic-c.bin`，SHA-256 为 `e423c5c1
 - 离线回归检查镜像哈希、完整 4 KB 加载、预置与本地文件切换、固定地址、RESET 保留／重建恢复原始字节，以及窄屏标题和选择列表可见。`cargo build --locked -p hesper --release` 已更新本地可执行文件。
 
 本轮只改宿主加载与选择界面，未添加依赖。未运行完整外部 CPU corpus、远程 CI 或 Linux/Windows 终端验证。本轮按功能点本地提交，未 push。
+
+## 2026-09-14：内置 apple1software.com 全部程序
+
+按用户请求把 [The Apple-1 Software Library](https://apple1software.com/) 发布的全部程序内置为预置：
+4 个分类（Games 游戏 / Fun 娱乐 / Programming 编程 / Utilities 工具）、42 个程序页、56 个 RAM 数据块，
+共 74 983 字节，2026-09-14 一次性下载后逐字节保存，未改写、未重定位、未重新汇编。
+
+- 存储：`crates/cli/assets/programs/<分类>/<id>-<地址>.bin`，一个 RAM 块一个文件。来源是站点自己的
+  Wozmon 传输接口 `/{category}/{slug}/wozmon?basic=false&autostart=true`（JSON 内 base64），即站点
+  通过 Web Serial 发给真机的同一份数据。宿主只用 `include_bytes!` 打包，CLI 与 TUI 没有任何网络代码；
+  Woz Monitor ROM 仍由 `--rom` 外部提供，未内置。
+- 元数据与启动命令：`crates/cli/src/presets.rs` 的 `ProgramPreset` 逐条记录分类、作者、年份、站点标注
+  的许可证、来源页、载入地址、启动命令与 `needs_expansion`；`--list-presets` 与 TUI 程序列表都直接读它。
+- 启动命令取站点清单最后一行（autostart 的 `xxxxR`）。八个 BASIC 语言程序（Blackjack、Dobble、
+  Hamurabi、Mini-Startrek、Lunar Lander ASCII Graphics、Twinkle、Resistor Calculator、Stopwatch）在
+  站点上总是与 BASIC 一起传输，因此预置按同样方式把站点 Huston BASIC 写到 `$E000`（4096 B，
+  SHA-256 `311c85f2…`，与用户 2026-09-14 提供的 `basic-huston.bin` 逐字节相同，故只保留一份），并保留
+  站点的 `$004A` 磁带头块；启动命令是站点给出的 BASIC 热入口 `E2B3R`，随后 `RUN`。
+- 宿主加载从「单地址单镜像」改为多块：`ProgramImage` 先校验每个块、再一次性写入，任一越界时在任何字节
+  写入前失败。
+- `little-tower` 的站点列表是 `$0300–$14CD`，需要 `$1000–$1FFF` 扩展内存卡；本机只建模
+  `$0000–$0FFF` 与 `$E000–$EFFF` 两块 4 KiB RAM。该预置保留并标记 `needs_expansion`，选择列表写明原因，
+  加载以 RAM 分组错误被拒绝——不裁剪镜像、不伪造可运行。
+- TUI：程序列表按四个分类分组，分类表头不可选（↑↓ 跳过表头、←→ 在分类间跳转并在两端停住）；下方详情栏
+  显示作者/年份、载入范围、**启动命令**、来源页与许可证；配置页「程序」字段下方显示
+  `预置 N B · 启动后输入 xxxxR`；启动成功后状态提示同样带上启动命令。
+
+本地验证：
+
+- `make verify`：格式、全目标 check、workspace debug/release 测试、Clippy、demo 与 diff 检查通过。
+  转录：`.cache/presets-library-qa/verify.log`。
+- `cargo test --workspace`：debug 与 release 各 239 项通过，20 项真实 ROM 测试按约定 ignored。新增
+  预置回归覆盖 42 条唯一 id、每块落在单一 RAM 分组、启动地址落在该预置自己写入的块内、
+  `needs_expansion` 与分组校验一致，以及 `basic-huston` 镜像哈希；TUI 回归覆盖分类表头不可选中、
+  上下键不落在表头上、左右键按站点分类顺序移动，以及绘制行数与分页索引一致。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试与 16 项 CLI 测试通过。新增三项真实
+  二进制回归：`--preset resistor-calculator` 在 `E2B3R` 后 `RUN` 输出 `THE RESISTOR CALCULATOR` /
+  `CREATED BY PAOLO DI LEO`（BASIC 与程序块确实一起载入并可执行）；`--preset 15-puzzle` 在 `0300R` 后
+  输出 `15 PUZZLE - BY JEFF JETTON` 与 `INSTRUCTIONS (Y/N)?`；`--preset little-tower` 以
+  「must fit within one Apple I RAM bank」被拒绝。转录：`.cache/presets-library-qa/wozmon.log`。
+- 56 个资产文件的 SHA-256 与本轮下载的站点 listing 逐块比对一致（42 个程序、74 983 字节）；逐文件哈希与
+  来源页记录在 `crates/cli/assets/README.md`，可用其中的 curl 命令复核。
+- 实际二进制冒烟（debug）：`--preset hamurabi` 在 `E2B3R` 后 `LIST` 输出带行号的完整程序、`RUN` 输出
+  `TRY YOUR HAND AT GOVERNING ANCIENT SUMERIA…`；`--preset blackjack` 在 `E2B3R` 后 `LIST` 输出
+  `10 DIM A$(13)…`（覆盖 `$0800` 程序块）。
+- macOS 真实 PTY（120×40，F10 → Apple-1 配置 → F3）：29 项断言全部通过——分类表头与四个分类的
+  左右键跳转、详情栏的载入范围与启动命令、源码页与许可证、选中 BASIC (Huston) 后配置页显示
+  `启动后输入 E000R`、替换运行中会话先确认、状态提示携带启动命令、`E000R` 后 `PRINT 6*7` 实际输出
+  `42`、退出码 0，以及 termios、备用屏与 bracketed paste 恢复且无非预期转义序列。临时脚本与日志：
+  `.cache/presets-library-qa/pty_picker.py`、`pty.log`。
+- `cargo build --locked -p hesper --release`：本地 release 可执行文件已更新。
+
+本轮只改宿主资源与界面，未改 CPU 或 Apple I 机器行为，未添加依赖。许可证状态：站点只在 8 个页面声明
+许可证（6 个 MIT、2 个 Custom License），其余 34 个页面——包括全部历史磁带程序与 Apple BASIC——未声明；
+仓库按站点发布原样保留、逐文件记录来源与哈希，不主张新的许可证、公有领域状态或额外兼容性。未运行完整
+外部 CPU corpus、远程 CI、Linux/Windows 或原生桌面终端视觉验收。本轮按功能点本地提交，未 push。

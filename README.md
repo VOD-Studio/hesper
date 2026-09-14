@@ -51,14 +51,17 @@ cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin
 
 也可以先运行 `cargo run -p hesper`，在启动中心选择 Apple-1。配置页用方向键或 Tab / Shift+Tab 选择字段，Enter 进入编辑，再按 Enter 确认，Esc 放弃本次编辑；路径可按 F4 浏览。编辑时支持左右键、Home / End、Ctrl+U 清空和单行粘贴。完成后选择“校验并保存”或“启动”。TUI 配置只保存 ROM 路径和显示偏好，不保存机器内存或会话。
 
-配置页按 **F3** 可选择内置的 **BASIC (Huston)**，自动加载到 `$E000`；启动后输入 `E000R` 进入 BASIC，再输入 `PRINT 1+2` 可得到 `3`。也可选择本地二进制文件或不加载程序。预置选择仅在本次进程中保留。
+配置页按 **F3** 打开程序列表，共 **42 个内置程序**，按 [The Apple-1 Software Library](https://apple1software.com/) 的四个分类（Games 游戏 / Fun 娱乐 / Programming 编程 / Utilities 工具）分组；列表上用 ↑↓ 移动、←→ 切换分类，下方详情栏给出该程序的载入范围、**启动命令**（如 `0300R`）、来源页与许可证，Enter 选中后配置页会显示同样的启动命令。也可选择本地二进制文件或不加载程序；预置选择仅在本次进程中保留。
+
+例如选中 **BASIC (Huston)** 会自动加载到 `$E000`，启动后输入 `E000R` 进入 BASIC，再输入 `PRINT 1+2` 可得到 `3`。八个 BASIC 语言程序（如 Hamurabi、Dobble）会连同 BASIC 一起载入，启动命令是站点给出的 `E2B3R`（BASIC 热入口，保留刚载入的程序），再输入 `RUN` 运行。
 
 ```sh
 cargo run -p hesper -- apple1 --list-presets
 cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset basic-huston
+cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset hamurabi
 ```
 
-预置程序随可执行文件内置，无需保留原始下载文件。镜像来源和校验值见 [`预置资源说明`](crates/cli/assets/README.md)。
+预置程序随可执行文件内置，无需保留原始下载文件。镜像来源、逐文件 SHA-256、启动命令与许可证说明见 [`预置资源说明`](crates/cli/assets/README.md)。
 
 ## Workspace 结构
 

@@ -29,8 +29,8 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 | --- | --- |
 | `--rom <path>` | 文本/管道模式必填；TUI 中可在配置页输入，256 字节 Woz Monitor ROM |
 | `--program <path>` | 可选，启动时加载原始二进制程序，默认地址 `$0000` |
-| `--preset <id>` | 加载内置预置程序并使用固定地址；与 `--program`、`--program-address` 互斥 |
-| `--list-presets` | 列出预置名称、大小、加载地址和启动命令，无需 ROM |
+| `--preset <id>` | 加载内置预置程序（42 个，见下节）并使用其固定地址；与 `--program`、`--program-address` 互斥 |
+| `--list-presets` | 列出全部内置程序的分类、id、大小、载入范围、启动命令、来源页与许可证，无需 ROM |
 | `--program-address <N>` | 指定程序加载地址；支持十进制、`0xE000` 或引号包裹的 `'$E000'`。整个文件必须落在 `$0000–$0FFF` 或 `$E000–$EFFF` 的同一块 RAM 内 |
 | `--max-cycles <N>` | 真实 CPU 周期预算上限（不含刷新停钟的板级时间），用完即退出 |
 | `--trace` / `--bus-trace` | 指令／总线诊断，运行结束后写 stderr（不进入机器画面） |
@@ -40,17 +40,53 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 
 加载地址只决定文件放在哪里，不改变 RESET 向量，也不自动运行程序。TUI 配置页可编辑加载地址；CLI 指定的地址用于预填，未指定时预填 `0x0000`。启动和替换会话使用表单中的地址，重新上电沿用已确认的原始程序字节和地址；物理 RESET 保留两块 RAM。
 
-### 加载 Integer BASIC
+### 内置程序库（42 个，来自 apple1software.com）
 
-内置的 `basic-huston` 是用户提供的 4096 字节 BASIC 镜像，加载范围为 `$E000–$EFFF`，来源与 SHA-256 见 [`预置资源说明`](../../crates/cli/assets/README.md)。可直接选择：
+`crates/cli/assets/programs/` 内置了 [The Apple-1 Software Library](https://apple1software.com/)
+在 2026-09-14 发布的全部程序：4 个分类、42 个程序页、56 个 RAM 数据块，按站点自己的
+Wozmon 传输格式逐块保存（一个 RAM 块一个 `.bin`，文件名带加载地址）。逐文件 SHA-256、
+来源页、启动命令与许可证说明见 [`预置资源说明`](../../crates/cli/assets/README.md)；
+程序分类、作者、年份、许可证与来源页同时写在 `crates/cli/src/presets.rs` 的表里。
 
 ```sh
+cargo run --locked -p hesper -- apple1 --list-presets
+```
+
+程序列表按站点分类分组（Games 游戏 / Fun 娱乐 / Programming 编程 / Utilities 工具），
+每行给出 `id - 名称 - 作者, 年份 - 字节数 - 载入范围 - 启动命令`，下一行是来源页与许可证。
+多数程序在 Woz Monitor 提示符下按载入地址启动，例如 `--preset 15-puzzle` 后输入 `0300R`：
+
+```sh
+cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset 15-puzzle
 cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset basic-huston
 ```
 
-TUI 启动中心按 `C` 打开配置页，按 `F3` 打开程序列表，用上下键选择 **BASIC (Huston)**，Enter 确认，然后选择“启动”。加载地址自动设置，进入 Woz Monitor 后输入 `E000R`。列表也可切换为“本地二进制文件”或“不加载程序”；Esc 关闭列表并保留原选择。替换已有会话沿用原有确认流程，RESET 保留 RAM，重新上电恢复所选程序的原始字节。
+内置的 `basic-huston`（以及 `basic-c`／`basic-d`／`basic-pagetable`）是站点发布的 4096
+字节 BASIC 镜像，加载到 `$E000–$EFFF`，进入 Woz Monitor 后输入 `E000R`。
 
-使用本地已有的 4096 字节 `basic-c.bin`，把它放到高地址 RAM：
+八个 BASIC 语言程序（Blackjack、Dobble、Hamurabi、Mini-Startrek、Lunar Lander ASCII
+Graphics、Twinkle、Resistor Calculator、Stopwatch）在站点上总是与 BASIC 一起传输，因此
+预置按同样方式载入：`programming/basic-huston-e000.bin` 到 `$E000`，站点列出的 `$004A`
+磁带头与程序块各自到自己的地址。启动命令是站点列表末尾的 `E2B3R`——BASIC 的热入口，
+不会清掉刚载入的程序——随后输入 `RUN` 即可运行：
+
+```sh
+cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset hamurabi
+# 进入 Woz Monitor 后：E2B3R，然后 RUN
+```
+
+`little-tower` 的站点列表是 `$0300–$14CD`，超出本机建模的两块 4 KiB RAM，需要
+`$1000–$1FFF` 扩展内存卡：它仍出现在列表里（属于站点程序库），但加载会以 RAM 分组错误
+被拒绝，选择列表也会说明原因。其余预置都完整落在 `$0000–$0FFF` 或 `$E000–$EFFF` 内。
+
+TUI 启动中心按 `C` 打开配置页，按 `F3` 打开程序列表：列表按站点四个分类分组，↑↓ 移动、
+←→ 切换分类，下方详情栏显示所选程序的载入范围、**启动命令**、作者与来源页；Enter 选中后
+配置页的“程序”字段下方同样显示该启动命令，启动成功后状态栏也会提示（例如
+`Apple BASIC (Huston) 已加载 · 启动后输入 E000R`）。列表也可切换为“本地二进制文件”或
+“不加载程序”；Esc 关闭列表并保留原选择。替换已有会话沿用原有确认流程，RESET 保留 RAM，
+重新上电恢复所选程序的原始字节。
+
+不使用预置时，任何本地 4096 字节 BASIC 镜像仍可按地址加载：
 
 ```sh
 cargo build --locked -p hesper --release
