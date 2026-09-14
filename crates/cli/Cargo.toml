@@ -14,7 +14,7 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 signal-hook = { version = "0.3", default-features = false }
-toml = "0.9"
+toml = "1.1.6"
 unicode-width = "0.2"
 
 [lints]

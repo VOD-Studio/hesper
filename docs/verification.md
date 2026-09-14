@@ -842,3 +842,15 @@ PTY 复核发现此前缓存脚本 `.cache/presets-library-qa/pty_picker.py` 的
 | `make verify` | 格式检查、全目标 check、debug／release 测试、Clippy `-D warnings`、demo 与 diff 检查全部通过（`verify: 本地检查全部通过`） |
 
 CPU 核心（`hesper-cpu6502`）本轮未修改，因此未重跑 SingleStep 151 万／Klaus 三配置／246＋419 pins 的完整外部一致性范围。未运行远程 CI，未做原生桌面终端视觉验收。资料核对使用 M76 与 P21 的公开扫描件；除上述结论外未从扫描件推断其它电气参数。本轮按功能点本地提交，未 push。
+
+## 2026-09-14：升级 TOML 配置依赖
+
+仅将 `crates/cli/Cargo.toml` 的 `toml` 约束由 `0.9` 升至 `1.1.6`；`cargo update --offline -p toml --precise 1.1.6` 将锁文件中的 `toml` 更新为 `1.1.6+spec-1.1.0`、`toml_datetime` 更新为 `1.1.1+spec-1.1.0`，移除 `winnow 0.7.15`。`sha2 0.10.9`、`signal-hook 0.3.18` 保持不变；未改 Rust 源码、配置 schema 或程序资产。
+
+本地验证：
+
+- `cargo test --locked --offline -p hesper config::tests`：2 项配置测试通过。
+- 临时 Rust 冒烟程序直接引入当前 `config.rs`，实际调用 `config::load` / `save`：3 组旧版 TOML 生成的配置可由新版读取，修改后保存的文件仍可由旧版读取；覆盖 Unicode／空格路径和鼠标偏好，修改前的新旧序列化文本一致。未知字段、错误字段类型、不支持的 schema 版本、损坏语法共 4 组输入均被拒绝。仅使用临时配置文件，未访问个人配置；临时项目已删除。
+- `make verify`：格式、全目标检查、debug／release 各 240 项测试、Clippy `-D warnings`、demo／trace／bus-trace 和 diff 检查全部通过。每种构建的 20 项真实 ROM 测试按约定 ignored。
+
+本轮未改 CPU／机器时序，未运行完整外部 CPU corpus、ROM-gated 测试、远程 CI 或跨平台／真实终端验收。本轮本地提交，未 push。
