@@ -1063,10 +1063,7 @@ impl App {
         }
         let theme = Theme::from_config(&self.config);
         let area = frame.area();
-        frame.render_widget(
-            Block::default().style(Style::default().bg(theme.background)),
-            area,
-        );
+        frame.render_widget(Block::default().style(theme.base()), area);
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -1108,7 +1105,7 @@ impl App {
         let status = self.transient_status().unwrap_or_else(|| continuous.into());
         frame.render_widget(Paragraph::new(status).style(theme.status()), rows[3]);
         frame.render_widget(
-            Paragraph::new(footer(self.page))
+            Paragraph::new(footer(self.page, theme.ascii))
                 .style(theme.muted())
                 .alignment(Alignment::Center),
             rows[4],
@@ -1255,8 +1252,9 @@ fn next_menu(kind: MenuKind) -> MenuKind {
     }
 }
 
-fn footer(page: Page) -> &'static str {
+fn footer(page: Page, ascii: bool) -> &'static str {
     match page {
+        Page::Center if ascii => "Up/Down 选择  Enter 启动  C 配置  I 信息  F1 帮助  F10 菜单",
         Page::Apple1 => "F1 帮助  F2 会话  F3 侧栏  F10 菜单  Ctrl+P 暂停  Ctrl+C 退出",
         Page::Config => "Tab 切换焦点  F4 浏览目录  Enter 确认  Esc 取消",
         Page::Center => "↑↓ 选择  Enter 启动  C 配置  I 信息  F1 帮助  F10 菜单",
@@ -1280,24 +1278,41 @@ struct Theme {
 
 impl Theme {
     fn from_config(config: &AppConfig) -> Self {
-        let mono = config.ui.color_mode == ColorMode::Mono
-            || (config.ui.color_mode == ColorMode::Auto && std::env::var_os("NO_COLOR").is_some());
+        Self::with_capabilities(
+            config,
+            crossterm::style::available_color_count(),
+            std::env::var_os("NO_COLOR").is_some(),
+        )
+    }
+
+    fn with_capabilities(config: &AppConfig, colors: u16, no_color: bool) -> Self {
+        let mode = match &config.ui.color_mode {
+            ColorMode::Auto if no_color || colors < 256 => ColorMode::Mono,
+            ColorMode::Auto if colors == u16::MAX => ColorMode::Truecolor,
+            ColorMode::Auto => ColorMode::Ansi256,
+            explicit => explicit.clone(),
+        };
+        let color = |r, g, b, index| match mode {
+            ColorMode::Mono => Color::Reset,
+            ColorMode::Ansi256 => Color::Indexed(index),
+            _ => Color::Rgb(r, g, b),
+        };
         let screen_fg = match config.ui.screen_color {
-            ScreenColor::Green => Color::Rgb(155, 223, 164),
-            ScreenColor::Amber => Color::Rgb(240, 203, 138),
-            ScreenColor::White => Color::Rgb(216, 227, 216),
+            ScreenColor::Green => color(155, 223, 164, 151),
+            ScreenColor::Amber => color(240, 203, 138, 222),
+            ScreenColor::White => color(216, 227, 216, 188),
         };
         Self {
-            background: Color::Rgb(17, 21, 29),
-            panel: Color::Rgb(25, 31, 42),
-            border: Color::Rgb(55, 66, 82),
-            foreground: Color::Rgb(229, 234, 242),
-            muted_color: Color::Rgb(162, 175, 191),
-            accent: Color::Rgb(140, 175, 255),
-            screen_bg: Color::Rgb(12, 21, 17),
+            background: color(17, 21, 29, 233),
+            panel: color(25, 31, 42, 234),
+            border: color(55, 66, 82, 239),
+            foreground: color(229, 234, 242, 255),
+            muted_color: color(162, 175, 191, 249),
+            accent: color(140, 175, 255, 111),
+            screen_bg: color(12, 21, 17, 232),
             screen_fg,
-            notice: Color::Rgb(241, 196, 126),
-            mono,
+            notice: color(241, 196, 126, 222),
+            mono: mode == ColorMode::Mono,
             ascii: config.ui.border == BorderStyle::Ascii,
         }
     }
@@ -1351,7 +1366,7 @@ impl Theme {
         }
     }
     fn block(&self, title: impl Into<Line<'static>>) -> Block<'static> {
-        let mut block = Block::default()
+        Block::default()
             .borders(Borders::ALL)
             .title(title)
             .style(self.panel())
@@ -1359,11 +1374,25 @@ impl Theme {
                 Style::default()
             } else {
                 Style::default().fg(self.border)
-            });
-        if self.ascii {
-            block = block.border_set(symbols::border::PLAIN);
-        }
-        block
+            })
+            .border_set(if self.ascii {
+                symbols::border::Set {
+                    top_left: "+",
+                    top_right: "+",
+                    bottom_left: "+",
+                    bottom_right: "+",
+                    vertical_left: "|",
+                    vertical_right: "|",
+                    horizontal_top: "-",
+                    horizontal_bottom: "-",
+                }
+            } else {
+                symbols::border::ROUNDED
+            })
+    }
+
+    fn horizontal_keys(&self) -> &'static str {
+        if self.ascii { "Left/Right" } else { "←/→" }
     }
 }
 
@@ -1662,6 +1691,7 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
     let height = match overlay {
         Overlay::Menu { kind, .. } => (menu_entries(*kind).len() as u16 + 3).min(area.height),
         Overlay::Browser { .. } => area.height.saturating_sub(6).min(20),
+        Overlay::RebootConfirm { .. } | Overlay::ReplaceConfirm { .. } => area.height.min(12),
         _ => 5,
     };
     let popup = centered(
@@ -1698,23 +1728,21 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
                 .collect::<Vec<_>>();
             frame.render_widget(
                 Paragraph::new(lines)
-                    .block(theme.block(format!("{heading}  ←/→ 切换主菜单")))
+                    .block(
+                        theme.block(format!("{heading}  {} 切换主菜单", theme.horizontal_keys())),
+                    )
                     .style(theme.panel()),
                 popup,
             );
         }
         Overlay::RebootConfirm { confirmed } => {
-            let lines = vec![
-                Line::from("重新上电会丢弃当前 RAM 和设备状态；会话周期预算与 trace 保留。"),
-                Line::from("←/→ 或 Tab 选择；Enter 执行；Esc 取消"),
-                confirmation_buttons(*confirmed, "重新上电", theme),
-            ];
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .block(theme.block("确认重新上电"))
-                    .style(theme.panel())
-                    .wrap(Wrap { trim: false }),
+            draw_confirmation(
+                frame,
                 popup,
+                theme,
+                "重新上电",
+                "重新上电会丢弃当前 RAM 和设备状态；会话周期预算与 trace 保留。".into(),
+                *confirmed,
             );
         }
         Overlay::ReplaceConfirm {
@@ -1722,18 +1750,16 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
             confirmed,
             ..
         } => {
-            let lines = vec![
-                Line::from("替换会丢弃当前 RAM、设备状态和输入队列；会话周期预算与 trace 保留。"),
-                Line::from(format!("ROM：{}", resources.rom_path.display())),
-                Line::from("←/→ 或 Tab 选择；Enter 执行；Esc 取消"),
-                confirmation_buttons(*confirmed, "替换并启动", theme),
-            ];
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .block(theme.block("确认替换当前会话"))
-                    .style(theme.panel())
-                    .wrap(Wrap { trim: false }),
+            draw_confirmation(
+                frame,
                 popup,
+                theme,
+                "替换并启动",
+                format!(
+                    "替换会丢弃当前 RAM、设备状态和输入队列；会话周期预算与 trace 保留。\nROM：{}",
+                    resources.rom_path.display()
+                ),
+                *confirmed,
             );
         }
         Overlay::QuitConfirm => frame.render_widget(
@@ -1808,6 +1834,7 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
 
 fn draw_too_small(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
+    let theme = Theme::from_config(&app.config);
     let text = format!(
         "窗口过小：需要至少 {MIN_WIDTH}×{MIN_HEIGHT}，当前 {}×{}。\n机器已暂停。Ctrl+C/Ctrl+D 退出；有会话时 Enter 确认退出，Esc 取消。",
         area.width, area.height
@@ -1815,8 +1842,7 @@ fn draw_too_small(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
     if let Some(Overlay::QuitConfirm) = &app.overlay {
         frame.render_widget(
-            Paragraph::new("确认退出？ Enter 确认 / Esc 取消")
-                .block(Block::default().borders(Borders::ALL)),
+            Paragraph::new("确认退出？ Enter 确认 / Esc 取消").block(theme.block("")),
             centered(
                 Rect {
                     x: 0,
@@ -1828,6 +1854,45 @@ fn draw_too_small(frame: &mut Frame<'_>, app: &App) {
             ),
         );
     }
+}
+
+fn draw_confirmation(
+    frame: &mut Frame<'_>,
+    popup: Rect,
+    theme: &Theme,
+    action: &str,
+    text: String,
+    confirmed: bool,
+) {
+    let block = theme.block(format!("确认{action}"));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    // Reserve the action row so long paths or wrapped Chinese text cannot
+    // push the selected button and its keyboard instructions out of view.
+    let rows = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(2),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(theme.panel())
+            .wrap(Wrap { trim: false }),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} / Tab 选择\nEnter 执行；Esc 取消",
+            theme.horizontal_keys()
+        ))
+        .style(theme.muted()),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(confirmation_buttons(confirmed, action, theme)).style(theme.panel()),
+        rows[2],
+    );
 }
 
 fn confirmation_buttons(confirmed: bool, action: &str, theme: &Theme) -> Line<'static> {
@@ -2187,6 +2252,99 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.form.rom, "/files/entry-017.bin");
         assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn color_capabilities_and_explicit_preferences_resolve_conservatively() {
+        for (mode, colors, no_color, background) in [
+            (ColorMode::Auto, u16::MAX, false, Color::Rgb(17, 21, 29)),
+            (ColorMode::Auto, 256, false, Color::Indexed(233)),
+            (ColorMode::Auto, 8, false, Color::Reset),
+            (ColorMode::Auto, u16::MAX, true, Color::Reset),
+            (ColorMode::Truecolor, 8, true, Color::Rgb(17, 21, 29)),
+            (ColorMode::Ansi256, u16::MAX, true, Color::Indexed(233)),
+            (ColorMode::Mono, u16::MAX, false, Color::Reset),
+        ] {
+            let mut config = AppConfig::default();
+            config.ui.color_mode = mode;
+            assert_eq!(
+                Theme::with_capabilities(&config, colors, no_color).background,
+                background
+            );
+        }
+    }
+
+    #[test]
+    fn switching_color_modes_updates_every_cell_including_the_root_background() {
+        let mut app = app_with_session(100_000);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        for screen in [ScreenColor::Green, ScreenColor::Amber, ScreenColor::White] {
+            app.config.ui.screen_color = screen;
+            for mode in [ColorMode::Truecolor, ColorMode::Ansi256, ColorMode::Mono] {
+                app.config.ui.color_mode = mode.clone();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let colors = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .flat_map(|cell| [cell.fg, cell.bg])
+                    .collect::<Vec<_>>();
+                match mode {
+                    ColorMode::Truecolor => {
+                        assert!(colors.iter().any(|color| matches!(color, Color::Rgb(..))))
+                    }
+                    ColorMode::Ansi256 => {
+                        assert!(
+                            colors
+                                .iter()
+                                .any(|color| matches!(color, Color::Indexed(..)))
+                        );
+                        assert!(!colors.iter().any(|color| matches!(color, Color::Rgb(..))));
+                    }
+                    ColorMode::Mono => assert!(colors.iter().all(|color| *color == Color::Reset)),
+                    ColorMode::Auto => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn borders_and_navigation_hints_follow_the_ascii_preference() {
+        let mut config = AppConfig::default();
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 6, 3));
+        Theme::from_config(&config)
+            .block("")
+            .render(buffer.area, &mut buffer);
+        assert_eq!(buffer[(0, 0)].symbol(), "╭");
+        config.ui.border = BorderStyle::Ascii;
+        let theme = Theme::from_config(&config);
+        theme.block("").render(buffer.area, &mut buffer);
+        for (position, expected) in [((0, 0), "+"), ((5, 2), "+"), ((1, 0), "-"), ((0, 1), "|")] {
+            assert_eq!(buffer[position].symbol(), expected);
+        }
+        let mut app = app_with_session(100_000);
+        app.config = config;
+        let mut terminal = Terminal::new(TestBackend::new(44, 30)).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Left/Right"), "{text}");
+        assert!(text.replace(' ', "").contains("[取消]"));
+        assert!(text.replace(' ', "").contains("[重新上电]"));
+        assert!(
+            !text
+                .chars()
+                .any(|ch| ('\u{2500}'..='\u{257f}').contains(&ch))
+        );
+        app.overlay = Some(Overlay::QuitConfirm);
+        terminal.backend_mut().resize(30, 10);
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(
+            !buffer_text(terminal.backend().buffer())
+                .chars()
+                .any(|ch| ('\u{2500}'..='\u{257f}').contains(&ch))
+        );
     }
 
     #[test]

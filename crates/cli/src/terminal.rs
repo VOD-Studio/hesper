@@ -19,6 +19,7 @@ pub(crate) struct TerminalGuard {
     paste: bool,
     alternate: bool,
     wrap_disabled: bool,
+    color_disabled: Option<bool>,
     signals: Vec<SigId>,
 }
 
@@ -29,6 +30,7 @@ impl TerminalGuard {
             paste: false,
             alternate: false,
             wrap_disabled: false,
+            color_disabled: None,
             signals: Vec::new(),
         };
         for signal in [
@@ -44,6 +46,11 @@ impl TerminalGuard {
         terminal::enable_raw_mode()?;
         guard.raw = true;
         if mode == TerminalMode::Tui {
+            // The TUI resolves NO_COLOR together with explicit preferences.
+            // Let its palette reach the backend, including Reset when the
+            // user switches back to mono. Restore the library policy on exit.
+            guard.color_disabled = Some(crossterm::style::Colored::ansi_color_disabled_memoized());
+            crossterm::style::force_color_output(true);
             let mut stdout = io::stdout();
             debug_assert!(stdout.is_terminal());
             execute!(stdout, event::EnableBracketedPaste)?;
@@ -80,6 +87,9 @@ impl Drop for TerminalGuard {
         }
         if self.raw {
             let _ = terminal::disable_raw_mode();
+        }
+        if let Some(disabled) = self.color_disabled {
+            crossterm::style::Colored::set_ansi_color_disabled(disabled);
         }
         for id in self.signals.drain(..) {
             signal_hook::low_level::unregister(id);
