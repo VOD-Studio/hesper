@@ -32,7 +32,10 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    apple1::{Session, StopReason, TraceOptions, create_machine, load_program, load_rom},
+    apple1::{
+        Session, StopReason, TraceOptions, create_machine, load_program, load_rom,
+        parse_program_address,
+    },
     config::{self, AppConfig, BorderStyle, ColorMode, ScreenColor},
     format_registers, run_demo_with_trace,
     terminal::{TerminalGuard, TerminalMode},
@@ -153,6 +156,7 @@ struct DirEntry {
 enum ConfigFocus {
     Rom,
     Program,
+    ProgramAddress,
     Validate,
     Launch,
     Cancel,
@@ -162,6 +166,7 @@ enum ConfigFocus {
 struct ConfigForm {
     rom: String,
     program: String,
+    program_address: String,
     focus: ConfigFocus,
     status: Option<String>,
 }
@@ -243,6 +248,7 @@ impl App {
             form: ConfigForm {
                 rom,
                 program,
+                program_address: format!("0x{:04X}", launch.program_address),
                 focus: ConfigFocus::Rom,
                 status: None,
             },
@@ -312,6 +318,10 @@ impl App {
     }
 
     fn validate_resources(&self) -> Result<Resources, String> {
+        let program_address = parse_program_address(&self.form.program_address).map_err(|_| {
+            "程序加载地址无效：请输入 0–65535 的十进制数，或 0xE000 / $E000 形式的十六进制地址"
+                .to_owned()
+        })?;
         let rom_path = Self::text_path(&self.form.rom, "ROM")?;
         let rom_text = rom_path
             .to_str()
@@ -328,7 +338,7 @@ impl App {
                 let text = path
                     .to_str()
                     .ok_or_else(|| "程序路径不是 UTF-8，不能用于此 TUI 表单".to_owned())?;
-                load_program(text, self.launch.program_address).map_err(|error| error.to_string())
+                load_program(text, program_address).map_err(|error| error.to_string())
             })
             .transpose()?;
         let absolute_rom = fs::canonicalize(&rom_path)
@@ -336,7 +346,7 @@ impl App {
         Ok(Resources {
             rom,
             program,
-            program_address: self.launch.program_address,
+            program_address,
             rom_path: absolute_rom,
         })
     }
@@ -630,17 +640,19 @@ impl App {
             return;
         }
         if self.page == Page::Config {
-            let path = match self.form.focus {
-                ConfigFocus::Rom => &mut self.form.rom,
-                ConfigFocus::Program => &mut self.form.program,
+            let (field, label) = match self.form.focus {
+                ConfigFocus::Rom => (&mut self.form.rom, "路径"),
+                ConfigFocus::Program => (&mut self.form.program, "路径"),
+                ConfigFocus::ProgramAddress => (&mut self.form.program_address, "地址"),
                 _ => return,
             };
             if text.chars().any(char::is_control) {
-                self.form.status =
-                    Some("路径粘贴未接收：请使用不含换行或控制字符的单行路径".into());
+                self.form.status = Some(format!(
+                    "{label}粘贴未接收：请使用不含换行或控制字符的单行文本"
+                ));
             } else {
                 // Paths are literal text, including spaces and shell syntax.
-                path.push_str(&text);
+                field.push_str(&text);
                 self.form.status = None;
             }
             self.dirty = true;
@@ -920,17 +932,18 @@ impl App {
             return;
         }
         if key.code == KeyCode::F(4) {
-            self.open_browser(if self.form.focus == ConfigFocus::Program {
-                PathTarget::Program
-            } else {
-                PathTarget::Rom
-            });
+            match self.form.focus {
+                ConfigFocus::Rom => self.open_browser(PathTarget::Rom),
+                ConfigFocus::Program => self.open_browser(PathTarget::Program),
+                _ => {}
+            }
             return;
         }
         if key.code == KeyCode::Tab {
             self.form.focus = match self.form.focus {
                 ConfigFocus::Rom => ConfigFocus::Program,
-                ConfigFocus::Program => ConfigFocus::Validate,
+                ConfigFocus::Program => ConfigFocus::ProgramAddress,
+                ConfigFocus::ProgramAddress => ConfigFocus::Validate,
                 ConfigFocus::Validate => ConfigFocus::Launch,
                 ConfigFocus::Launch => ConfigFocus::Cancel,
                 ConfigFocus::Cancel => ConfigFocus::Rom,
@@ -939,24 +952,37 @@ impl App {
             return;
         }
         match self.form.focus {
-            ConfigFocus::Rom | ConfigFocus::Program => {
-                let text = if self.form.focus == ConfigFocus::Rom {
-                    &mut self.form.rom
-                } else {
-                    &mut self.form.program
+            ConfigFocus::Rom | ConfigFocus::Program | ConfigFocus::ProgramAddress => {
+                let text = match self.form.focus {
+                    ConfigFocus::Rom => &mut self.form.rom,
+                    ConfigFocus::Program => &mut self.form.program,
+                    ConfigFocus::ProgramAddress => &mut self.form.program_address,
+                    _ => unreachable!(),
                 };
                 match key.code {
                     KeyCode::Backspace => {
                         text.pop();
+                        self.form.status = None;
+                    }
+                    KeyCode::Char('u' | 'U') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        text.clear();
+                        self.form.status = None;
                     }
                     KeyCode::Enter => {
-                        self.form.focus = if self.form.focus == ConfigFocus::Rom {
-                            ConfigFocus::Program
-                        } else {
-                            ConfigFocus::Validate
+                        self.form.focus = match self.form.focus {
+                            ConfigFocus::Rom => ConfigFocus::Program,
+                            ConfigFocus::Program => ConfigFocus::ProgramAddress,
+                            _ => ConfigFocus::Validate,
                         };
                     }
-                    KeyCode::Char(ch) => text.push(ch),
+                    KeyCode::Char(ch)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        text.push(ch);
+                        self.form.status = None;
+                    }
                     _ => {}
                 }
             }
@@ -1998,11 +2024,15 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             Span::styled("程序路径（可选）: ", theme.muted()),
             Span::styled(&app.form.program, focused(ConfigFocus::Program)),
         ]),
-        Line::from(format!(
-            "程序加载地址: ${:04X}（--program-address）",
-            app.launch.program_address
-        )),
-        Line::from("F4 浏览当前字段目录；目录最多显示 512 项，不递归扫描。"),
+        Line::from(vec![
+            Span::styled("程序加载地址: ", theme.muted()),
+            Span::styled(
+                format!("[{}]", app.form.program_address),
+                focused(ConfigFocus::ProgramAddress),
+            ),
+        ]),
+        Line::from("地址格式：十进制 / 0xE000 / $E000；Tab 切换，Ctrl+U 清空字段。"),
+        Line::from("F4 浏览路径目录；目录最多显示 512 项，不递归扫描。"),
         Line::from(Span::styled("[校验并保存]", focused(ConfigFocus::Validate))),
         Line::from(Span::styled("[启动]", focused(ConfigFocus::Launch))),
         Line::from(Span::styled("[取消]", focused(ConfigFocus::Cancel))),
@@ -2424,6 +2454,88 @@ mod tests {
         assert_eq!(bus.read(0xE100), 0);
         assert_eq!(bus.read(0x0300), 0);
         assert_eq!(app.resources.as_ref().unwrap().program_address, 0xE000);
+    }
+
+    #[test]
+    fn program_address_field_supports_navigation_editing_and_single_line_paste() {
+        let mut app = App::new(Some(Apple1Launch {
+            program_address: 0xE000,
+            ..Apple1Launch::default()
+        }));
+        app.page = Page::Config;
+        app.terminal_size = (120, 40);
+        app.form.rom = "/rom.bin".into();
+        app.form.program = "/program.bin".into();
+        assert_eq!(app.form.program_address, "0xE000");
+        for expected in [ConfigFocus::Program, ConfigFocus::ProgramAddress] {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            assert_eq!(app.form.focus, expected);
+        }
+        app.handle_key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+        assert!(app.overlay.is_none(), "an address is not a file path");
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(app.form.program_address.is_empty());
+        for ch in "0xE001".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        app.handle_event(Event::Paste("0".into()));
+        assert_eq!(app.form.program_address, "0xE000");
+        assert_eq!(
+            parse_program_address(&app.form.program_address).unwrap(),
+            0xE000
+        );
+        for paste in ["\n300", "\r300", "\0", "\u{1b}"] {
+            app.handle_event(Event::Paste(paste.into()));
+            assert_eq!(app.form.program_address, "0xE000");
+            assert!(
+                app.form
+                    .status
+                    .as_deref()
+                    .unwrap()
+                    .contains("地址粘贴未接收")
+            );
+        }
+        assert_eq!(app.form.rom, "/rom.bin");
+        assert_eq!(app.form.program, "/program.bin");
+        assert!(app.input.is_empty());
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.form.focus, ConfigFocus::Validate);
+        for expected in [ConfigFocus::Launch, ConfigFocus::Cancel, ConfigFocus::Rom] {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            assert_eq!(app.form.focus, expected);
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.form.focus, ConfigFocus::ProgramAddress);
+    }
+
+    #[test]
+    fn invalid_edited_address_cannot_replace_a_running_machine() {
+        let mut app = app_with_session(100_000);
+        app.page = Page::Config;
+        let before_registers = app.session.as_ref().unwrap().machine().cpu().registers();
+        let before_config = app.config.clone();
+        for address in ["", "65536", "0x10000", "E000", "-1"] {
+            app.form.program_address = address.into();
+            app.start_configured(true);
+            assert!(
+                app.form
+                    .status
+                    .as_deref()
+                    .unwrap()
+                    .contains("程序加载地址无效")
+            );
+            assert!(app.overlay.is_none());
+            assert_eq!(app.config, before_config);
+            assert_eq!(
+                app.session.as_ref().unwrap().machine().cpu().registers(),
+                before_registers
+            );
+            assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), 20);
+            assert_eq!(app.resources.as_ref().unwrap().program_address, 0);
+            assert_eq!(app.input, VecDeque::from(*b"A"));
+        }
     }
 
     fn buffer_text(buffer: &Buffer) -> String {

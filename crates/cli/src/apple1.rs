@@ -400,6 +400,20 @@ pub(crate) fn load_rom(path: &str) -> Result<[u8; 256], Box<dyn Error>> {
     Ok(rom)
 }
 
+/// Parse a 16-bit program load address in decimal or prefixed hexadecimal.
+/// Shared by the CLI and the TUI's editable address field.
+pub fn parse_program_address(value: &str) -> Result<u16, std::num::ParseIntError> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .or_else(|| value.strip_prefix('$'))
+    {
+        u16::from_str_radix(hex, 16)
+    } else {
+        value.parse::<u16>()
+    }
+}
+
 /// Read a raw program image that fits wholly within one Apple I RAM bank.
 pub(crate) fn load_program(path: &str, address: u16) -> Result<Vec<u8>, Box<dyn Error>> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read program file '{path}': {e}"))?;

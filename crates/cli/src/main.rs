@@ -10,7 +10,7 @@ use std::{
 
 use hesper::{
     DEFAULT_MAX_STEPS, DemoEvent,
-    apple1::run_apple1,
+    apple1::{parse_program_address, run_apple1},
     format_bus_trace, format_instruction_trace, format_registers, run_demo_with_trace,
     tui::{self, Apple1Launch},
 };
@@ -126,19 +126,6 @@ fn run_demo(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_program_address(value: &str) -> Result<u16, &'static str> {
-    let parsed = if let Some(hex) = value
-        .strip_prefix("0x")
-        .or_else(|| value.strip_prefix("0X"))
-        .or_else(|| value.strip_prefix('$'))
-    {
-        u16::from_str_radix(hex, 16)
-    } else {
-        value.parse::<u16>()
-    };
-    parsed.map_err(|_| "--program-address requires a 16-bit address (decimal, 0xHEX, or $HEX)")
-}
-
 fn parse_apple1(
     mut args: impl Iterator<Item = String>,
 ) -> Result<Option<Apple1Launch>, Box<dyn Error>> {
@@ -161,6 +148,9 @@ fn parse_apple1(
             "--program-address" => {
                 launch.program_address = parse_program_address(
                     &args.next().ok_or("--program-address requires an address")?,
+                )
+                .map_err(
+                    |_| "--program-address requires a 16-bit address (decimal, 0xHEX, or $HEX)",
                 )?;
             }
             "--max-cycles" => {

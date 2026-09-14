@@ -705,3 +705,17 @@ Apple I 固定配置增加 `$E000–$EFFF` 的独立可写 4 KiB RAM，与 `$000
 - release 的 macOS PTY（120×40）验证了同一 CLI 加载地址进入 TUI、BASIC 计算、Ctrl-R 后再次运行、Ctrl-N 确认重新上电后按 `$E000` 重载；启动中心显示 8 KiB RAM 与 `4096 B @ $E000`，正常退出后 termios、备用屏与 bracketed paste 恢复。转录：`.cache/basic-qa/pty-results.log`、`basic-tui-fixed.ansi` 及相关 `.txt` 屏幕快照。
 
 BASIC 文件来自用户本地 `~/Downloads/basic-c.bin`，SHA-256 为 `e423c5c1acff4bea521a72dd4ce4b1435a442cfaad2604b1bfd6edd0fb6d0fc9`；Woz Monitor 使用既有缓存。两份镜像均未改写、下载或提交。这是该镜像的算术与行号程序实测，不是全部 BASIC 语义或其他 BASIC 版本的兼容性认证。未运行完整外部 CPU corpus、远程 CI、Linux/Windows 或原生桌面终端视觉验收。本轮按功能点本地提交，未 push。
+
+
+## 2026-09-14 — TUI 可编辑程序加载地址
+
+启动配置页新增“程序加载地址”文本字段，CLI 地址仅作为初始值，未指定时显示 `0x0000`。Tab/Enter 可从程序路径进入地址字段，再进入校验或启动按钮；支持普通输入、Backspace、单行粘贴和 Ctrl-U 清空，F4 只用于路径字段。CLI 和 TUI 共用 `parse_program_address`，支持十进制与 `0x`/`0X`/`$` 前缀；格式错误在读取资源前显示，完整文件的 RAM 范围仍由共享加载器校验。启动及替换使用编辑后的地址，重新上电继续使用已确认的资源地址。程序路径及地址保留在当前 TUI 进程内，未增加持久化配置字段。
+
+验证结果：
+
+- `cargo test --locked -p hesper --lib`：44 项通过，新增字段导航/输入/粘贴隔离和非法地址不能替换现有会话的回归；既有重建地址测试继续通过。
+- `make verify`：全目标检查、workspace debug/release 测试（各 228 项通过，16 项 ROM 测试按约定 ignored）、Clippy、demo、fmt 与 diff 检查通过。转录：`.cache/tui-address-qa/verify.log`。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试与 12 项 CLI 测试通过，覆盖移动到共享模块后的 CLI 地址解析。转录：`.cache/tui-address-qa/wozmon.log`。
+- `cargo build --locked -p hesper --release`：release 二进制已更新。macOS PTY 在 44×30 和 120×40 下仅运行 `hesper tui`，通过配置页输入用户本地 `basic-c.bin` 路径及地址：`0x10000` 显示格式错误，`0xE001` 显示整段越界，改为 `0xE000` 后成功启动；`E000R` / `PRINT 1+2` 实际输出 `3`。宽屏另将地址改为十进制 `57344` 后确认替换会话，BASIC 输出 `5`；重新上电后再次运行输出 `7`。退出恢复 termios、备用屏和 bracketed paste，既有配置文件内容不变。转录和屏幕文本：`.cache/tui-address-qa/pty-results.log`、`editable-address-44-*.txt`、`editable-address-120-*.txt` 及 `.ansi`。
+
+未修改 CPU/Apple I 机器行为或 BASIC 镜像；未运行完整外部 CPU corpus、远程 CI、Linux/Windows 或原生桌面终端视觉验收。本轮按功能点本地提交，未 push。

@@ -36,7 +36,7 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 
 `--max-cycles` 计的是真实 CPU 总线周期；总线诊断每行以 `M=<会话主板时钟>` 开头，并按 `C<CPU 序号>` 续接，因此刷新停钟在 trace 里表现为 M 的间隔而不是伪造的读写记录。显示没有速度参数：终端固定按原板时序在光标槽接受字符。
 
-加载地址只决定文件放在哪里，不改变 RESET 向量，也不自动运行程序。TUI 配置页显示 CLI 指定的地址，重新上电沿用原始程序字节和地址；物理 RESET 保留两块 RAM。
+加载地址只决定文件放在哪里，不改变 RESET 向量，也不自动运行程序。TUI 配置页可编辑加载地址；CLI 指定的地址用于预填，未指定时预填 `0x0000`。启动和替换会话使用表单中的地址，重新上电沿用已确认的原始程序字节和地址；物理 RESET 保留两块 RAM。
 
 ### 加载 Integer BASIC
 
@@ -47,6 +47,15 @@ cargo build --locked -p hesper --release
 ./target/release/hesper apple1 --rom "$HESPER_APPLE1_ROM" \
   --program ~/Downloads/basic-c.bin --program-address 0xE000
 ```
+
+也可以完全在 TUI 中配置，无需传入这两个程序参数：
+
+1. 运行 `./target/release/hesper tui`，在启动中心按 `C` 打开配置页。
+2. 填写 ROM 路径，再按 `Tab` 到“程序路径”，填写二进制文件的绝对路径，或按 `F4` 选择文件。
+3. 按 `Tab` 到“程序加载地址”，按 `Ctrl+U` 清空默认值，输入 `0xE000`（也接受 `$E000` 或 `57344`）。支持退格和单行粘贴。
+4. 按 `Tab` 到“校验并保存”，或再按一次 `Tab` 到“启动”，按 `Enter` 执行；地址格式错误、超出 16 位或文件跨越 RAM 边界都会显示错误并保留当前会话。
+
+程序路径与地址在本次 TUI 进程中保留；“校验并保存”保存的是 ROM 路径。
 
 进入 Woz Monitor 后输入 `E000R`，看到 BASIC 的 `>` 提示符后输入 `PRINT 1+2`，结果为 `3`。带行号的程序可以用 `RUN` 执行：
 
