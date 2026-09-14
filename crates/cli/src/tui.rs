@@ -24,7 +24,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Widget, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -77,6 +77,25 @@ enum Page {
     Info,
     Settings,
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CenterAction {
+    Configure,
+    Launch,
+    Resume,
+    Demo,
+}
+
+impl CenterAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Configure => " Enter 配置 Apple-1 ",
+            Self::Launch => " Enter 启动 Apple-1 ",
+            Self::Resume => " Enter 返回保留会话 ",
+            Self::Demo => " Enter 运行演示 ",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -727,6 +746,18 @@ impl App {
         }
     }
 
+    fn center_action(&self) -> CenterAction {
+        if self.selected_machine == 1 {
+            CenterAction::Demo
+        } else if self.has_active_session() {
+            CenterAction::Resume
+        } else if self.validate_resources().is_ok() {
+            CenterAction::Launch
+        } else {
+            CenterAction::Configure
+        }
+    }
+
     fn center_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up => {
@@ -735,21 +766,21 @@ impl App {
             KeyCode::Down => {
                 self.selected_machine = (self.selected_machine + 1).min(1);
             }
-            KeyCode::Enter => {
-                if self.selected_machine == 0 {
-                    if self.session.is_some() {
-                        self.open_page(Page::Apple1);
-                    } else if self.form.rom.is_empty() {
-                        self.open_page(Page::Config);
+            KeyCode::Enter => match self.center_action() {
+                CenterAction::Resume => self.open_page(Page::Apple1),
+                CenterAction::Configure => {
+                    self.form.status = if self.form.rom.is_empty() {
+                        None
                     } else {
-                        self.start_configured(true);
-                    }
-                } else {
-                    self.run_demo();
+                        self.validate_resources().err()
+                    };
+                    self.open_page(Page::Config);
                 }
-            }
-            KeyCode::Char('c') | KeyCode::Char('C') => self.open_page(Page::Config),
-            KeyCode::Char('i') | KeyCode::Char('I') => self.open_page(Page::Info),
+                CenterAction::Launch => self.start_configured(true),
+                CenterAction::Demo => self.run_demo(),
+            },
+            KeyCode::Char('c' | 'C') if self.selected_machine == 0 => self.open_page(Page::Config),
+            KeyCode::Char('i' | 'I') if self.selected_machine == 0 => self.open_page(Page::Info),
             KeyCode::F(1) => self.open_help(),
             _ => {}
         }
@@ -1485,67 +1516,121 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     }
     .split(content);
     let columns = [regions[0], regions[2]];
-    let machines = ["Apple-1", "6502 内置演示"];
-    let items: Vec<ListItem<'_>> = machines
-        .iter()
-        .enumerate()
-        .map(|(index, name)| {
-            ListItem::new(Line::from(Span::styled(
-                *name,
+    let machines = [
+        ("Apple-1", "40×24 字符终端"),
+        ("6502 内置演示", "计数程序与执行结果"),
+    ];
+    let items = machines.iter().enumerate().map(|(index, (name, caption))| {
+        let marker = if index == app.selected_machine {
+            "> "
+        } else {
+            "  "
+        };
+        ListItem::new(vec![
+            Line::from(Span::styled(
+                format!("{marker}{name}"),
                 if index == app.selected_machine {
                     theme.selected()
                 } else {
                     theme.base()
                 },
-            )))
-        })
-        .collect();
-    frame.render_widget(List::new(items).block(theme.block("模拟器")), columns[0]);
-    let apple = app.selected_machine == 0;
-    let status = if app.session.is_some() {
-        "本次进程内保留的会话可继续"
-    } else if app.form.rom.is_empty() {
-        "ROM 状态：未配置"
-    } else {
-        match app.validate_resources() {
-            Ok(_) => "ROM 状态：已校验",
-            Err(_) => "ROM 状态：不可用",
-        }
-    };
-    let details = if apple {
-        vec![
-            "Apple-1",
-            "固定实现：MOS 6502 / NMOS、40×24 字符屏幕、4 KiB RAM、256 B Woz Monitor ROM。",
-            status,
-            "Enter 启动/继续会话；C 配置 ROM；I 查看实现范围。",
-        ]
-    } else {
-        vec![
-            "6502 内置演示",
-            "运行受限的原创计数程序并显示真实寄存器和内存结果。",
-            "它不会替换已保留的 Apple-1 会话。",
-            "Enter 运行。",
-        ]
-    };
-    let text = details.into_iter().map(Line::from).collect::<Vec<_>>();
+            )),
+            Line::from(Span::styled(format!("  {caption}"), theme.muted())),
+            Line::default(),
+        ])
+    });
+    let list_rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(columns[0]);
     frame.render_widget(
-        Paragraph::new(text)
-            .block(theme.block("详情"))
-            .style(theme.base())
-            .wrap(Wrap { trim: false }),
-        columns[1],
+        Paragraph::new("选择模拟器").style(theme.muted()),
+        list_rows[0],
     );
-    if let Some(warning) = &app.config_warning {
-        frame.render_widget(
-            Paragraph::new(warning.as_str()).style(theme.status()),
-            Rect {
-                x: columns[1].x + 1,
-                y: columns[1].bottom().saturating_sub(2),
-                width: columns[1].width.saturating_sub(2),
-                height: 1,
-            },
-        );
-    }
+    frame.render_widget(List::new(items), list_rows[1]);
+
+    let action = app.center_action();
+    let block = theme.block("").padding(Padding::new(2, 2, 1, 1));
+    let inner = block.inner(columns[1]);
+    frame.render_widget(block, columns[1]);
+    // Keep the primary action visible even with long resource paths, warnings,
+    // or the vertically stacked layout at the minimum terminal size.
+    let rows = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    let parameter = |label: &'static str, value: String| {
+        Line::from(vec![
+            Span::styled(label, theme.muted()),
+            Span::raw(truncate_path(
+                &value,
+                usize::from(inner.width.saturating_sub(6)),
+            )),
+        ])
+    };
+    let details = if app.selected_machine == 0 {
+        let status = match action {
+            CenterAction::Resume if app.faulted => "会话故障",
+            CenterAction::Resume => "会话已保留",
+            CenterAction::Launch => "已校验",
+            _ if app.form.rom.is_empty() => "未配置",
+            _ => "资源待检查",
+        };
+        let rom_path = if let Some(resources) = &app.resources {
+            resources.rom_path.display().to_string()
+        } else if app.form.rom.is_empty() {
+            "尚未选择".into()
+        } else {
+            app.form.rom.clone()
+        };
+        let program = if let Some(resources) = &app.resources {
+            resources.program.as_ref().map_or_else(
+                || "未加载".into(),
+                |bytes| format!("已加载 {} B", bytes.len()),
+            )
+        } else if app.form.program.is_empty() {
+            "未加载".into()
+        } else {
+            app.form.program.clone()
+        };
+        vec![
+            Line::from(Span::styled("Apple-1", theme.title())),
+            Line::from(Span::styled("6502 计算机 · 复古字符终端", theme.muted())),
+            Line::default(),
+            parameter("CPU   ", "MOS 6502 / NMOS".into()),
+            parameter("显示  ", "40×24 字符".into()),
+            parameter("RAM   ", "4 KiB".into()),
+            parameter("ROM   ", format!("{status} · 256 B")),
+            parameter("路径  ", rom_path),
+            parameter("程序  ", program),
+        ]
+    } else {
+        vec![
+            Line::from(Span::styled("6502 内置演示", theme.title())),
+            Line::from(Span::styled("运行一次，看清程序的执行结果", theme.muted())),
+            Line::default(),
+            parameter("CPU   ", "MOS 6502 / NMOS".into()),
+            parameter("程序  ", "内置计数程序".into()),
+            parameter("输出  ", "内存、寄存器与执行周期".into()),
+            parameter("资源  ", "已内置 · 无需 ROM 文件".into()),
+            Line::default(),
+            Line::from(Span::styled("Apple-1 会话会继续保留。", theme.muted())),
+        ]
+    };
+    frame.render_widget(Paragraph::new(details), rows[0]);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(action.label(), theme.selected()))),
+        rows[2],
+    );
+    let hint = app
+        .config_warning
+        .as_deref()
+        .unwrap_or(if app.selected_machine == 0 {
+            "C 配置    I 模拟器信息"
+        } else {
+            "运行后可按 R 重跑，Esc 返回。"
+        });
+    frame.render_widget(Paragraph::new(hint).style(theme.muted()), rows[3]);
 }
 
 fn draw_apple1(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
@@ -2411,6 +2496,65 @@ mod tests {
             .map(|x| buffer[(x, buffer.area.height - 2)].symbol())
             .collect::<String>()
             .replace(' ', "")
+    }
+
+    #[test]
+    fn center_actions_stay_visible_and_match_the_enter_key() {
+        for (width, height) in [(44, 30), (79, 30), (80, 30), (120, 40), (180, 50)] {
+            let mut app = app_with_session(100_000);
+            app.return_to_center();
+            app.config_warning = Some("配置文件的路径与错误信息".repeat(20));
+            app.form.rom = format!("/missing/{}/rom.bin", "中文目录/".repeat(40));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for action in [
+                CenterAction::Resume,
+                CenterAction::Configure,
+                CenterAction::Demo,
+            ] {
+                app.page = Page::Center;
+                assert_eq!(app.center_action(), action);
+                let rendered = terminal.draw(|frame| app.draw(frame)).unwrap();
+                // TestBackend retains old symbols in continuation cells covered
+                // by newly drawn wide characters; inspect the actual frame.
+                let text = buffer_text(rendered.buffer).replace(' ', "");
+                assert!(
+                    text.contains(&action.label().replace(' ', "")),
+                    "{width}×{height}: {text}"
+                );
+                app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                match action {
+                    CenterAction::Resume => {
+                        assert_eq!(app.page, Page::Apple1);
+                        assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), 20);
+                        assert!(app.user_paused);
+                        app.session = None;
+                        app.resources = None;
+                    }
+                    CenterAction::Configure => {
+                        assert_eq!(app.page, Page::Config);
+                        assert!(
+                            app.form.status.is_some(),
+                            "invalid resources must show an error"
+                        );
+                        app.selected_machine = 1;
+                    }
+                    CenterAction::Demo => {
+                        assert_eq!(app.page, Page::Demo);
+                        assert!(app.demo.is_some());
+                    }
+                    CenterAction::Launch => unreachable!(),
+                }
+            }
+            app.page = Page::Center;
+            app.selected_machine = 0;
+            app.form.rom.clear();
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert_eq!(app.page, Page::Config);
+            assert!(
+                app.form.status.is_none(),
+                "empty initial configuration is not an error"
+            );
+        }
     }
 
     #[test]
