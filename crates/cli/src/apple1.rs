@@ -541,12 +541,22 @@ fn advance_and_print(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
     /// A fixed 40x24 grid drawn from the machine's own screen model.
-    /// Requires a real terminal on both stdin and stdout.
+    /// Requires a real, non-dumb terminal on both stdin and stdout.
     Grid,
     /// The raw stream of characters the display finished, CR expanded to
-    /// CRLF. Used whenever stdout is not a terminal, so no cursor or
-    /// screen-control sequence is ever written into a file or a pipe.
+    /// CRLF. Used whenever stdout is not a terminal or TERM=dumb, so no
+    /// cursor or screen-control sequence is emitted by the host.
     Stream,
+}
+
+impl View {
+    fn for_stdout(is_terminal: bool, term: Option<&str>) -> Self {
+        if is_terminal && term != Some("dumb") {
+            Self::Grid
+        } else {
+            Self::Stream
+        }
+    }
 }
 
 /// Project one machine screen byte for a host terminal: printable ASCII as
@@ -703,11 +713,10 @@ fn run_interactive(
     rom: &[u8; 256],
     program: Option<&[u8]>,
 ) -> Result<StopReason, Box<dyn Error>> {
-    let view = if io::stdout().is_terminal() {
-        View::Grid
-    } else {
-        View::Stream
-    };
+    let view = View::for_stdout(
+        io::stdout().is_terminal(),
+        std::env::var("TERM").ok().as_deref(),
+    );
     let terminated = Arc::new(AtomicBool::new(false));
     let _guard = TerminalGuard::enter(
         if view == View::Grid {
@@ -871,6 +880,33 @@ fn print_output(output: &[u8], stdout: &mut impl Write) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dumb_terminals_and_redirected_output_use_the_plain_stream() {
+        for (is_terminal, term, expected) in [
+            (true, Some("dumb"), View::Stream),
+            (false, Some("xterm-256color"), View::Stream),
+            (false, Some("dumb"), View::Stream),
+            (false, None, View::Stream),
+            (true, Some("xterm-256color"), View::Grid),
+            (true, None, View::Grid),
+        ] {
+            assert_eq!(View::for_stdout(is_terminal, term), expected);
+        }
+        let session = Session::new(
+            create_machine(&test_rom(0), None).unwrap(),
+            Some(0),
+            TraceOptions::new(false, false, 64),
+        );
+        let view = View::for_stdout(true, Some("dumb"));
+        let mut output = Vec::new();
+        let mut redraw = true;
+        let mut status = String::new();
+        draw_if_needed(view, &session, "[RESET]", &mut redraw, &mut output).unwrap();
+        assert!(output.is_empty());
+        announce(view, "[RESET]", &mut status, &mut redraw, &mut output).unwrap();
+        assert_eq!(output, b"\r\n[RESET]\r\n");
+    }
 
     /// Minimal original ROM whose reset vector points at RAM $0000; the
     /// pinned Woz Monitor image is never needed to test the host's budget.
