@@ -104,7 +104,7 @@ cargo run -p hesper -- demo --bus-trace --trace-limit 4
 
 首版包含：启动中心、Apple-1 运行页、6502 演示结果页、启动配置、模拟器信息、显示设置、帮助，以及必要的确认/错误弹窗。
 
-主菜单为「模拟器」「会话」「显示」「帮助」。F10 在所有 TUI 页面激活顶栏菜单，左右键选择主菜单，上下键选择菜单项，Enter 执行，Esc 关闭并回到原焦点；F2 仍可直接打开会话菜单。列表使用上下键移动、Enter 执行；Tab/Shift+Tab 在表单或按钮组中切换焦点。鼠标作为可选增强，默认关闭，不影响完整键盘流程。
+主菜单为「模拟器」「会话」「显示」「帮助」。F10 在所有 TUI 页面激活顶栏菜单，左右键选择主菜单，上下键选择菜单项，Enter 执行，Esc 关闭并回到原焦点；F2 仍可直接打开会话菜单。列表使用上下键移动、Enter 执行；Tab/Shift+Tab 在表单或按钮组中切换焦点。2026-09-14 调整：菜单在对应标题下方展开，鼠标菜单默认开启，已有显式关闭的配置仍保留；显示设置提供开关，不影响完整键盘流程。点击标题打开或收起，展开后移动鼠标切换分类和高亮项目，点击项目执行，点击外部收起；确认框和文件浏览器保持独占焦点。
 
 启动中心左侧仅显示实际已实现的 Apple-1 和“6502 内置演示”。不要加入可点击但没有实现的 Apple II 条目。以后实际接入第二种机器时再扩展静态条目和分支。
 
@@ -174,7 +174,7 @@ screen_color = "green" # green / amber / white
 sidebar = true
 border = "rounded" # rounded / ascii
 color_mode = "auto" # auto / truecolor / ansi256 / mono
-mouse = false
+mouse = true
 
 [apple1]
 rom_path = "/absolute/path/to/wozmon.bin"

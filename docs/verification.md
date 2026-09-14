@@ -666,3 +666,19 @@ alternate-screen／line-wrap／清屏／光标定位／bracketed-paste 序列并
 - 复跑前轮 PTY 交互回归：F2/Ctrl+N、默认取消、通知过期、帮助返回、资源替换确认、中文路径粘贴、文件浏览滚动、色彩模式与 ASCII 均通过；SIGTERM 后 termios、备用屏、bracketed paste 恢复。转录：`.cache/tui-visual-qa/regression-results.log`。
 
 视觉证据：将实际 PTY 输出的字符、前景色、背景色和强调样式重绘为 PNG，检查宽屏/窄屏启动中心、菜单与运行页。代表图位于 `.cache/tui-visual-qa/launcher-120x40-apple1.png`、`launcher-44x30-apple1.png` 和 `apple1-reset.png`。这些是终端输出重绘图；电脑控制工具因安全限制拒绝访问 Ghostty，未完成 Ghostty 原生窗口和字体的视觉验收。未实测 Linux/Windows 或运行远程 CI。本轮按功能点本地提交，未 push。
+
+## 2026-09-14 — 顶栏下拉菜单与鼠标操作
+
+菜单按标题的终端字符坐标向下展开，宽度随菜单内容适配；绘制与鼠标命中共用几何信息。左键打开、执行或收起，展开后移动鼠标切换分类和高亮项目；F10/F2、方向键、Enter/Esc 保留。鼠标输入服从确认框、错误框、文件浏览器的独占焦点及最小窗口限制。显示设置接入既有 `ui.mouse` 字段：新配置默认开启，已保存的 `false` 保留。`TerminalGuard` 按设置启停鼠标捕获，并负责退出清理；采用现有 [Crossterm 0.29 鼠标接口](https://docs.rs/crossterm/0.29.0/crossterm/event/index.html)，未增加依赖或改动 CPU/机器行为。
+
+PTY 检查另发现：窄屏启动中心的中文字符可能横跨下拉框边缘，仅调用 `Clear` 会留下不合法的宽字符组合，导致实际终端 diff 漏画边框。现于共享弹窗绘制入口清除跨边界字符的两格；回归同时断言原始 frame 和 TestBackend 接收的实际 diff，修复前能复现边框错误。
+
+实际验证结果：
+
+- `cargo test -p hesper --lib --locked`：41 项通过，新增 3 项鼠标/下拉交互回归及 1 项配置默认值/显式关闭回归；涵盖 `44×30`、`80×30`、`120×40`、`180×50` 和两种边框。
+- `make verify`：最终代码的 fmt、全目标 check、workspace debug/release 测试、Clippy、demo 与 diff 检查全部通过。转录：`.cache/tui-menu-qa/verify.log`。debug/release 二进制均已更新。
+- release 二进制的 macOS PTY：`44×30` 与 `120×40` 通过 SGR 鼠标点击、悬停切换、菜单执行、显示设置开关鼠标、点击外部收起；正常退出后鼠标捕获、备用屏、bracketed paste 和 termios 恢复。
+- 既有本地 Woz Monitor ROM 的 PTY：运行时打开菜单停止推进、关闭后恢复、鼠标暂停和重新上电确认隔离通过；菜单打开时 SIGTERM 退出后同样完成终端恢复。未下载 ROM。转录：`.cache/tui-menu-qa/pty-results.log` 与该目录中的 `.ansi` 文件。
+- 视觉核对：检查实际终端输出重绘的 `mouse-44x30-session.png` 与 `apple1-mouse-session.png`，下拉框贴合对应标题、边框完整，底部提示仍可见。
+
+上述图像是 PTY 输出重绘；系统 Terminal 的界面控制被工具安全限制拒绝，未完成原生桌面终端字体/鼠标的视觉验收。未实测 Linux/Windows 或运行远程 CI。本轮未提交、推送或发布。

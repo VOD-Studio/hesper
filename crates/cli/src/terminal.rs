@@ -17,6 +17,7 @@ pub(crate) enum TerminalMode {
 pub(crate) struct TerminalGuard {
     raw: bool,
     paste: bool,
+    mouse: bool,
     alternate: bool,
     wrap_disabled: bool,
     color_disabled: Option<bool>,
@@ -28,6 +29,7 @@ impl TerminalGuard {
         let mut guard = Self {
             raw: false,
             paste: false,
+            mouse: false,
             alternate: false,
             wrap_disabled: false,
             color_disabled: None,
@@ -68,11 +70,29 @@ impl TerminalGuard {
         }
         Ok(guard)
     }
+
+    pub(crate) fn set_mouse(&mut self, enabled: bool) -> io::Result<()> {
+        if self.mouse != enabled {
+            // Track acquisition before writing so Drop also cleans up a
+            // partially written enable sequence if the terminal fails.
+            if enabled {
+                self.mouse = true;
+                execute!(io::stdout(), event::EnableMouseCapture)?;
+            } else {
+                execute!(io::stdout(), event::DisableMouseCapture)?;
+                self.mouse = false;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
+        if self.mouse {
+            let _ = execute!(stdout, event::DisableMouseCapture);
+        }
         if self.alternate {
             let _ = execute!(stdout, cursor::Show);
         }

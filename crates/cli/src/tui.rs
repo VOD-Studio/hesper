@@ -14,13 +14,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use hesper_apple1::display::{COLUMNS, Display, ROWS};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Position, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
@@ -686,7 +689,62 @@ impl App {
             }
             Event::Paste(text) => self.handle_paste(text),
             Event::Key(key) => self.handle_key(key),
-            Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {}
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            Event::FocusGained | Event::FocusLost => {}
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if !self.config.ui.mouse || !self.normal_size() {
+            return;
+        }
+        let clicked = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+        if !clicked && mouse.kind != MouseEventKind::Moved {
+            return;
+        }
+        let menu = match self.overlay {
+            Some(Overlay::Menu { kind, selected }) => Some((kind, selected)),
+            None => None,
+            // Confirmations, errors and file browsers retain exclusive focus.
+            Some(_) => return,
+        };
+        let area = Rect::new(0, 0, self.terminal_size.0, self.terminal_size.1);
+        let position = Position::new(mouse.column, mouse.row);
+        if let Some((kind, _, _)) = menu_tabs(area)
+            .into_iter()
+            .find(|(_, _, tab)| tab.contains(position))
+        {
+            if clicked || menu.is_some_and(|(active, _)| active != kind) {
+                self.overlay = if clicked && menu.is_some_and(|(active, _)| active == kind) {
+                    None
+                } else {
+                    Some(Overlay::Menu { kind, selected: 0 })
+                };
+                self.dirty = true;
+            }
+            return;
+        }
+        if let Some((kind, selected)) = menu {
+            let popup = menu_popup(area, kind);
+            // Match the dropdown's border and horizontal content padding.
+            let items = popup.inner(Margin::new(2, 1));
+            if items.contains(position) {
+                let index = usize::from(mouse.row - items.y);
+                if clicked {
+                    self.overlay = None;
+                    self.execute_menu(kind, index);
+                    self.dirty = true;
+                } else if index != selected {
+                    self.overlay = Some(Overlay::Menu {
+                        kind,
+                        selected: index,
+                    });
+                    self.dirty = true;
+                }
+            } else if clicked && !popup.contains(position) {
+                self.overlay = None;
+                self.dirty = true;
+            }
         }
     }
 
@@ -906,7 +964,7 @@ impl App {
                 self.return_to_previous_page();
             }
             KeyCode::Up => self.settings_row = self.settings_row.saturating_sub(1),
-            KeyCode::Down => self.settings_row = (self.settings_row + 1).min(4),
+            KeyCode::Down => self.settings_row = (self.settings_row + 1).min(5),
             KeyCode::Enter => match self.settings_row {
                 0 => {
                     self.config.ui.screen_color = match self.config.ui.screen_color {
@@ -930,7 +988,8 @@ impl App {
                         ColorMode::Mono => ColorMode::Auto,
                     }
                 }
-                4 => match self.save_config() {
+                4 => self.config.ui.mouse = !self.config.ui.mouse,
+                5 => match self.save_config() {
                     Ok(()) => self.notify("设置已保存"),
                     Err(error) => self.error(format!("配置未保存：{error}")),
                 },
@@ -1165,7 +1224,7 @@ impl App {
             Some(Overlay::Menu { kind, .. }) => Some(kind),
             _ => None,
         };
-        draw_menu_bar(frame, rows[1], active_menu, &theme);
+        draw_menu_bar(frame, area, active_menu, &theme);
         match self.page {
             Page::Center => draw_center(frame, rows[2], self, &theme),
             Page::Apple1 => draw_apple1(frame, rows[2], self, &theme),
@@ -1220,10 +1279,11 @@ pub fn run(launch: Option<Apple1Launch>) -> Result<(), Box<dyn Error>> {
         return Err("TUI requires a non-dumb terminal on both stdin and stdout".into());
     }
     let terminated = Arc::new(AtomicBool::new(false));
-    let guard = TerminalGuard::enter(TerminalMode::Tui, &terminated)?;
+    let mut guard = TerminalGuard::enter(TerminalMode::Tui, &terminated)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(Some(launch));
+    guard.set_mouse(app.config.ui.mouse)?;
     if app.launch.direct && !app.form.rom.is_empty() {
         app.start_configured(false);
     }
@@ -1246,6 +1306,7 @@ pub fn run(launch: Option<Apple1Launch>) -> Result<(), Box<dyn Error>> {
                 app.handle_event(event::read()?);
             }
         }
+        guard.set_mouse(app.config.ui.mouse)?;
         app.advance();
         if app.dirty {
             terminal.draw(|frame| app.draw(frame))?;
@@ -1400,7 +1461,7 @@ fn footer(app: &App, width: u16, theme: &Theme) -> Line<'static> {
             Page::Settings => vec![
                 (
                     "Enter",
-                    if app.settings_row == 4 {
+                    if app.settings_row == 5 {
                         "保存"
                     } else {
                         "切换"
@@ -1594,25 +1655,52 @@ impl Theme {
     }
 }
 
-fn draw_menu_bar(frame: &mut Frame<'_>, area: Rect, active: Option<MenuKind>, theme: &Theme) {
-    let mut spans = vec![Span::raw("  ")];
-    for (kind, label) in [
+/// Drawing and mouse hit testing share terminal-cell geometry, including
+/// the width of Chinese labels and the gaps between tabs.
+fn menu_tabs(area: Rect) -> [(MenuKind, &'static str, Rect); 4] {
+    let mut x = area.x.saturating_add(2);
+    [
         (MenuKind::Emulator, " 模拟器 "),
         (MenuKind::Session, " 会话 "),
         (MenuKind::Display, " 显示 "),
         (MenuKind::Help, " 帮助 "),
-    ] {
-        spans.push(Span::styled(
-            label,
-            if active == Some(kind) {
+    ]
+    .map(|(kind, label)| {
+        let width = label.width() as u16;
+        let tab = Rect::new(x, area.y.saturating_add(1), width, 1).intersection(area);
+        x = x.saturating_add(width + 1);
+        (kind, label, tab)
+    })
+}
+
+fn menu_popup(area: Rect, kind: MenuKind) -> Rect {
+    let (_, _, tab) = menu_tabs(area)
+        .into_iter()
+        .find(|(candidate, _, _)| *candidate == kind)
+        .expect("every menu has a tab");
+    let entries = menu_entries(kind);
+    let width = (entries.iter().map(|entry| entry.width()).max().unwrap_or(0) as u16 + 4)
+        .max(14)
+        .min(area.width);
+    Rect::new(
+        tab.x.min(area.right().saturating_sub(width)),
+        tab.bottom(),
+        width,
+        (entries.len() as u16 + 2).min(area.bottom().saturating_sub(tab.bottom())),
+    )
+}
+
+fn draw_menu_bar(frame: &mut Frame<'_>, area: Rect, active: Option<MenuKind>, theme: &Theme) {
+    for (kind, label, tab) in menu_tabs(area) {
+        frame.render_widget(
+            Paragraph::new(label).style(if active == Some(kind) {
                 theme.selected()
             } else {
                 theme.muted()
-            },
-        ));
-        spans.push(Span::raw(" "));
+            }),
+            tab,
+        );
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
@@ -1942,6 +2030,10 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         ),
         format!("边框：{:?}", app.config.ui.border),
         format!("颜色模式：{:?}", app.config.ui.color_mode),
+        format!(
+            "鼠标菜单：{}",
+            if app.config.ui.mouse { "开" } else { "关" }
+        ),
         "保存设置".to_owned(),
     ];
     let items: Vec<ListItem<'_>> = values
@@ -1964,7 +2056,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页可粘贴单行路径；机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
+    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n鼠标：点击顶栏展开下拉菜单，移动选择，点击菜单项执行；再次点击标题或点击外部收起。显示设置可开关鼠标菜单，旧配置若已关闭，可用 F10 进入设置开启。\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页可粘贴单行路径；机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("帮助"))
@@ -1975,31 +2067,42 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
 }
 
 fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme: &Theme) {
-    let width = area.width.saturating_sub(8).clamp(20, 70);
-    let height = match overlay {
-        Overlay::Menu { kind, .. } => (menu_entries(*kind).len() as u16 + 3).min(area.height),
-        Overlay::Browser { .. } => area.height.saturating_sub(6).min(20),
-        Overlay::RebootConfirm { .. } | Overlay::ReplaceConfirm { .. } => area.height.min(12),
-        _ => 5,
+    let popup = if let Overlay::Menu { kind, .. } = overlay {
+        menu_popup(frame.area(), *kind)
+    } else {
+        let width = area.width.saturating_sub(8).clamp(20, 70);
+        let height = match overlay {
+            Overlay::Browser { .. } => area.height.saturating_sub(6).min(20),
+            Overlay::RebootConfirm { .. } | Overlay::ReplaceConfirm { .. } => area.height.min(12),
+            _ => 5,
+        };
+        centered(
+            Rect {
+                x: area.x,
+                y: area.y,
+                width,
+                height,
+            },
+            area,
+        )
     };
-    let popup = centered(
-        Rect {
-            x: area.x,
-            y: area.y,
-            width,
-            height,
-        },
-        area,
-    );
+    // Clear alone can leave half a Chinese character crossing a popup edge.
+    // Blank both halves, or the terminal diff may skip the new border cell.
+    let buffer = frame.buffer_mut();
+    for y in popup.top()..popup.bottom() {
+        for x in [popup.left(), popup.right()] {
+            if x > buffer.area.left()
+                && x < buffer.area.right()
+                && buffer[(x - 1, y)].symbol().width() > 1
+            {
+                buffer[(x - 1, y)].set_char(' ');
+                buffer[(x, y)].set_char(' ');
+            }
+        }
+    }
     frame.render_widget(Clear, popup);
     match overlay {
         Overlay::Menu { kind, selected } => {
-            let heading = match kind {
-                MenuKind::Emulator => "模拟器",
-                MenuKind::Session => "会话",
-                MenuKind::Display => "显示",
-                MenuKind::Help => "帮助",
-            };
             let lines = menu_entries(*kind)
                 .iter()
                 .enumerate()
@@ -2013,9 +2116,7 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
                 .collect::<Vec<_>>();
             frame.render_widget(
                 List::new(lines)
-                    .block(
-                        theme.block(format!("{heading}  {} 切换主菜单", theme.horizontal_keys())),
-                    )
+                    .block(theme.block("").padding(Padding::horizontal(1)))
                     .style(theme.panel()),
                 popup,
             );
@@ -2266,6 +2367,164 @@ mod tests {
 
     fn buffer_text(buffer: &Buffer) -> String {
         buffer.content.iter().map(|cell| cell.symbol()).collect()
+    }
+
+    fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    #[test]
+    fn dropdowns_render_below_the_clicked_chinese_tab_at_each_terminal_size() {
+        for (width, height) in [(44, 30), (80, 30), (120, 40), (180, 50)] {
+            for border in [BorderStyle::Rounded, BorderStyle::Ascii] {
+                let mut app = app_with_session(100_000);
+                app.config.ui.border = border.clone();
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                for (kind, x) in [
+                    (MenuKind::Emulator, 2),
+                    (MenuKind::Session, 11),
+                    (MenuKind::Display, 18),
+                    (MenuKind::Help, 25),
+                ] {
+                    app.return_to_center();
+                    terminal.draw(|frame| app.draw(frame)).unwrap();
+                    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 2, 1);
+                    assert!(
+                        matches!(app.overlay, Some(Overlay::Menu { kind: active, selected: 0 }) if active == kind)
+                    );
+                    let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+                    assert_eq!(
+                        frame.buffer[(x, 2)].symbol(),
+                        if border == BorderStyle::Ascii {
+                            "+"
+                        } else {
+                            "╭"
+                        }
+                    );
+                    for (index, entry) in menu_entries(kind).iter().enumerate() {
+                        let row = (x + 2..width)
+                            .map(|column| frame.buffer[(column, index as u16 + 3)].symbol())
+                            .collect::<String>();
+                        assert!(row.replace(' ', "").starts_with(&entry.replace(' ', "")));
+                    }
+                    // The emitted diff must draw the border too, even when
+                    // the underlying page has a wide character across it.
+                    assert_eq!(
+                        terminal.backend().buffer()[(x, 2)].symbol(),
+                        if border == BorderStyle::Ascii {
+                            "+"
+                        } else {
+                            "╭"
+                        }
+                    );
+                    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_and_keyboard_share_menu_actions_without_advancing_the_machine() {
+        let click = MouseEventKind::Down(MouseButton::Left);
+        for paused in [false, true] {
+            let mut app = app_with_session(100_000);
+            app.user_paused = paused;
+            mouse(&mut app, MouseEventKind::Moved, 12, 1);
+            assert!(app.overlay.is_none(), "hover alone must not open a menu");
+            mouse(&mut app, click, 12, 1);
+            assert!(!app.running());
+            app.advance();
+            assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), 20);
+            assert_eq!(app.input, [b'A']);
+            mouse(&mut app, MouseEventKind::Moved, 13, 4);
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::Menu { selected: 1, .. })
+            ));
+            mouse(&mut app, MouseEventKind::Moved, 19, 1);
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::Menu {
+                    kind: MenuKind::Display,
+                    selected: 0
+                })
+            ));
+            mouse(&mut app, click, 20, 3);
+            assert!(app.overlay.is_none());
+            assert_eq!(app.page, Page::Settings);
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(app.page, Page::Apple1);
+            assert_eq!(app.user_paused, paused);
+            // F2 opens the same dropdown; a click runs the action once.
+            app.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+            mouse(&mut app, click, 13, 4);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 13, 4);
+            assert!(app.overlay.is_none());
+            assert_eq!(app.user_paused, !paused);
+            mouse(&mut app, click, 12, 1);
+            mouse(&mut app, click, 12, 1);
+            assert!(app.overlay.is_none(), "clicking the active tab closes it");
+            mouse(&mut app, click, 12, 1);
+            mouse(&mut app, click, 100, 20);
+            assert!(app.overlay.is_none(), "outside click closes the menu");
+            assert_eq!(app.user_paused, !paused);
+            assert_eq!(app.input, [b'A']);
+            assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), 20);
+        }
+    }
+
+    #[test]
+    fn menu_mouse_input_respects_confirmation_size_and_preferences() {
+        let click = MouseEventKind::Down(MouseButton::Left);
+        let mut app = app_with_session(100_000);
+        mouse(&mut app, click, 12, 1);
+        mouse(&mut app, click, 11, 2);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Right), 100, 20);
+        assert!(
+            matches!(app.overlay, Some(Overlay::Menu { .. })),
+            "borders and right clicks do not execute or dismiss"
+        );
+        mouse(&mut app, click, 13, 7);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::RebootConfirm { confirmed: false })
+        ));
+        mouse(&mut app, click, 3, 1);
+        mouse(&mut app, click, 13, 7);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::RebootConfirm { confirmed: false })
+        ));
+        assert_eq!(
+            app.session.as_ref().unwrap().machine().bus().ram_slice()[0x0300],
+            0xab
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_event(Event::Resize(30, 10));
+        mouse(&mut app, click, 3, 1);
+        assert!(app.overlay.is_none());
+        app.handle_event(Event::Resize(44, 30));
+        app.execute_menu(MenuKind::Display, 0);
+        app.settings_row = 4;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.config.ui.mouse);
+        mouse(&mut app, click, 3, 1);
+        assert!(app.overlay.is_none());
+        app.handle_key(KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
+        assert!(
+            matches!(app.overlay, Some(Overlay::Menu { .. })),
+            "keyboard menus remain available with mouse off"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        mouse(&mut app, click, 3, 1);
+        assert!(matches!(app.overlay, Some(Overlay::Menu { .. })));
     }
 
     #[test]

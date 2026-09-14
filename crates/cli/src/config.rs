@@ -55,7 +55,7 @@ impl Default for UiConfig {
             sidebar: true,
             border: BorderStyle::Rounded,
             color_mode: ColorMode::Auto,
-            mouse: false,
+            mouse: true,
         }
     }
 }
@@ -154,6 +154,17 @@ fn replace(temp: &Path, path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_defaults_on_and_preserves_an_explicit_saved_preference() {
+        assert!(toml::from_str::<AppConfig>("").unwrap().ui.mouse);
+        assert!(
+            !toml::from_str::<AppConfig>("[ui]\nmouse = false")
+                .unwrap()
+                .ui
+                .mouse
+        );
+    }
 
     #[test]
     fn round_trip_keeps_unicode_and_space_paths() {
