@@ -85,7 +85,9 @@ enum Overlay {
         kind: MenuKind,
         selected: usize,
     },
-    RebootConfirm,
+    RebootConfirm {
+        confirmed: bool,
+    },
     ReplaceConfirm {
         resources: Box<Resources>,
         save_path: bool,
@@ -608,6 +610,9 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        // A command can stop execution before advance() has a chance to
+        // invalidate the frame (menus and confirmations in particular).
+        self.dirty = true;
         if self.overlay.is_some() {
             self.handle_overlay_key(key);
             return;
@@ -721,7 +726,7 @@ impl App {
                 KeyCode::Char('r') | KeyCode::Char('R') => self.reset(),
                 KeyCode::Char('l') | KeyCode::Char('L') => self.clear_screen(),
                 KeyCode::Char('n') | KeyCode::Char('N') => {
-                    self.overlay = Some(Overlay::RebootConfirm)
+                    self.overlay = Some(Overlay::RebootConfirm { confirmed: false })
                 }
                 _ => {}
             }
@@ -853,10 +858,22 @@ impl App {
                 KeyCode::Esc => {}
                 _ => self.overlay = Some(Overlay::QuitConfirm),
             },
-            Overlay::RebootConfirm => match key.code {
-                KeyCode::Enter => self.reboot(),
+            Overlay::RebootConfirm { mut confirmed } => match key.code {
+                KeyCode::Enter => {
+                    if confirmed {
+                        self.reboot();
+                    }
+                }
                 KeyCode::Esc => {}
-                _ => self.overlay = Some(Overlay::RebootConfirm),
+                _ => {
+                    match key.code {
+                        KeyCode::Left => confirmed = false,
+                        KeyCode::Right => confirmed = true,
+                        KeyCode::Tab | KeyCode::BackTab => confirmed = !confirmed,
+                        _ => {}
+                    }
+                    self.overlay = Some(Overlay::RebootConfirm { confirmed });
+                }
             },
             Overlay::ReplaceConfirm {
                 resources,
@@ -1001,7 +1018,9 @@ impl App {
             }
             (MenuKind::Session, 2) => self.reset(),
             (MenuKind::Session, 3) => self.clear_screen(),
-            (MenuKind::Session, 4) => self.overlay = Some(Overlay::RebootConfirm),
+            (MenuKind::Session, 4) => {
+                self.overlay = Some(Overlay::RebootConfirm { confirmed: false })
+            }
             (MenuKind::Session, 5) => self.return_to_center(),
             (MenuKind::Session, 6) => self.overlay = Some(Overlay::QuitConfirm),
             (MenuKind::Display, 0) => {
@@ -1635,35 +1654,125 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &Overlay, theme: &Th
     frame.render_widget(Clear, popup);
     match overlay {
         Overlay::Menu { kind, selected } => {
-            let heading = match kind { MenuKind::Emulator => "模拟器", MenuKind::Session => "会话", MenuKind::Display => "显示", MenuKind::Help => "帮助" };
-            let lines = menu_entries(*kind).iter().enumerate().map(|(index, text)| Line::from(Span::styled(*text, if index == *selected { theme.selected() } else { theme.base() }))).collect::<Vec<_>>();
-            frame.render_widget(Paragraph::new(lines).block(theme.block(format!("{heading}  ←/→ 切换主菜单"))).style(theme.panel()), popup);
+            let heading = match kind {
+                MenuKind::Emulator => "模拟器",
+                MenuKind::Session => "会话",
+                MenuKind::Display => "显示",
+                MenuKind::Help => "帮助",
+            };
+            let lines = menu_entries(*kind)
+                .iter()
+                .enumerate()
+                .map(|(index, text)| {
+                    Line::from(Span::styled(
+                        *text,
+                        if index == *selected {
+                            theme.selected()
+                        } else {
+                            theme.base()
+                        },
+                    ))
+                })
+                .collect::<Vec<_>>();
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(theme.block(format!("{heading}  ←/→ 切换主菜单")))
+                    .style(theme.panel()),
+                popup,
+            );
         }
-        Overlay::RebootConfirm => frame.render_widget(Paragraph::new("重新上电会丢弃当前 RAM 和设备状态；会话周期预算与 trace 保留。\nEnter 确认  Esc 取消").block(theme.block("确认重新上电")).style(theme.panel()).wrap(Wrap { trim: false }), popup),
-        Overlay::ReplaceConfirm { resources, confirmed, .. } => {
+        Overlay::RebootConfirm { confirmed } => {
+            let lines = vec![
+                Line::from("重新上电会丢弃当前 RAM 和设备状态；会话周期预算与 trace 保留。"),
+                Line::from("←/→ 或 Tab 选择；Enter 执行；Esc 取消"),
+                confirmation_buttons(*confirmed, "重新上电", theme),
+            ];
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(theme.block("确认重新上电"))
+                    .style(theme.panel())
+                    .wrap(Wrap { trim: false }),
+                popup,
+            );
+        }
+        Overlay::ReplaceConfirm {
+            resources,
+            confirmed,
+            ..
+        } => {
             let lines = vec![
                 Line::from("替换会丢弃当前 RAM、设备状态和输入队列；会话周期预算与 trace 保留。"),
                 Line::from(format!("ROM：{}", resources.rom_path.display())),
                 Line::from("←/→ 或 Tab 选择；Enter 执行；Esc 取消"),
-                Line::from(vec![
-                    Span::styled("[取消]", if !confirmed { theme.selected() } else { theme.base() }),
-                    Span::raw("  "),
-                    Span::styled("[替换并启动]", if *confirmed { theme.selected() } else { theme.base() }),
-                ]),
+                confirmation_buttons(*confirmed, "替换并启动", theme),
             ];
-            frame.render_widget(Paragraph::new(lines).block(theme.block("确认替换当前会话")).style(theme.panel()).wrap(Wrap { trim: false }), popup);
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(theme.block("确认替换当前会话"))
+                    .style(theme.panel())
+                    .wrap(Wrap { trim: false }),
+                popup,
+            );
         }
-        Overlay::QuitConfirm => frame.render_widget(Paragraph::new("退出会结束本次进程内会话。\nEnter 确认  Esc 取消").block(theme.block("确认退出")).style(theme.panel()), popup),
-        Overlay::Error(error) => frame.render_widget(Paragraph::new(format!("{error}\n\nEnter / Esc 关闭")).block(theme.block("错误")).style(theme.panel()).wrap(Wrap { trim: false }), popup),
-        Overlay::Browser { target, directory, entries, selected, error } => {
-            let header = format!("浏览 {}：{}", if *target == PathTarget::Rom { "ROM" } else { "程序" }, truncate_path(&directory.to_string_lossy(), usize::from(popup.width.saturating_sub(6))));
-            let mut lines = vec![Line::from("Backspace 上一级；Enter 进入目录或选择文件；Esc 返回")];
-            if let Some(error) = error { lines.push(Line::from(Span::styled(error, theme.status()))); }
-            for (index, entry) in entries.iter().enumerate().take(15) {
-                let label = if entry.directory { format!("{}/", entry.name) } else { entry.name.clone() };
-                lines.push(Line::from(Span::styled(truncate_path(&label, usize::from(popup.width.saturating_sub(6))), if index == *selected { theme.selected() } else { theme.base() })));
+        Overlay::QuitConfirm => frame.render_widget(
+            Paragraph::new("退出会结束本次进程内会话。\nEnter 确认  Esc 取消")
+                .block(theme.block("确认退出"))
+                .style(theme.panel()),
+            popup,
+        ),
+        Overlay::Error(error) => frame.render_widget(
+            Paragraph::new(format!("{error}\n\nEnter / Esc 关闭"))
+                .block(theme.block("错误"))
+                .style(theme.panel())
+                .wrap(Wrap { trim: false }),
+            popup,
+        ),
+        Overlay::Browser {
+            target,
+            directory,
+            entries,
+            selected,
+            error,
+        } => {
+            let header = format!(
+                "浏览 {}：{}",
+                if *target == PathTarget::Rom {
+                    "ROM"
+                } else {
+                    "程序"
+                },
+                truncate_path(
+                    &directory.to_string_lossy(),
+                    usize::from(popup.width.saturating_sub(6))
+                )
+            );
+            let mut lines = vec![Line::from(
+                "Backspace 上一级；Enter 进入目录或选择文件；Esc 返回",
+            )];
+            if let Some(error) = error {
+                lines.push(Line::from(Span::styled(error, theme.status())));
             }
-            frame.render_widget(Paragraph::new(lines).block(theme.block(header)).style(theme.panel()), popup);
+            for (index, entry) in entries.iter().enumerate().take(15) {
+                let label = if entry.directory {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name.clone()
+                };
+                lines.push(Line::from(Span::styled(
+                    truncate_path(&label, usize::from(popup.width.saturating_sub(6))),
+                    if index == *selected {
+                        theme.selected()
+                    } else {
+                        theme.base()
+                    },
+                )));
+            }
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(theme.block(header))
+                    .style(theme.panel()),
+                popup,
+            );
         }
     }
 }
@@ -1690,6 +1799,28 @@ fn draw_too_small(frame: &mut Frame<'_>, app: &App) {
             ),
         );
     }
+}
+
+fn confirmation_buttons(confirmed: bool, action: &str, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "[取消]",
+            if confirmed {
+                theme.base()
+            } else {
+                theme.selected()
+            },
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("[{action}]"),
+            if confirmed {
+                theme.selected()
+            } else {
+                theme.base()
+            },
+        ),
+    ])
 }
 
 fn centered(popup: Rect, area: Rect) -> Rect {
@@ -1730,6 +1861,60 @@ mod tests {
             program: Some(vec![0x4c, 0x00, 0x00]),
             rom_path: PathBuf::from(path),
         }
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        buffer.content.iter().map(|cell| cell.symbol()).collect()
+    }
+
+    #[test]
+    fn session_shortcuts_draw_immediately_without_cpu_progress_or_notifications() {
+        for paused in [false, true] {
+            for (key, title) in [
+                (KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE), "会话"),
+                (
+                    KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                    "确认重新上电",
+                ),
+            ] {
+                let mut app = app_with_session(100_000);
+                app.user_paused = paused;
+                let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                assert!(!app.dirty);
+                assert!(app.notification.is_none());
+                app.handle_event(Event::Key(key));
+                app.advance();
+                assert!(app.dirty, "opening {title} must schedule a draw");
+                assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), 20);
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let text = buffer_text(terminal.backend().buffer()).replace(' ', "");
+                assert!(text.contains(title));
+                app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                assert!(app.overlay.is_none());
+                assert_eq!(app.user_paused, paused);
+            }
+        }
+    }
+
+    #[test]
+    fn reboot_requires_selecting_the_destructive_action() {
+        let mut app = app_with_session(25);
+        let open = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        app.handle_key(open);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.session.as_ref().unwrap().machine().bus().ram_slice()[0x0300],
+            0xab
+        );
+        app.handle_key(open);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.session.as_ref().unwrap().machine().bus().ram_slice()[0x0300],
+            0
+        );
+        assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), 25);
     }
 
     fn app_with_session(budget: u64) -> App {
