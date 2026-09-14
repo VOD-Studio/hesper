@@ -1153,7 +1153,7 @@ impl App {
                 Span::styled("  HESPER", theme.title()),
                 Span::styled("  经典计算机模拟器", theme.muted()),
             ]))
-            .style(theme.base()),
+            .style(theme.text()),
             rows[0],
         );
         draw_menu_bar(frame, rows[1], &theme);
@@ -1354,6 +1354,7 @@ struct Theme {
     foreground: Color,
     muted_color: Color,
     accent: Color,
+    selection_bg: Color,
     screen_bg: Color,
     screen_fg: Color,
     notice: Color,
@@ -1394,11 +1395,20 @@ impl Theme {
             foreground: color(229, 234, 242, 255),
             muted_color: color(162, 175, 191, 249),
             accent: color(140, 175, 255, 111),
+            selection_bg: color(35, 49, 72, 235),
             screen_bg: color(12, 21, 17, 232),
             screen_fg,
             notice: color(241, 196, 126, 222),
             mono: mode == ColorMode::Mono,
             ascii: config.ui.border == BorderStyle::Ascii,
+        }
+    }
+    // Leaf text inherits its containing surface's background.
+    fn text(&self) -> Style {
+        if self.mono {
+            Style::default()
+        } else {
+            Style::default().fg(self.foreground)
         }
     }
     fn base(&self) -> Style {
@@ -1419,28 +1429,41 @@ impl Theme {
         if self.mono {
             Style::default().add_modifier(Modifier::DIM)
         } else {
-            self.base().fg(self.muted_color)
+            self.text().fg(self.muted_color)
         }
     }
     fn title(&self) -> Style {
         if self.mono {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
-            self.base().fg(self.accent).add_modifier(Modifier::BOLD)
+            self.text().fg(self.accent).add_modifier(Modifier::BOLD)
         }
     }
     fn selected(&self) -> Style {
         if self.mono {
             Style::default().add_modifier(Modifier::REVERSED)
         } else {
-            self.panel().fg(self.accent).add_modifier(Modifier::BOLD)
+            self.text()
+                .fg(self.accent)
+                .bg(self.selection_bg)
+                .add_modifier(Modifier::BOLD)
+        }
+    }
+    fn primary(&self) -> Style {
+        if self.mono {
+            self.selected().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(self.background)
+                .bg(self.accent)
+                .add_modifier(Modifier::BOLD)
         }
     }
     fn status(&self) -> Style {
         if self.mono {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
-            self.panel().fg(self.notice)
+            self.text().fg(self.notice)
         }
     }
     fn screen(&self) -> Style {
@@ -1454,6 +1477,7 @@ impl Theme {
         Block::default()
             .borders(Borders::ALL)
             .title(title)
+            .title_style(self.muted())
             .style(self.panel())
             .border_style(if self.mono {
                 Style::default()
@@ -1484,9 +1508,9 @@ impl Theme {
 fn draw_menu_bar(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let line = Line::from(vec![
         Span::styled("  模拟器  ", theme.title()),
-        Span::styled("会话  ", theme.base()),
-        Span::styled("显示  ", theme.base()),
-        Span::styled("帮助", theme.base()),
+        Span::styled("会话  ", theme.text()),
+        Span::styled("显示  ", theme.text()),
+        Span::styled("帮助", theme.text()),
     ]);
     frame.render_widget(Paragraph::new(line).style(theme.panel()), area);
 }
@@ -1521,23 +1545,18 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         ("6502 内置演示", "计数程序与执行结果"),
     ];
     let items = machines.iter().enumerate().map(|(index, (name, caption))| {
-        let marker = if index == app.selected_machine {
-            "> "
-        } else {
-            "  "
-        };
+        let selected = index == app.selected_machine;
+        let marker = if selected { "> " } else { "  " };
         ListItem::new(vec![
-            Line::from(Span::styled(
-                format!("{marker}{name}"),
-                if index == app.selected_machine {
-                    theme.selected()
-                } else {
-                    theme.base()
-                },
-            )),
+            Line::from(format!("{marker}{name}")),
             Line::from(Span::styled(format!("  {caption}"), theme.muted())),
             Line::default(),
         ])
+        .style(if selected {
+            theme.selected()
+        } else {
+            theme.text()
+        })
     });
     let list_rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(columns[0]);
     frame.render_widget(
@@ -1594,7 +1613,10 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             app.form.program.clone()
         };
         vec![
-            Line::from(Span::styled("Apple-1", theme.title())),
+            Line::from(Span::styled(
+                "Apple-1",
+                theme.text().add_modifier(Modifier::BOLD),
+            )),
             Line::from(Span::styled("6502 计算机 · 复古字符终端", theme.muted())),
             Line::default(),
             parameter("CPU   ", "MOS 6502 / NMOS".into()),
@@ -1606,7 +1628,10 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         ]
     } else {
         vec![
-            Line::from(Span::styled("6502 内置演示", theme.title())),
+            Line::from(Span::styled(
+                "6502 内置演示",
+                theme.text().add_modifier(Modifier::BOLD),
+            )),
             Line::from(Span::styled("运行一次，看清程序的执行结果", theme.muted())),
             Line::default(),
             parameter("CPU   ", "MOS 6502 / NMOS".into()),
@@ -1619,7 +1644,7 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     };
     frame.render_widget(Paragraph::new(details), rows[0]);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(action.label(), theme.selected()))),
+        Paragraph::new(Line::from(Span::styled(action.label(), theme.primary()))),
         rows[2],
     );
     let hint = app
@@ -1687,7 +1712,7 @@ fn draw_apple1(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             frame.render_widget(
                 Paragraph::new(details.join("\n"))
                     .block(theme.block("状态"))
-                    .style(theme.base()),
+                    .style(theme.text()),
                 sections[1],
             );
         }
@@ -1742,7 +1767,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         if app.form.focus == field {
             theme.selected()
         } else {
-            theme.base()
+            theme.text()
         }
     };
     let title = "Apple-1 启动配置";
@@ -1770,7 +1795,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(lines)
             .block(theme.block(title))
-            .style(theme.base())
+            .style(theme.text())
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -1781,7 +1806,7 @@ fn draw_info(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("模拟器信息"))
-            .style(theme.base())
+            .style(theme.text())
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -1796,7 +1821,7 @@ fn draw_demo(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("6502 内置演示结果"))
-            .style(theme.base()),
+            .style(theme.text()),
         area,
     );
 }
@@ -1816,20 +1841,17 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .iter()
         .enumerate()
         .map(|(index, text)| {
-            ListItem::new(Line::from(Span::styled(
-                text,
-                if index == app.settings_row {
-                    theme.selected()
-                } else {
-                    theme.base()
-                },
-            )))
+            ListItem::new(text.as_str()).style(if index == app.settings_row {
+                theme.selected()
+            } else {
+                theme.text()
+            })
         })
         .collect();
     frame.render_widget(
         List::new(items)
             .block(theme.block("显示设置"))
-            .style(theme.base()),
+            .style(theme.text()),
         area,
     );
 }
@@ -1839,7 +1861,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("帮助"))
-            .style(theme.base())
+            .style(theme.text())
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -1875,18 +1897,15 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
                 .iter()
                 .enumerate()
                 .map(|(index, text)| {
-                    Line::from(Span::styled(
-                        *text,
-                        if index == *selected {
-                            theme.selected()
-                        } else {
-                            theme.base()
-                        },
-                    ))
+                    ListItem::new(*text).style(if index == *selected {
+                        theme.selected()
+                    } else {
+                        theme.text()
+                    })
                 })
                 .collect::<Vec<_>>();
             frame.render_widget(
-                Paragraph::new(lines)
+                List::new(lines)
                     .block(
                         theme.block(format!("{heading}  {} 切换主菜单", theme.horizontal_keys())),
                     )
@@ -2059,7 +2078,7 @@ fn confirmation_buttons(confirmed: bool, action: &str, theme: &Theme) -> Line<'s
         Span::styled(
             "[取消]",
             if confirmed {
-                theme.base()
+                theme.text()
             } else {
                 theme.selected()
             },
@@ -2070,7 +2089,7 @@ fn confirmation_buttons(confirmed: bool, action: &str, theme: &Theme) -> Line<'s
             if confirmed {
                 theme.selected()
             } else {
-                theme.base()
+                theme.text()
             },
         ),
     ])
