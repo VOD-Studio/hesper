@@ -20,7 +20,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     buffer::Buffer,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
@@ -776,7 +776,12 @@ impl App {
                     };
                     self.open_page(Page::Config);
                 }
-                CenterAction::Launch => self.start_configured(true),
+                CenterAction::Launch => {
+                    // A resource can disappear between preview and launch.
+                    // Keep any resulting validation error on a visible form.
+                    self.open_page(Page::Config);
+                    self.start_configured(true);
+                }
                 CenterAction::Demo => self.run_demo(),
             },
             KeyCode::Char('c' | 'C') if self.selected_machine == 0 => self.open_page(Page::Config),
@@ -1156,7 +1161,11 @@ impl App {
             .style(theme.text()),
             rows[0],
         );
-        draw_menu_bar(frame, rows[1], &theme);
+        let active_menu = match self.overlay {
+            Some(Overlay::Menu { kind, .. }) => Some(kind),
+            _ => None,
+        };
+        draw_menu_bar(frame, rows[1], active_menu, &theme);
         match self.page {
             Page::Center => draw_center(frame, rows[2], self, &theme),
             Page::Apple1 => draw_apple1(frame, rows[2], self, &theme),
@@ -1166,19 +1175,22 @@ impl App {
             Page::Settings => draw_settings(frame, rows[2], self, &theme),
             Page::Help => draw_help(frame, rows[2], &theme),
         }
-        let continuous = if self.faulted {
-            "故障"
+        let (continuous, status_style) = if self.faulted {
+            (
+                "故障",
+                theme.text().fg(theme.fault).add_modifier(Modifier::BOLD),
+            )
         } else if self.running() {
-            "运行中"
+            ("运行中", theme.text().fg(theme.success))
         } else if self.has_active_session() {
-            "暂停"
+            ("暂停", theme.status())
         } else {
-            "就绪"
+            ("就绪", theme.muted())
         };
         let status =
-            Layout::horizontal([Constraint::Length(10), Constraint::Min(0)]).split(rows[3]);
+            Layout::horizontal([Constraint::Length(12), Constraint::Min(0)]).split(rows[3]);
         frame.render_widget(
-            Paragraph::new(format!("[{continuous}]")).style(theme.status()),
+            Paragraph::new(format!("  [{continuous}]")).style(status_style),
             status[0],
         );
         frame.render_widget(
@@ -1186,9 +1198,7 @@ impl App {
             status[1],
         );
         frame.render_widget(
-            Paragraph::new(footer(self.page, theme.ascii))
-                .style(theme.muted())
-                .alignment(Alignment::Center),
+            Paragraph::new(footer(self, rows[4].width, &theme)).style(theme.panel()),
             rows[4],
         );
         if let Some(overlay) = &mut self.overlay {
@@ -1337,14 +1347,82 @@ fn next_menu(kind: MenuKind) -> MenuKind {
     }
 }
 
-fn footer(page: Page, ascii: bool) -> &'static str {
-    match page {
-        Page::Center if ascii => "Up/Down 选择  Enter 启动  C 配置  I 信息  F1 帮助  F10 菜单",
-        Page::Apple1 => "F1 帮助  F2 会话  F3 侧栏  F10 菜单  Ctrl+P 暂停  Ctrl+C 退出",
-        Page::Config => "Tab 切换焦点  F4 浏览目录  Enter 确认  Esc 取消",
-        Page::Center => "↑↓ 选择  Enter 启动  C 配置  I 信息  F1 帮助  F10 菜单",
-        _ => "Esc 返回  F10 菜单",
+fn footer(app: &App, width: u16, theme: &Theme) -> Line<'static> {
+    let vertical = if theme.ascii { "Up/Down" } else { "↑↓" };
+    let hints = match &app.overlay {
+        Some(Overlay::Menu { .. }) => vec![
+            ("Enter", "执行"),
+            ("Esc", "关闭"),
+            (vertical, "选择"),
+            (theme.horizontal_keys(), "切换"),
+        ],
+        Some(Overlay::Browser { .. }) => vec![
+            ("Enter", "选择"),
+            ("Esc", "返回"),
+            (vertical, "移动"),
+            ("Backspace", "上一级"),
+        ],
+        Some(Overlay::RebootConfirm { .. } | Overlay::ReplaceConfirm { .. }) => {
+            vec![("Enter", "执行"), ("Esc", "取消"), ("Tab", "选择")]
+        }
+        Some(Overlay::QuitConfirm) => vec![("Enter", "确认退出"), ("Esc", "取消")],
+        Some(Overlay::Error(_)) => vec![("Enter / Esc", "关闭")],
+        None => match app.page {
+            Page::Center => {
+                let mut hints = vec![
+                    (vertical, "选择"),
+                    ("Enter", "执行"),
+                    ("F10", "菜单"),
+                    ("F1", "帮助"),
+                ];
+                if app.selected_machine == 0 {
+                    hints.extend([("C", "配置"), ("I", "信息")]);
+                }
+                hints.push(("Ctrl+C", "退出"));
+                hints
+            }
+            Page::Apple1 => vec![
+                ("F1", "帮助"),
+                ("F2", "会话"),
+                ("Ctrl+R", "复位"),
+                ("F10", "菜单"),
+                ("Ctrl+P", if app.user_paused { "继续" } else { "暂停" }),
+                ("F3", "侧栏"),
+                ("Ctrl+C", "退出"),
+            ],
+            Page::Config => vec![
+                ("Enter", "确认"),
+                ("Tab", "切换"),
+                ("F4", "浏览"),
+                ("Esc", "返回"),
+            ],
+            Page::Demo => vec![("R", "重跑"), ("Esc", "返回"), ("F10", "菜单")],
+            Page::Settings => vec![
+                ("Enter", "切换"),
+                ("Esc", "返回"),
+                (vertical, "选择"),
+                ("F10", "菜单"),
+            ],
+            _ => vec![("Esc", "返回"), ("F10", "菜单")],
+        },
+    };
+    let mut spans = vec![Span::raw("  ")];
+    let mut used = 2;
+    for (key, label) in hints {
+        let gap = if spans.len() == 1 { 0 } else { 2 };
+        let length = gap + key.width() + 1 + label.width();
+        // Omit lower-priority hints as whole units, never half a shortcut.
+        if used + length + 2 > usize::from(width) {
+            continue;
+        }
+        if gap > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(key, theme.title()));
+        spans.push(Span::styled(format!(" {label}"), theme.muted()));
+        used += length;
     }
+    Line::from(spans)
 }
 
 struct Theme {
@@ -1358,6 +1436,8 @@ struct Theme {
     screen_bg: Color,
     screen_fg: Color,
     notice: Color,
+    success: Color,
+    fault: Color,
     mono: bool,
     ascii: bool,
 }
@@ -1399,6 +1479,8 @@ impl Theme {
             screen_bg: color(12, 21, 17, 232),
             screen_fg,
             notice: color(241, 196, 126, 222),
+            success: color(155, 223, 164, 151),
+            fault: color(242, 141, 149, 210),
             mono: mode == ColorMode::Mono,
             ascii: config.ui.border == BorderStyle::Ascii,
         }
@@ -1505,14 +1587,25 @@ impl Theme {
     }
 }
 
-fn draw_menu_bar(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let line = Line::from(vec![
-        Span::styled("  模拟器  ", theme.title()),
-        Span::styled("会话  ", theme.text()),
-        Span::styled("显示  ", theme.text()),
-        Span::styled("帮助", theme.text()),
-    ]);
-    frame.render_widget(Paragraph::new(line).style(theme.panel()), area);
+fn draw_menu_bar(frame: &mut Frame<'_>, area: Rect, active: Option<MenuKind>, theme: &Theme) {
+    let mut spans = vec![Span::raw("  ")];
+    for (kind, label) in [
+        (MenuKind::Emulator, " 模拟器 "),
+        (MenuKind::Session, " 会话 "),
+        (MenuKind::Display, " 显示 "),
+        (MenuKind::Help, " 帮助 "),
+    ] {
+        spans.push(Span::styled(
+            label,
+            if active == Some(kind) {
+                theme.selected()
+            } else {
+                theme.muted()
+            },
+        ));
+        spans.push(Span::raw(" "));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
@@ -2515,6 +2608,48 @@ mod tests {
             .map(|x| buffer[(x, buffer.area.height - 2)].symbol())
             .collect::<String>()
             .replace(' ', "")
+    }
+
+    #[test]
+    fn footer_and_menu_focus_follow_the_current_interaction() {
+        for width in [44, 80, 120] {
+            for border in [BorderStyle::Rounded, BorderStyle::Ascii] {
+                let mut app = app_with_session(100_000);
+                app.config.ui.color_mode = ColorMode::Truecolor;
+                app.config.ui.border = border;
+                let theme = Theme::from_config(&app.config);
+                let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+                let rendered = terminal.draw(|frame| app.draw(frame)).unwrap();
+                assert!((0..width).all(|x| rendered.buffer[(x, 1)].bg == theme.background));
+                assert!(footer(&app, width, &theme).width() <= usize::from(width - 2));
+                if width >= 80 {
+                    assert!(
+                        footer(&app, width, &theme)
+                            .to_string()
+                            .contains("Ctrl+P 继续")
+                    );
+                    app.user_paused = false;
+                    assert!(
+                        footer(&app, width, &theme)
+                            .to_string()
+                            .contains("Ctrl+P 暂停")
+                    );
+                }
+                app.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+                let rendered = terminal.draw(|frame| app.draw(frame)).unwrap();
+                assert!((0..width).any(|x| rendered.buffer[(x, 1)].bg == theme.selection_bg));
+                let hints = footer(&app, width, &theme);
+                assert!(hints.width() <= usize::from(width - 2));
+                assert!(hints.to_string().contains("Esc 关闭"));
+                assert!(!hints.to_string().contains("Ctrl+R"));
+                app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                app.return_to_center();
+                app.selected_machine = 1;
+                let hints = footer(&app, width, &theme).to_string();
+                assert!(!hints.contains("C 配置"));
+                assert!(hints.contains("Enter 执行"));
+            }
+        }
     }
 
     #[test]
