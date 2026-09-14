@@ -87,10 +87,11 @@
 //! flags) per the MC6820/MC6821 datasheets, plus Port B's CB2 output
 //! handshake — the write-strobe mode the Apple I terminal uses, in which an
 //! ORB write pulls CB2 low on the next enable and CB1's active edge releases
-//! it. Port A and Port B readback still share a symmetric
-//! `(OR & DDR) | (pins & !DDR)` formula where the datasheets specify Port A
-//! reads actual pins always and Port B reads the output latch in output mode
-//! (see [`docs/apple1/hardware-evidence.md`] H12). External I/O (keyboard
+//! it. Port A readback returns the level on the pin and Port B readback
+//! returns its output latch for output bits and the pin for input bits —
+//! the distinction the MC6821 states for the output mode, with the two read
+//! paths separated in `pin_a_levels` / `port_b_read_levels` (see
+//! [`docs/apple1/hardware-evidence.md`] H12). External I/O (keyboard
 //! data, the terminal's DA line) is wired in by [`machine`]; the host drives
 //! keys through `Keyboard` rather than touching the PIA directly.
 //!

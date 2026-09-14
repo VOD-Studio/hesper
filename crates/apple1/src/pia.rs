@@ -15,14 +15,27 @@
 //!
 //! ## Port A vs Port B readback
 //!
-//! The MC6820/MC6821 datasheets specify different readback behaviour:
-//! reading Port A always reads the actual pin level; reading Port B in
-//! output mode reads the output latch, not the pin.  The current
-//! implementation uses a symmetric `(OR & DDR) | (pins & !DDR)` formula
-//! for both ports — this happens to match the Apple I configuration
-//! (Port A = input, Port B bits 6–0 = output, bit 7 = input) but is not
-//! a correct model of the two ports' distinct read paths.  See
-//! `docs/apple1/hardware-evidence.md` H12.
+//! The MC6820/MC6821 datasheets specify different readback behaviour, and
+//! the MC6821 states it for the output mode: "When reading Port A, the
+//! actual pin is read, whereas the B side read comes from an output latch,
+//! ahead of the actual pin."  Both sides are modeled with that distinction:
+//!
+//! - Port A returns the level on the pin (`pin_a_levels`).  A bit
+//!   programmed as an output is driven by the PIA's own output buffer, so
+//!   the pin carries ORA; a bit programmed as an input carries whatever the
+//!   peripheral drives — on the Apple I, the keyboard's data lines.
+//! - Port B returns its output latch for output bits and the pin for input
+//!   bits (`port_b_read_levels`), which is what lets PB7 read the display's
+//!   DA line while PB6–PB0 return the latched character.
+//!
+//! The two expressions have the same shape but model different hardware
+//! paths; their values can only diverge when something outside the PIA also
+//! drives a line programmed as an output, which this model does not
+//! represent.  External contention is not modeled, and neither are the
+//! A side's internal pullup (present in input mode on real parts) or the B
+//! side's floating input buffers.  In the Apple I configuration in use
+//! (Port A = input, Port B bits 6–0 = output, bit 7 = input) both ports read
+//! correctly.  See `docs/apple1/hardware-evidence.md` H12.
 //!
 //! ## Control register bits
 //!
@@ -94,7 +107,8 @@ pub struct Pia6821 {
     ora: u8,
     ddra: u8,
     cra: u8,
-    /// Input pin state for Port A.  Read data returns (ora & ddra) | (pins & !ddra).
+    /// Level driven onto Port A's pins by the peripheral (the keyboard).
+    /// A Port A read returns the pin: ORA for output bits, this for inputs.
     pins_a: u8,
 
     // Port B (video — outputs on Apple I)
@@ -429,11 +443,21 @@ impl Pia6821 {
 
     // --- Internal helpers ---
 
-    /// Read Port A's peripheral data register.  The returned value mixes
-    /// ORA for output bits with input pin state for input bits.  Reading
-    /// clears IRQA1/IRQA2 and latches the read event for the host.
+    /// Level actually present on Port A's pins — what a Port A read returns.
+    ///
+    /// The A side reads the pin, not the output register: a bit programmed
+    /// as an output is driven by the PIA's output buffer and therefore
+    /// carries ORA, while a bit programmed as an input carries what the
+    /// peripheral drives (`pins_a`).  External contention on an output line
+    /// and the A side's internal pullup are not modeled.
+    fn pin_a_levels(&self) -> u8 {
+        (self.ora & self.ddra) | (self.pins_a & !self.ddra)
+    }
+
+    /// Read Port A's peripheral data register.  Reading clears IRQA1/IRQA2
+    /// and latches the read event for the host.
     fn read_port_a_data(&mut self) -> u8 {
-        let value = (self.ora & self.ddra) | (self.pins_a & !self.ddra);
+        let value = self.pin_a_levels();
         self.cra &= !0xC0;
         self.port_a_read = true;
         value
@@ -449,8 +473,20 @@ impl Pia6821 {
         }
     }
 
+    /// Level that a Port B read returns: the output latch for output bits,
+    /// the pin for input bits.
+    ///
+    /// The B side read comes from the output latch *ahead of the pin*, so an
+    /// output line reads ORB whatever it is loaded with, while an input line
+    /// reads the pin (PB7 carries the display's DA on the Apple I).  The B
+    /// side's floating input buffers and its inability to pull up to CMOS
+    /// levels without external resistors are not modeled.
+    fn port_b_read_levels(&self) -> u8 {
+        (self.orb & self.ddrb) | (self.pins_b & !self.ddrb)
+    }
+
     fn read_port_b_data(&mut self) -> u8 {
-        let value = (self.orb & self.ddrb) | (self.pins_b & !self.ddrb);
+        let value = self.port_b_read_levels();
         self.crb &= !0xC0;
         value
     }
@@ -567,17 +603,37 @@ mod tests {
     }
 
     #[test]
-    fn data_read_mixes_output_and_input_pins() {
+    fn port_a_read_returns_the_pin_driven_by_ora_and_by_the_keyboard() {
         let mut pia = Pia6821::new();
         // Set DDR: lower nibble output, upper nibble input.
         pia.write(0xD010, 0x0F); // DDRA = $0F
         pia.write(0xD011, 0x04); // CRA bit2=1 → select OR
         pia.write(0xD010, 0x3C); // ORA = $3C
-        pia.set_port_a_inputs(0xA0); // input pins upper nibble
+        pia.set_port_a_inputs(0xA0); // keyboard drives the input pins
 
-        // Read should be: (ORA & DDR) | (pins & !DDR) = $3C & $0F | $A0 & $F0 = $0C | $A0 = $AC
-        let val = pia.read(0xD010);
-        assert_eq!(val, 0xAC);
+        // The A side reads the pin: the PIA's output buffer drives the
+        // output bits to ORA ($3C & $0F = $0C) and the keyboard drives the
+        // input bits ($A0 & $F0 = $A0), giving $AC.
+        assert_eq!(pia.read(0xD010), 0xAC);
+    }
+
+    #[test]
+    fn port_b_read_returns_the_output_latch_while_bit_7_reads_the_pin() {
+        // The B side read comes from the output latch ahead of the pin, so
+        // the level on an output line cannot change it; PB7 is programmed as
+        // an input and reads the display's DA line.
+        let mut pia = Pia6821::new();
+        pia.write(0xD012, 0x7F); // DDRB: PB6–PB0 output, PB7 input
+        pia.write(0xD013, 0x04); // CRB bit 2 = 1 → data register
+        pia.write(0xD012, 0x0D); // ORB: display character
+        pia.set_port_b_inputs(0x80); // DA asserted on PB7
+
+        assert_eq!(pia.read(0xD012), 0x8D, "latch for PB6–0, pin for PB7");
+
+        // Changing the level on a line programmed as an output does not show
+        // through the B-side read.
+        pia.set_port_b_inputs(0xFF);
+        assert_eq!(pia.read(0xD012), 0x8D);
     }
 
     #[test]

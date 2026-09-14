@@ -116,7 +116,7 @@ MC6820/MC6821 片选条件（P21 OCR）：CS0=1、CS1=1、CS2=0 三者同时满�
 | **关键差异** | MC6821 文本明确：RESET 清零全部寄存器；Port A 读实际引脚、Port B 读输出锁存；Port A 有内部上拉（输入模式）、Port B 三态浮空。MC6820 同章包含 E 周期条件的中断边沿网络与 RESET 期间控制线电平注意事项。两块芯片的寄存器模型、端口读回行为和 RESET 清零范围兼容，但时序参数和 RESET 期间的控制线电平不能无条件互换。 |
 | **实现位置** | `crates/apple1/src/lib.rs` 模块文档和 `pia.rs` 模块文档称 "MC6821"。 |
 | **来源状态** | **一手原文**（M76 标 6820；P20/P21 分别定位）。 |
-| **实现关系** | **模拟约定**：历史硬件是 MC6820，代码以 MC6821 命名；CB2 数字规则已按 MC6820/MC6821 数据表核对，不将两者的电气参数视为相同。Port A/B 当前均用 `(OR & DDR) \| (pins & !DDR)` 读回：Port B 输出位读 ORB，符合锁存读回规则；Port A 输出位也读 ORA，而非实际引脚，仍有 H12 差异。 |
+| **实现关系** | **模拟约定**：历史硬件是 MC6820，代码以 MC6821 命名；CB2 数字规则已按 MC6820/MC6821 数据表核对，不将两者的电气参数视为相同。两端口读回路径已按该数据表的 A 读引脚、B 输出位读锁存分别建模（H12）；A 侧上拉、B 侧浮空的电气特性不建模。 |
 
 ### H02：RAM 片选与区间
 
@@ -213,10 +213,10 @@ MC6820/MC6821 片选条件（P21 OCR）：CS0=1、CS1=1、CS2=0 三者同时满�
 
 | 维度 | 内容 |
 |------|------|
-| **一手证据** | P21 PORT A-B HARDWARE CHARACTERISTICS（OCR 第 2007–2035 行）："When reading Port A, the actual pin is read, whereas the B side read comes from an output latch, ahead of the actual pin." Figure 17（scan leaf 8）等效电路图证实：Port A 读路径来自引脚（输入或输出模式均读引脚），Port B 输出模式读来自输出锁存。 |
-| **实现位置** | `pia.rs::read_port_a_data` / `read_port_b_data` → 当前两端口均使用 `(OR & DDR) \| (pins & !DDR)`。 |
-| **来源状态** | **一手原文**：Port A 读实际引脚，Port B 输出模式读输出锁存。 |
-| **实现关系** | **已知差异在 Port A 输出模式**：当前输出位读 ORA，而资料要求不论方向均读实际引脚。Port B 的现有公式按 DDRB 对输出位读 ORB、对输入位读引脚，符合上述读回规则。Woz Monitor 将 Port A 配为全输入、Port B 低 7 位配为输出并从 PB7 读 DA，因此常规键盘／显示交互没有暴露 Port A 输出模式的差异。 |
+| **一手证据** | P21 PORT A-B HARDWARE CHARACTERISTICS（OCR 第 3168–3190 行；早前记录引用的 2007–2035 行指向同一节）："Notice the differences between a Port A and Port B read operation when in the output mode. When reading Port A, the actual pin is read, whereas the B side read comes from an output latch, ahead of the actual pin." 同节另述：A 侧按 CMOS 30%–70% 电平驱动并带内部上拉（输入模式仍连接），B 侧为三态 NMOS 缓冲、无上拉、输入模式浮空。Figure 17（scan leaf 8）等效电路图：Port A 读路径来自引脚（输入或输出模式均读引脚），Port B 输出模式读来自输出锁存。 |
+| **实现位置** | `pia.rs::pin_a_levels`（Port A 读路径＝实际引脚电平）与 `pia.rs::port_b_read_levels`（Port B 读路径＝输出位读锁存、输入位读引脚）；`read_port_a_data` / `read_port_b_data` 分别调用它们。 |
+| **来源状态** | **一手原文**：Port A 读实际引脚，Port B 输出模式读输出锁存（差异限定在输出模式那一句）。 |
+| **实现关系** | **吻合（限定于无外部驱动的数字模型）**：Port A 读引脚——输出位由 PIA 输出缓冲驱动，故引脚电平即 ORA；输入位为外设电平（Apple I 上即键盘数据线）。Port B 输出位读输出锁存、输入位读引脚，PB7 由 DA 驱动。两种读法的表达式形状相同，只有在 PIA 之外另有器件争用同一输出线时才会出现可观察差别：本模型不表示该争用，也不表示 A 侧内部上拉与 B 侧浮空／驱动电平。回归：`port_a_read_returns_the_pin_driven_by_ora_and_by_the_keyboard`、`port_b_read_returns_the_output_latch_while_bit_7_reads_the_pin`。 |
 
 ### H13：CA1/CB1 标志与中断使能独立性
 
@@ -271,10 +271,10 @@ MC6820/MC6821 片选条件（P21 OCR）：CS0=1、CS1=1、CS2=0 三者同时满�
 
 | 维度 | 内容 |
 |------|------|
-| **一手证据** | 规格页（leaf 1）："Format: 40 characters/line, 24 lines; with automatic scrolling." 印刷页 1 介绍："The output format is 40 characters/line, 24 lines/page, with auto scrolling." |
+| **一手证据** | 规格页（leaf 1）："Format: 40 characters/line, 24 lines; with automatic scrolling." 印刷页 1 介绍："The output format is 40 characters/line, 24 lines/page, with auto scrolling." 本次复核 Sheet 1/3 TERMINAL SECTION（scan page 13）：D8、D9 为两只 74161；D8 的 Q0–Q3 与 D9 的 Q0/Q1 标为 V0–V5，D9 的 Q2/Q3 进 D10（7400）两个输入，TC（pin 15）标 `LAST`，PE（pin 9，低有效）由 D8/D9 左下方的门电路驱动，MR（pin 1）走另一条独立网络；相邻的 D6 为 74160（BCD）。预置位接线见下两行。 |
 | **实现位置** | `display.rs`：1024 槽循环存储（960 可见 + 64 消隐），`origin` 为屏幕 (0,0) 所在槽；光标走出可见窗口时置起 `scroll_pending`，在 WC1/VBL 相应的 MEMΦ 边沿由 `vertical_reload` 把 origin 前移一行。 |
-| **来源状态** | **一手原文**：40×24，自动滚动；**原图推导**：滚动由垂直重载（D8/D9 preset）完成，多出的 64 槽在消隐期被清除。 |
-| **实现关系** | **原图推导的数字模型**：滚动即循环存储的 origin 前移，新底行正是上一圈消隐期清掉的备用槽，因此不会卷回旧内容。D8/D9 的 preset 数值（图上 191）与滚动时的帧长变化未逐位复现，因为该计数器的内部预置译码不在已核对的证据范围内——本模型只保证重载发生在同一垂直边界、且可见内容／光标结果一致。 |
+| **来源状态** | **一手原文**：40×24，自动滚动；**原图推导**：滚动由垂直重载（D8/D9 preset）完成，多出的 64 槽在消隐期被清除；预置字位接线本次已核对。 |
+| **实现关系** | **原图推导的数字模型**：滚动即循环存储的 origin 前移，新底行正是上一圈消隐期清掉的备用槽，因此不会卷回旧内容。预置值本身已从原图接线核对：D8 的 P0–P3 共接一条网络、D9 的 P2 接地图符、D9 的 P0/P1/P3 与 D8 同网，即预置字 1011 1111 = `$BF` = 191，与「图上 191」一致，且 65 个计数正好走满这对 74161。仍未逐位复现的是**滚动引起的帧长变化**（共享预置网络在原图上的终点与重载译码本次未追到），本模型只保证重载发生在同一垂直边界、且可见内容／光标结果一致。 |
 
 ### H19：CR 与控制字符行为
 
@@ -315,7 +315,7 @@ MC6820/MC6821 片选条件（P21 OCR）：CS0=1、CS1=1、CS2=0 三者同时满�
 
 1. **PB7 极性（印刷页 7 vs 页 8）**：页 7 原理图连线 + monitor 机器码一致指示 PB7=1=忙；页 8 文字摘要相反（"1 equals ready, 0 equals busy"）。本核对以连线+机器码为准；页 8 文字记为原件内部冲突。实现侧以 `$FFEF` 处的真实 ROM 机器码（`2C 12 D0 / 30 FB`，即 `BIT`/`BMI`）复核了该极性。
 
-2. **Port A 输出模式读回**：当前读 ORA 而非实际引脚（H12）；Port B 输出位读 ORB、输入位读引脚的公式本身符合上述规则。Woz Monitor 使用全输入 Port A，功能联调通过不等于该差异已关闭。
+2. **PIA 端口的电气特性**：读回路径已按资料分别建模（H12：Port A 读引脚，Port B 输出位读锁存、输入位读引脚），Port A 输出位的引脚电平即 PIA 驱动的 ORA；仍未建模的是电气特性本身——PIA 之外对同一输出线的争用、A 侧内部上拉、B 侧输入浮空与驱动电平。
 
 3. **DRAM 单元衰减**：只建模 Φ2 门控，不建模刷新周期之外的电荷保持特性，也不建模真实上电随机态。
 
@@ -325,7 +325,7 @@ MC6820/MC6821 片选条件（P21 OCR）：CS0=1、CS1=1、CS2=0 三者同时满�
 
 6. **MC6820 vs MC6821 命名**：历史硬件为 6820；代码以 6821 命名，并以 MC6820 印刷页 47（scan leaf 48）的 Table 5 复核 CB2 数字规则。电气参数与 RESET 细节不能互换。
 
-7. **垂直重载的具体数值**：D8/D9 preset 的十进制值（图上 191）与滚动帧长变化未逐位复现；见 H18。
+7. **垂直重载的具体数值**：D8/D9 的预置字位接线（1011 1111 = `$BF` = 191）已核对，滚动帧长变化仍未逐位复现；见 H18。
 
 8. **像素输出与字模**：不实现 2513 字模、D1 像素移位寄存器与视频合成，只投影字符格。
 

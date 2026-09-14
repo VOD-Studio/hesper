@@ -820,3 +820,25 @@ PTY 复核发现此前缓存脚本 `.cache/presets-library-qa/pty_picker.py` 的
 文档检查：4 份说明的 44 个本地链接及相应锚点、代码围栏和末尾换行通过检查；Bun Markdown 渲染通过，表格列数一致。`cargo run --locked --offline -p hesper -- apple1 --help` 与 `--list-presets` 实际执行成功，确认 README 使用的选项、预置 id 和 BASIC 启动命令。
 
 未修改源码、测试或程序资产，未新增依赖；文档更新后未重跑 Rust 全套检查或完整外部 CPU corpus，未运行远程 CI、Linux/Windows 或原生桌面终端视觉验收。本轮按功能点本地提交，未 push。
+
+## 2026-09-14：PIA 读回路径按数据表建模（H12）
+
+对本轮提出的两项数字硬件差异逐条复核。**H12 的一手原文**取自 P21（MC6821 DS9435R5，`Motorola_MC6821_NMOS_Peripheral_Interface_Adapter_1985_Motorola_djvu.txt` 第 3168–3190 行）的 PORT A-B HARDWARE CHARACTERISTICS：**"Notice the differences between a Port A and Port B read operation when in the output mode. When reading Port A, the actual pin is read, whereas the B side read comes from an output latch, ahead of the actual pin."** 同节另述 A 侧按 CMOS 30%–70% 电平驱动并带内部上拉（输入模式仍连接），B 侧为三态 NMOS 缓冲、无上拉、输入模式浮空。
+
+代码改动（`crates/apple1/src/pia.rs`）：Port A 的读路径抽成 `pin_a_levels()`——返回**实际引脚**电平，输出位由 PIA 输出缓冲驱动（因此引脚电平即 ORA），输入位为外设电平 `pins_a`；Port B 的读路径抽成 `port_b_read_levels()`——输出位读 ORB 输出锁存、输入位读引脚。`read_port_a_data` / `read_port_b_data`、模块文档与 `pins_a` 字段文档同步更新；`lib.rs` 的模块摘要同步。
+
+测试：`port_a_read_returns_the_pin_driven_by_ora_and_by_the_keyboard`（两条驱动源合成一次读）、`port_b_read_returns_the_output_latch_while_bit_7_reads_the_pin`（锁存位不受输出线上外加电平影响，PB7 仍读引脚）。
+
+**结论与更正**：这两种读法的表达式形状相同，只有在 PIA 之外另有器件争用同一输出线时才会出现可观察差别；本模型不表示外部争用，也不表示 A 侧上拉与 B 侧浮空。因此「Port A 输出模式读 ORA 而非实际引脚」应更正为：Port A 的输出位读的就是引脚，而在无争用的数字模型里该引脚电平由 PIA 输出缓冲决定，即 ORA。H12 作为**读回路径**不再是未实现项；剩余的电气边界（争用／上拉／浮空）已明确记为不建模。
+
+**H18 复核**（M76 Sheet 1/3 TERMINAL SECTION，scan page 13）：D8、D9 为两只 74161；预置输入接线为 D8 的 P0–P3 共接一条网络、D9 的 P2 接地图符、D9 的 P0/P1/P3 与 D8 同网，据此预置字为 1011 1111 = `$BF` = 191（65 个计数正好走满这对 74161），与既有「图上 191」一致；D8 的 Q0–Q3 与 D9 的 Q0/Q1 标为 V0–V5，D9 的 Q2/Q3 进 D10（7400）两输入，TC 标 `LAST`，PE（低有效）由 D8/D9 左下方的门电路驱动，MR 走另一条独立网络。该共享预置网络在本次裁剪范围外的终点与重载译码未追到，**滚动是否改变预置、以及滚动帧长变化均未确认**，因此 `timing.rs` 的固定 262 行帧本轮未改动。这是保持不变的边界，不是本轮修复项；把它写成实现需要先补上原图证据。
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `cargo test -p hesper-apple1 --lib` | 55 项通过，含上述两条新读回路径测试 |
+| `cargo test -p hesper-apple1` | 全部通过；4 项真实 ROM 测试按约定 ignored |
+| `cargo test --workspace --locked --offline` | 240 项通过、20 项 ignored |
+| `cargo test --workspace --release --locked --offline` | 240 项通过、20 项 ignored |
+| `make verify` | 格式检查、全目标 check、debug／release 测试、Clippy `-D warnings`、demo 与 diff 检查全部通过（`verify: 本地检查全部通过`） |
+
+CPU 核心（`hesper-cpu6502`）本轮未修改，因此未重跑 SingleStep 151 万／Klaus 三配置／246＋419 pins 的完整外部一致性范围。未运行远程 CI，未做原生桌面终端视觉验收。资料核对使用 M76 与 P21 的公开扫描件；除上述结论外未从扫描件推断其它电气参数。本轮按功能点本地提交，未 push。
