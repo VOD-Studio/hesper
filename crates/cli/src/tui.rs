@@ -33,12 +33,12 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     apple1::{
-        ProgramSource, Session, StopReason, TraceOptions, create_machine, load_rom,
+        ProgramImage, ProgramSource, Session, StopReason, TraceOptions, create_machine, load_rom,
         parse_program_address,
     },
     config::{self, AppConfig, BorderStyle, ColorMode, ScreenColor},
     format_registers,
-    presets::{APPLE1_PRESETS, ProgramPreset},
+    presets::{APPLE1_PRESETS, Category, ProgramPreset},
     run_demo_with_trace,
     terminal::{TerminalGuard, TerminalMode},
 };
@@ -127,7 +127,7 @@ enum PathTarget {
 #[derive(Debug)]
 enum Overlay {
     Programs {
-        selected: usize,
+        state: ListState,
     },
     Menu {
         kind: MenuKind,
@@ -243,10 +243,21 @@ impl ConfigForm {
 #[derive(Debug)]
 struct Resources {
     rom: [u8; 256],
-    program: Option<Vec<u8>>,
-    program_address: u16,
+    program: Option<ProgramImage>,
     rom_path: PathBuf,
     preset: Option<&'static ProgramPreset>,
+}
+
+impl Resources {
+    /// The address the launch form reports: the program block, not a tape
+    /// header or the BASIC image a BASIC program is shipped with.
+    fn program_address(&self) -> u16 {
+        self.program.as_ref().map_or(0, ProgramImage::load_address)
+    }
+
+    fn program_size(&self) -> usize {
+        self.program.as_ref().map_or(0, ProgramImage::size)
+    }
 }
 
 #[derive(Debug)]
@@ -390,43 +401,38 @@ impl App {
     }
 
     fn validate_resources(&self) -> Result<Resources, String> {
-        let program_address = if let Some(preset) = self.form.preset {
-            preset.address
-        } else {
-            parse_program_address(&self.form.program_address).map_err(|_| {
-                "程序加载地址无效：请输入 0–65535 的十进制数，或 0xE000 / $E000 形式的十六进制地址"
-                    .to_owned()
-            })?
-        };
         let rom_path = Self::text_path(&self.form.rom, "ROM")?;
         let rom_text = rom_path
             .to_str()
             .ok_or("ROM 路径不是 UTF-8，不能用于此 TUI 表单")?;
         let rom = load_rom(rom_text).map_err(|error| error.to_string())?;
+        // A preset carries its own addresses; without one the field must parse
+        // even before a file is chosen, so a half-typed address never sits in
+        // the form unnoticed.
         let source = if let Some(preset) = self.form.preset {
             Some(ProgramSource::Preset(preset))
-        } else if self.form.program.is_empty() {
-            None
         } else {
-            Some(ProgramSource::File {
-                path: &self.form.program,
-                address: program_address,
-            })
+            let address = parse_program_address(&self.form.program_address).map_err(|_| {
+                "程序加载地址无效：请输入 0–65535 的十进制数，或 0xE000 / $E000 形式的十六进制地址"
+                    .to_owned()
+            })?;
+            if self.form.program.is_empty() {
+                None
+            } else {
+                Some(ProgramSource::File {
+                    path: &self.form.program,
+                    address,
+                })
+            }
         };
         let program = source
-            .map(|source| {
-                source
-                    .load()
-                    .map(|(bytes, _)| bytes)
-                    .map_err(|error| error.to_string())
-            })
+            .map(|source| source.load().map_err(|error| error.to_string()))
             .transpose()?;
         let absolute_rom = fs::canonicalize(&rom_path)
             .map_err(|error| format!("无法规范化 ROM 路径 '{}': {error}", rom_path.display()))?;
         Ok(Resources {
             rom,
             program,
-            program_address,
             rom_path: absolute_rom,
             preset: self.form.preset,
         })
@@ -499,11 +505,7 @@ impl App {
                 return;
             }
         };
-        let machine = match create_machine(
-            &resources.rom,
-            resources.program.as_deref(),
-            resources.program_address,
-        ) {
+        let machine = match create_machine(&resources.rom, resources.program.as_ref()) {
             Ok(machine) => machine,
             Err(error) => {
                 self.form.status = Some(error.to_string());
@@ -540,9 +542,7 @@ impl App {
                         .and_then(|resources| resources.preset)
                         .map_or_else(
                             || "[NEW MACHINE] 已启动".into(),
-                            |preset| {
-                                format!("{} 已加载 · 输入 {:04X}R 启动", preset.name, preset.entry)
-                            },
+                            |preset| format!("{} 已加载 · {}", preset.name, preset.startup),
                         );
                     self.notify(message);
                 }
@@ -592,11 +592,7 @@ impl App {
         let (Some(resources), Some(session)) = (&self.resources, &mut self.session) else {
             return;
         };
-        let machine = match create_machine(
-            &resources.rom,
-            resources.program.as_deref(),
-            resources.program_address,
-        ) {
+        let machine = match create_machine(&resources.rom, resources.program.as_ref()) {
             Ok(machine) => machine,
             Err(error) => {
                 self.error(format!("无法重新上电：{error}"));
@@ -1126,16 +1122,18 @@ impl App {
     }
 
     fn open_programs(&mut self) {
-        let selected = self.form.preset.map_or_else(
+        let index = self.form.preset.map_or_else(
             || usize::from(!self.form.program.is_empty()),
             |preset| {
                 APPLE1_PRESETS
                     .iter()
                     .position(|item| item.id == preset.id)
-                    .map_or(0, |index| index + 2)
+                    .map_or(PICKER_FIXED_ROWS, |position| position + PICKER_FIXED_ROWS)
             },
         );
-        self.overlay = Some(Overlay::Programs { selected });
+        let mut state = ListState::default();
+        state.select(Some(picker_screen_row(index)));
+        self.overlay = Some(Overlay::Programs { state });
     }
 
     fn settings_key(&mut self, key: KeyEvent) {
@@ -1185,27 +1183,43 @@ impl App {
             return;
         };
         match overlay {
-            Overlay::Programs { mut selected } => {
+            Overlay::Programs { mut state } => {
+                let row = state.selected().unwrap_or(0);
                 match key.code {
                     KeyCode::Esc => return,
-                    KeyCode::Up => selected = selected.saturating_sub(1),
-                    KeyCode::Down => selected = (selected + 1).min(APPLE1_PRESETS.len() + 1),
+                    KeyCode::Up => state.select(Some(picker_step(row, false))),
+                    KeyCode::Down => state.select(Some(picker_step(row, true))),
+                    KeyCode::Left => state.select(Some(picker_category_step(row, false))),
+                    KeyCode::Right => state.select(Some(picker_category_step(row, true))),
+                    KeyCode::Home => state.select(Some(0)),
+                    KeyCode::End => {
+                        state.select(Some(picker_screen_row(
+                            PICKER_FIXED_ROWS + APPLE1_PRESETS.len() - 1,
+                        )));
+                    }
                     KeyCode::Enter => {
-                        self.form.preset =
-                            selected.checked_sub(2).map(|index| &APPLE1_PRESETS[index]);
+                        let Some(index) = picker_index_at_row(row) else {
+                            // A category header is not a choice: keep the
+                            // picker open instead of silently choosing.
+                            self.overlay = Some(Overlay::Programs { state });
+                            return;
+                        };
+                        self.form.preset = index
+                            .checked_sub(PICKER_FIXED_ROWS)
+                            .map(|position| &APPLE1_PRESETS[position]);
                         self.form.focus = ConfigFocus::Program;
                         self.form.status = None;
-                        if selected == 0 {
+                        if index == 0 {
                             self.form.program.clear();
                             self.form.program_address = "0x0000".into();
-                        } else if selected == 1 {
+                        } else if index == 1 {
                             self.form.edit = Some(ConfigEdit::new(self.form.program.clone()));
                         }
                         return;
                     }
                     _ => {}
                 }
-                self.overlay = Some(Overlay::Programs { selected });
+                self.overlay = Some(Overlay::Programs { state });
             }
             Overlay::Error(_) => {
                 if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
@@ -2036,16 +2050,16 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         let program = if let Some(resources) = &app.resources {
             resources.program.as_ref().map_or_else(
                 || "未加载".into(),
-                |bytes| {
+                |_| {
                     format!(
                         "已加载 {} B @ ${:04X}",
-                        bytes.len(),
-                        resources.program_address
+                        resources.program_size(),
+                        resources.program_address()
                     )
                 },
             )
         } else if let Some(preset) = app.form.preset {
-            format!("{} @ ${:04X}", preset.name, preset.address)
+            format!("{} @ ${:04X}", preset.name, preset.load)
         } else if app.form.program.is_empty() {
             "未加载".into()
         } else {
@@ -2230,17 +2244,11 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .map_or(app.form.program.as_str(), |preset| preset.name);
     let address = app.form.preset.map_or_else(
         || app.form.program_address.clone(),
-        |preset| format!("0x{:04X}", preset.address),
+        |preset| format!("0x{:04X}", preset.load),
     );
     let program_hint = app.form.preset.map_or_else(
         || "F3 选择预置 · F4 浏览本地文件".into(),
-        |preset| {
-            format!(
-                "已内置 {} B · 启动后输入 {:04X}R",
-                preset.bytes.len(),
-                preset.entry
-            )
-        },
+        |preset| format!("预置 {} B · {}", preset.size(), preset.startup),
     );
     let card = centered(
         Rect::new(0, 0, area.width.saturating_sub(4).min(96), 26),
@@ -2484,17 +2492,118 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     );
 }
 
+/// Rows of the program picker: `0` is "load no program", `1` is "local binary
+/// file", and `PICKER_FIXED_ROWS + n` is `APPLE1_PRESETS[n]`. The site's four
+/// categories appear as header rows between them and are not indices, so no
+/// keystroke can land on one.
+const PICKER_FIXED_ROWS: usize = 2;
+
+/// Screen row of a picker index, counting the category headers above it.
+fn picker_screen_row(index: usize) -> usize {
+    if index < PICKER_FIXED_ROWS {
+        return index;
+    }
+    let position = index - PICKER_FIXED_ROWS;
+    let headers = Category::ALL
+        .iter()
+        .filter(|category| first_preset_of(**category) <= position)
+        .count();
+    PICKER_FIXED_ROWS + position + headers
+}
+
+/// Picker index of a screen row; `None` on a category header.
+fn picker_index_at_row(row: usize) -> Option<usize> {
+    (0..PICKER_FIXED_ROWS + APPLE1_PRESETS.len()).find(|index| picker_screen_row(*index) == row)
+}
+
+/// The next selectable row in one direction: headers are skipped and the ends
+/// of the list hold.
+fn picker_step(row: usize, forward: bool) -> usize {
+    let last = picker_screen_row(PICKER_FIXED_ROWS + APPLE1_PRESETS.len() - 1);
+    let mut row = row;
+    loop {
+        let next = if forward {
+            if row >= last {
+                return last;
+            }
+            row + 1
+        } else {
+            if row == 0 {
+                return 0;
+            }
+            row - 1
+        };
+        row = next;
+        if picker_index_at_row(row).is_some() {
+            return row;
+        }
+    }
+}
+
+/// First program row of a neighbouring category, so Left/Right walk the same
+/// four categories the site publishes.
+fn picker_category_step(row: usize, forward: bool) -> usize {
+    let current = picker_index_at_row(row)
+        .and_then(|index| index.checked_sub(PICKER_FIXED_ROWS))
+        .map(|position| APPLE1_PRESETS[position].category);
+    let target = match (current, forward) {
+        (Some(category), true) => Category::ALL
+            .iter()
+            .copied()
+            .skip_while(|item| *item != category)
+            .nth(1),
+        (Some(category), false) => Category::ALL
+            .iter()
+            .copied()
+            .take_while(|item| *item != category)
+            .last(),
+        (None, true) => Category::ALL.first().copied(),
+        (None, false) => None,
+    };
+    match (target, current, forward) {
+        (Some(category), _, _) => picker_screen_row(PICKER_FIXED_ROWS + first_preset_of(category)),
+        (None, Some(_), _) => picker_screen_row(1),
+        (None, None, _) => picker_screen_row(0),
+    }
+}
+
+/// Catalogue position of a category's first program.
+fn first_preset_of(category: Category) -> usize {
+    APPLE1_PRESETS
+        .iter()
+        .position(|preset| preset.category == category)
+        .unwrap_or(0)
+}
+
+/// The picker list: the two fixed rows, then every category with its programs.
+fn picker_items(theme: &Theme) -> Vec<ListItem<'static>> {
+    let mut items =
+        Vec::with_capacity(PICKER_FIXED_ROWS + APPLE1_PRESETS.len() + Category::ALL.len());
+    items.push(ListItem::new("不加载程序").style(theme.text()));
+    items.push(ListItem::new("本地二进制文件…").style(theme.text()));
+    for category in Category::ALL {
+        items.push(ListItem::new(category.label()).style(theme.title()));
+        for preset in ProgramPreset::in_category(category) {
+            items.push(ListItem::new(format!("  {}", preset.name)).style(theme.text()));
+        }
+    }
+    items
+}
+
 fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme: &Theme) {
     let popup = if let Overlay::Menu { kind, .. } = overlay {
         menu_popup(frame.area(), *kind)
     } else {
-        let width = area.width.saturating_sub(8).clamp(20, 70);
+        let width = area.width.saturating_sub(8).clamp(20, 84);
         let height = match overlay {
-            Overlay::Programs { .. } => (APPLE1_PRESETS.len() as u16 + 6).min(area.height),
+            Overlay::Programs { .. } => {
+                (PICKER_FIXED_ROWS + APPLE1_PRESETS.len() + Category::ALL.len() + 8) as u16
+            }
             Overlay::Browser { .. } => area.height.saturating_sub(6).min(20),
             Overlay::RebootConfirm { .. } | Overlay::ReplaceConfirm { .. } => area.height.min(12),
             _ => 5,
-        };
+        }
+        .min(area.height);
         centered(
             Rect {
                 x: area.x,
@@ -2521,36 +2630,63 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
     }
     frame.render_widget(Clear, popup);
     match overlay {
-        Overlay::Programs { selected } => {
+        Overlay::Programs { state } => {
             let block = theme.block(" 选择程序 ").padding(Padding::horizontal(1));
             let inner = block.inner(popup);
             frame.render_widget(block.style(theme.panel()), popup);
-            let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
-            let items = ["不加载程序", "本地二进制文件…"]
-                .into_iter()
-                .chain(APPLE1_PRESETS.iter().map(|preset| preset.name))
-                .enumerate()
-                .map(|(index, name)| {
-                    ListItem::new(name).style(if index == *selected {
-                        theme.selected()
-                    } else {
-                        theme.text()
-                    })
-                });
-            frame.render_widget(List::new(items), rows[0]);
-            let hint = selected.checked_sub(2).map_or_else(
-                || "Enter 选择 · Esc 返回".into(),
-                |index| {
-                    let preset = &APPLE1_PRESETS[index];
-                    format!(
-                        "{} B @ ${:04X}\n启动后输入 {:04X}R",
-                        preset.bytes.len(),
-                        preset.address,
-                        preset.entry
-                    )
+            // The detail pane is what tells the user how to start the machine
+            // after the pick, so it gets its own fixed rows: identity, load
+            // range, start command, source.
+            let rows = Layout::vertical([Constraint::Min(3), Constraint::Length(4)]).split(inner);
+            frame.render_stateful_widget(
+                List::new(picker_items(theme))
+                    .style(theme.panel())
+                    .highlight_style(theme.selected()),
+                rows[0],
+                state,
+            );
+            let selected = state
+                .selected()
+                .and_then(picker_index_at_row)
+                .and_then(|index| index.checked_sub(PICKER_FIXED_ROWS))
+                .map(|position| &APPLE1_PRESETS[position]);
+            let detail = selected.map_or_else(
+                || {
+                    vec![
+                        Line::from(Span::styled("未选择预置程序", theme.text())),
+                        Line::from(Span::styled(
+                            "Enter 确认 · 左右键切换分类 · 上下键移动",
+                            theme.muted(),
+                        )),
+                    ]
+                },
+                |preset| {
+                    vec![
+                        Line::from(Span::styled(
+                            format!("{} · {} {}", preset.name, preset.author, preset.year),
+                            theme.text(),
+                        )),
+                        Line::from(Span::styled(
+                            if preset.needs_expansion {
+                                format!(
+                                    "{} B · {} · 需要 $1000–$1FFF 扩展内存（本机未建模）",
+                                    preset.size(),
+                                    preset.ranges()
+                                )
+                            } else {
+                                format!("{} B · {}", preset.size(), preset.ranges())
+                            },
+                            theme.muted(),
+                        )),
+                        Line::from(Span::styled(preset.startup, theme.status())),
+                        Line::from(Span::styled(
+                            format!("{} · {}", preset.source, preset.license_label()),
+                            theme.muted(),
+                        )),
+                    ]
                 },
             );
-            frame.render_widget(Paragraph::new(hint).style(theme.muted()), rows[1]);
+            frame.render_widget(Paragraph::new(detail).style(theme.panel()), rows[1]);
         }
         Overlay::Menu { kind, selected } => {
             let lines = menu_entries(*kind)
@@ -2810,8 +2946,7 @@ mod tests {
     fn resources(path: &str) -> Resources {
         Resources {
             rom: test_rom(),
-            program: Some(vec![0x4c, 0x00, 0x00]),
-            program_address: 0,
+            program: Some(ProgramImage::single(0, vec![0x4c, 0x00, 0x00]).unwrap()),
             rom_path: PathBuf::from(path),
             preset: None,
         }
@@ -2834,7 +2969,10 @@ mod tests {
         key(&mut app, KeyCode::F(3));
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Enter);
+        // Down crosses the two fixed rows and the Games category header, so it
+        // lands on the first Games program, never on the header itself.
         assert_eq!(app.form.preset, Some(&APPLE1_PRESETS[0]));
+        assert_eq!(APPLE1_PRESETS[0].id, "15-puzzle");
         assert!(app.input.is_empty());
 
         for (width, height) in [(44, 30), (80, 30), (120, 40)] {
@@ -2842,7 +2980,7 @@ mod tests {
             terminal.draw(|frame| app.draw(frame)).unwrap();
             let text = buffer_text(terminal.backend().buffer());
             assert!(
-                text.contains("BASIC (Huston)") && text.contains("0xE000"),
+                text.contains("15 Puzzle") && text.contains("0x0300"),
                 "{text}"
             );
             assert!(
@@ -2853,8 +2991,8 @@ mod tests {
             terminal.draw(|frame| app.draw(frame)).unwrap();
             let text = buffer_text(terminal.backend().buffer());
             assert!(
-                text.contains("BASIC (Huston)") && text.contains("E000R"),
-                "{text}"
+                text.contains("15 Puzzle") && text.contains("0300R"),
+                "the picker shows how to start the program: {text}"
             );
             key(&mut app, KeyCode::Esc);
         }
@@ -2882,11 +3020,52 @@ mod tests {
         assert_eq!(app.form.program_address, "0x0000");
     }
 
+    /// The picker mirrors the site's four categories, and a header is a label
+    /// rather than a choice: Up/Down, Left/Right and the drawn row count all
+    /// agree with that.
+    #[test]
+    fn program_picker_walks_the_published_categories() {
+        let last = picker_screen_row(PICKER_FIXED_ROWS + APPLE1_PRESETS.len() - 1);
+        let mut row = 0;
+        while row < last {
+            let next = picker_step(row, true);
+            assert!(next > row, "Down at row {row} must advance, got {next}");
+            assert!(
+                picker_index_at_row(next).is_some(),
+                "row {next} is a category header"
+            );
+            row = next;
+        }
+        assert_eq!(row, last, "Down reaches the last program");
+        while row > 0 {
+            let previous = picker_step(row, false);
+            assert!(previous < row, "Up at row {row} must retreat");
+            assert!(picker_index_at_row(previous).is_some());
+            row = previous;
+        }
+        assert_eq!(row, 0, "Up returns to the first fixed row");
+
+        for category in Category::ALL {
+            row = picker_category_step(row, true);
+            assert_eq!(
+                picker_index_at_row(row).map(|index| index - PICKER_FIXED_ROWS),
+                Some(first_preset_of(category)),
+                "Right reaches {}",
+                category.label()
+            );
+        }
+        assert_eq!(
+            last + 1,
+            picker_items(&Theme::from_config(&AppConfig::default())).len(),
+            "the drawn list has one row per picker row"
+        );
+    }
+
     #[test]
     fn bundled_image_survives_reset_and_is_restored_on_reboot() {
         use hesper_cpu6502::Bus;
 
-        let preset = &APPLE1_PRESETS[0];
+        let preset = ProgramPreset::find("basic-huston").expect("basic-huston preset");
         let mut app = App::new(Some(Apple1Launch {
             preset: Some(preset),
             max_cycles: Some(1_000_000),
@@ -2894,18 +3073,19 @@ mod tests {
         }));
         app.config_path = None;
         assert_eq!(app.form.preset, Some(preset));
-        let (bytes, address) = ProgramSource::Preset(preset).load().unwrap();
+        let image = ProgramSource::Preset(preset).load().unwrap();
         let mut resources = resources("/unused/rom.bin");
         resources.rom[..3].copy_from_slice(&[0x4C, 0x00, 0xFF]); // JMP $FF00
         resources.rom[0xFC..0xFE].copy_from_slice(&0xFF00u16.to_le_bytes());
-        resources.program = Some(bytes);
-        resources.program_address = address;
+        resources.program = Some(image);
         resources.preset = Some(preset);
         app.start_resources(resources, false);
         assert!(!app.faulted);
         let bus = app.session.as_mut().unwrap().machine_mut().bus_mut();
-        for (index, byte) in preset.bytes.iter().enumerate() {
-            assert_eq!(bus.read(preset.address + index as u16), *byte);
+        for block in preset.blocks {
+            for (index, byte) in block.bytes.iter().enumerate() {
+                assert_eq!(bus.read(block.address + index as u16), *byte);
+            }
         }
         bus.write(0xE000, 0xEA);
         app.reset();
@@ -2947,8 +3127,8 @@ mod tests {
         app.config_path = None;
         let mut resources = resources("/unused/rom.bin");
         resources.rom[0xFC..0xFE].copy_from_slice(&0xE000u16.to_le_bytes());
-        resources.program = Some(vec![0x4C, 0x00, 0xE0]); // JMP $E000
-        resources.program_address = app.launch.program_address;
+        resources.program =
+            Some(ProgramImage::single(app.launch.program_address, vec![0x4C, 0x00, 0xE0]).unwrap());
         app.start_resources(resources, false);
         assert!(!app.faulted);
         let bus = app.session.as_mut().unwrap().machine_mut().bus_mut();
@@ -2970,7 +3150,7 @@ mod tests {
         assert_eq!(bus.read(0xE002), 0xE0);
         assert_eq!(bus.read(0xE100), 0);
         assert_eq!(bus.read(0x0300), 0);
-        assert_eq!(app.resources.as_ref().unwrap().program_address, 0xE000);
+        assert_eq!(app.resources.as_ref().unwrap().program_address(), 0xE000);
     }
 
     #[test]
@@ -3202,7 +3382,7 @@ mod tests {
                 before_registers
             );
             assert_eq!(app.session.as_ref().unwrap().total_cpu_cycles(), 20);
-            assert_eq!(app.resources.as_ref().unwrap().program_address, 0);
+            assert_eq!(app.resources.as_ref().unwrap().program_address(), 0);
             assert_eq!(app.input, VecDeque::from(*b"A"));
         }
     }
@@ -3428,12 +3608,7 @@ mod tests {
         let resources = resources("/original/rom.bin");
         app.config.apple1.rom_path = Some(resources.rom_path.clone());
         let mut session = Session::new(
-            create_machine(
-                &resources.rom,
-                resources.program.as_deref(),
-                resources.program_address,
-            )
-            .unwrap(),
+            create_machine(&resources.rom, resources.program.as_ref()).unwrap(),
             Some(budget),
             TraceOptions::new(false, true, 64).unwrap(),
         );
@@ -3526,7 +3701,7 @@ mod tests {
     fn replacement_boot_error_retains_a_faulted_machine_for_recovery() {
         let mut app = app_with_session(100_000);
         let mut replacement = resources("/replacement/rom.bin");
-        replacement.program = Some(vec![0x02]);
+        replacement.program = Some(ProgramImage::single(0, vec![0x02]).unwrap());
         app.request_start(replacement, false);
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -4014,7 +4189,11 @@ mod tests {
         app.page = Page::Apple1;
         app.terminal_size = (120, 40);
         app.session = Some(Session::new(
-            create_machine(&test_rom(), Some(&[0x4c, 0x00, 0x00]), 0).unwrap(),
+            create_machine(
+                &test_rom(),
+                Some(&ProgramImage::single(0, vec![0x4c, 0x00, 0x00]).unwrap()),
+            )
+            .unwrap(),
             None,
             TraceOptions::new(false, false, 64).unwrap(),
         ));

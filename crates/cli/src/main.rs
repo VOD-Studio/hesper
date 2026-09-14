@@ -12,7 +12,7 @@ use hesper::{
     DEFAULT_MAX_STEPS, DemoEvent,
     apple1::{ProgramSource, parse_program_address, run_apple1},
     format_bus_trace, format_instruction_trace, format_registers,
-    presets::APPLE1_PRESETS,
+    presets::{APPLE1_PRESETS, Category, ProgramPreset},
     run_demo_with_trace,
     tui::{self, Apple1Launch},
 };
@@ -42,9 +42,13 @@ configuration page. In text/pipe mode --rom remains required.
 Options:
   --rom <path>           Path to the 256-byte Woz Monitor ROM
   --program <path>       Optional raw program file to load into RAM
-  --preset <id>          Load a bundled program (use --list-presets to list)
+  --preset <id>          Load a bundled program; every program published by
+                        https://apple1software.com/ (Games, Fun, Programming,
+                        Utilities) is built in. Use --list-presets to list ids,
+                        load ranges, source pages and start commands
                         Exclusive with --program and --program-address
-  --list-presets         List bundled programs, load addresses and entry points
+  --list-presets         List every bundled program: category, id, size, load
+                        ranges, start command, source page and licence
   --program-address <N>  Load address: decimal, 0xHEX, or '$HEX' (default: 0)
                         Entire file must fit in $0000–$0FFF or $E000–$EFFF
   --max-cycles <N>       Maximum total CPU cycles before the emulator exits
@@ -154,22 +158,40 @@ fn parse_apple1(
             "--preset" => {
                 let id = args.next().ok_or("--preset requires a preset id")?;
                 launch.preset = Some(
-                    APPLE1_PRESETS
-                        .iter()
-                        .find(|preset| preset.id == id)
+                    ProgramPreset::find(id.as_str())
                         .ok_or_else(|| format!("unknown preset: {id}; use --list-presets"))?,
                 );
             }
             "--list-presets" => {
-                for preset in APPLE1_PRESETS {
-                    println!(
-                        "{}  {}  {} bytes @ ${:04X}  start: {:04X}R",
-                        preset.id,
-                        preset.name,
-                        preset.bytes.len(),
-                        preset.address,
-                        preset.entry
-                    );
+                println!(
+                    "{} bundled Apple-1 programs from https://apple1software.com/ (downloaded 2026-09-14); use --preset <id>",
+                    APPLE1_PRESETS.len()
+                );
+                for category in Category::ALL {
+                    println!("\n{}", category.label());
+                    for preset in ProgramPreset::in_category(category) {
+                        println!(
+                            "  {:<24} {} - {}, {} - {} bytes - {} - start: {}",
+                            preset.id,
+                            preset.name,
+                            preset.author,
+                            preset.year,
+                            preset.size(),
+                            preset.ranges(),
+                            preset.startup
+                        );
+                        println!(
+                            "  {:<30} {} - {}{}",
+                            "",
+                            preset.source,
+                            preset.license_label(),
+                            if preset.needs_expansion {
+                                " - needs the $1000-$1FFF expansion this machine does not model"
+                            } else {
+                                ""
+                            }
+                        );
+                    }
                 }
                 return Ok(None);
             }

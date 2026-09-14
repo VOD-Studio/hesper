@@ -328,20 +328,80 @@ impl Session {
     }
 }
 
-/// A file has a host-selected address; a preset carries its fixed address.
+/// A program ready to boot the machine with: the RAM blocks to write, every
+/// one of them already checked against the machine's banks.
+///
+/// A file is one block at the host-chosen address. A preset is the whole set
+/// of blocks the published listing defines, because programs are not all one
+/// image: the BASIC ones carry a 182-byte tape header at `$004A` beside their
+/// program, and several are shipped with BASIC itself at `$E000`.
+#[derive(Debug)]
+pub(crate) struct ProgramImage {
+    blocks: Vec<(u16, Vec<u8>)>,
+}
+
+impl ProgramImage {
+    /// Validate every block before any of them is written: a rejected block
+    /// must not leave half a program in RAM.
+    fn new(blocks: Vec<(u16, Vec<u8>)>) -> Result<Self, Box<dyn Error>> {
+        for (address, bytes) in &blocks {
+            Apple1Bus::validate_ram_load(*address, bytes.len())?;
+        }
+        Ok(Self { blocks })
+    }
+
+    /// One block at one address: a file load, and the test images.
+    pub(crate) fn single(address: u16, bytes: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+        Self::new(vec![(address, bytes)])
+    }
+
+    fn write_into(&self, bus: &mut Apple1Bus) -> Result<(), Box<dyn Error>> {
+        for (address, bytes) in &self.blocks {
+            bus.load_ram(*address, bytes)
+                .map_err(|error| format!("cannot load program: {error}"))?;
+        }
+        Ok(())
+    }
+
+    /// Total bytes written, for host messages.
+    pub(crate) fn size(&self) -> usize {
+        self.blocks.iter().map(|(_, bytes)| bytes.len()).sum()
+    }
+
+    /// The block the launch form reports as the load address: the largest
+    /// one, which is the program rather than a tape header or the BASIC image
+    /// shipped beside it.
+    pub(crate) fn load_address(&self) -> u16 {
+        self.blocks
+            .iter()
+            .max_by_key(|(_, bytes)| bytes.len())
+            .map_or(0, |(address, _)| *address)
+    }
+}
+
+/// A file has a host-selected address; a preset carries the published set of
+/// blocks and its own source.
 pub enum ProgramSource<'a> {
     File { path: &'a str, address: u16 },
     Preset(&'static ProgramPreset),
 }
 
 impl ProgramSource<'_> {
-    pub(crate) fn load(self) -> Result<(Vec<u8>, u16), Box<dyn Error>> {
+    pub(crate) fn load(self) -> Result<ProgramImage, Box<dyn Error>> {
         match self {
-            Self::File { path, address } => Ok((load_program(path, address)?, address)),
-            Self::Preset(preset) => {
-                Apple1Bus::validate_ram_load(preset.address, preset.bytes.len())?;
-                Ok((preset.bytes.to_vec(), preset.address))
+            Self::File { path, address } => {
+                let bytes = fs::read(path)
+                    .map_err(|e| format!("cannot read program file '{path}': {e}"))?;
+                ProgramImage::single(address, bytes)
+                    .map_err(|e| format!("program '{path}': {e}").into())
             }
+            Self::Preset(preset) => ProgramImage::new(
+                preset
+                    .blocks
+                    .iter()
+                    .map(|block| (block.address, block.bytes.to_vec()))
+                    .collect(),
+            ),
         }
     }
 }
@@ -364,21 +424,15 @@ pub fn run_apple1(
     // mutate; a bad path, wrong image, or oversized program fails here
     // with nothing partially applied and no cycle executed.
     let rom = load_rom(rom_path)?;
-    let (program, program_address) = match program_source {
-        Some(source) => {
-            let (bytes, address) = source.load()?;
-            (Some(bytes), address)
-        }
-        None => (None, 0),
-    };
+    let program = program_source.map(ProgramSource::load).transpose()?;
 
     // 2. Build the machine and the session. Nothing has executed yet: with
     // `--max-cycles 0` the run stops here having reported zero cycles.
-    let machine = create_machine(&rom, program.as_deref(), program_address)?;
+    let machine = create_machine(&rom, program.as_ref())?;
     let mut session = Session::new(machine, max_cycles, trace_options);
 
     let outcome = if io::stdin().is_terminal() {
-        run_interactive(&mut session, &rom, program.as_deref(), program_address)
+        run_interactive(&mut session, &rom, program.as_ref())
     } else {
         run_batch(&mut session)
     };
@@ -436,14 +490,6 @@ pub fn parse_program_address(value: &str) -> Result<u16, std::num::ParseIntError
     }
 }
 
-/// Read a raw program image that fits wholly within one Apple I RAM bank.
-pub(crate) fn load_program(path: &str, address: u16) -> Result<Vec<u8>, Box<dyn Error>> {
-    let bytes = fs::read(path).map_err(|e| format!("cannot read program file '{path}': {e}"))?;
-    Apple1Bus::validate_ram_load(address, bytes.len())
-        .map_err(|e| format!("program '{path}': {e}"))?;
-    Ok(bytes)
-}
-
 /// Lowercase hex, only built for a mismatch message.
 fn hex(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
@@ -459,15 +505,11 @@ fn hex(bytes: &[u8]) -> String {
 /// command.
 pub(crate) fn create_machine(
     rom: &[u8; 256],
-    program: Option<&[u8]>,
-    program_address: u16,
+    program: Option<&ProgramImage>,
 ) -> Result<Apple1, Box<dyn Error>> {
     let mut machine = Apple1::new(rom)?;
-    if let Some(bytes) = program {
-        machine
-            .bus_mut()
-            .load_ram(program_address, bytes)
-            .map_err(|e| format!("cannot load program: {e}"))?;
+    if let Some(program) = program {
+        program.write_into(machine.bus_mut())?;
     }
     Ok(machine)
 }
@@ -742,8 +784,7 @@ fn classify_key(key: KeyEvent) -> Action {
 fn run_interactive(
     session: &mut Session,
     rom: &[u8; 256],
-    program: Option<&[u8]>,
-    program_address: u16,
+    program: Option<&ProgramImage>,
 ) -> Result<StopReason, Box<dyn Error>> {
     let view = View::for_stdout(
         io::stdout().is_terminal(),
@@ -799,7 +840,7 @@ fn run_interactive(
                         announce(view, label, &mut status, &mut redraw, &mut stdout)?;
                     }
                     Action::Recreate => {
-                        session.machine = create_machine(rom, program, program_address)?;
+                        session.machine = create_machine(rom, program)?;
                         announce(view, "[NEW MACHINE]", &mut status, &mut redraw, &mut stdout)?;
                         let stop = session.boot()?;
                         present(view, session, &mut redraw, &mut stdout)?;
@@ -926,7 +967,7 @@ mod tests {
             assert_eq!(View::for_stdout(is_terminal, term), expected);
         }
         let session = Session::new(
-            create_machine(&test_rom(0), None, 0).unwrap(),
+            create_machine(&test_rom(0), None).unwrap(),
             Some(0),
             TraceOptions::new(false, false, 64).unwrap(),
         );
@@ -953,9 +994,15 @@ mod tests {
     /// work to do and never stops on its own.
     const SPIN: &[u8] = &[0x4C, 0x00, 0x00];
 
+    /// [`SPIN`] as a loadable image at `$0000`.
+    fn spin_image() -> ProgramImage {
+        ProgramImage::single(0, SPIN.to_vec()).unwrap()
+    }
+
     fn session_with(max_cycles: Option<u64>, trace: TraceOptions) -> Session {
         let rom = test_rom(0x0000);
-        let machine = create_machine(&rom, Some(SPIN), 0).unwrap();
+        let image = ProgramImage::single(0, SPIN.to_vec()).unwrap();
+        let machine = create_machine(&rom, Some(&image)).unwrap();
         Session::new(machine, max_cycles, trace)
     }
 
@@ -1022,7 +1069,7 @@ mod tests {
         let before = session.total_cpu_cycles;
         assert!(before >= BOOT_BATCH_CPU_CYCLES);
 
-        session.machine = create_machine(&rom, Some(SPIN), 0).unwrap();
+        session.machine = create_machine(&rom, Some(&spin_image())).unwrap();
         assert_eq!(session.machine.cpu_cycles(), 0, "the machine is new");
         assert_eq!(session.machine.master_ticks(), 0, "the machine is new");
         assert_eq!(
@@ -1122,7 +1169,11 @@ mod tests {
         program.push(0x00);
 
         let mut session = Session::new(
-            create_machine(&test_rom(0x0000), Some(&program), 0).unwrap(),
+            create_machine(
+                &test_rom(0x0000),
+                Some(&ProgramImage::single(0, program.clone()).unwrap()),
+            )
+            .unwrap(),
             None,
             TraceOptions {
                 instructions: false,

@@ -176,9 +176,37 @@ fn presets_can_be_listed_without_rom_and_conflicting_options_are_rejected() {
     let output = run_apple1_cli(&["--list-presets"], b"");
     assert!(output.status.success());
     let listing = String::from_utf8(output.stdout).unwrap();
-    for expected in ["basic-huston", "4096 bytes @ $E000", "start: E000R"] {
-        assert!(listing.contains(expected), "{listing}");
+    // Every published program, its category, its load range, its start command
+    // and its source page must be listed; 42 programs came from the library.
+    for expected in [
+        "42 bundled Apple-1 programs",
+        "Games 游戏",
+        "Fun 娱乐",
+        "Programming 编程",
+        "Utilities 工具",
+        "basic-huston",
+        "Apple BASIC (Huston) - Steve Wozniak, 1977 - 4096 bytes - $E000–$EFFF - start: 启动后输入 E000R",
+        "https://apple1software.com/programming/basic/huston/",
+        "15-puzzle",
+        "Hamurabi",
+        "start: 启动后输入 E2B3R 进入 BASIC，再输入 RUN",
+        "https://apple1software.com/games/hamurabi/",
+        "little-tower",
+        "needs the $1000-$1FFF expansion",
+    ] {
+        assert!(
+            listing.contains(expected),
+            "missing {expected:?} in:\n{listing}"
+        );
     }
+    assert_eq!(
+        listing
+            .lines()
+            .filter(|line| line.contains(" bytes - "))
+            .count(),
+        42,
+        "one size/range/start line per bundled program"
+    );
     assert_rejected(
         &run_apple1_cli(&["--preset"], b""),
         "--preset requires a preset id",
@@ -221,6 +249,79 @@ fn bundled_basic_runs_calculations_and_a_numbered_loop() {
     assert!(stdout.contains("\n3\n"), "{stdout:?}");
     assert!(stdout.contains("\n1\n4\n9\n"), "{stdout:?}");
     assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "[stopped]");
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn bundled_basic_program_runs_after_the_published_warm_entry() {
+    // `resistor-calculator` is a BASIC program: the preset carries Huston
+    // BASIC at $E000, the tape header at $004A and the tokenized program at
+    // $0800, exactly as the site transfers it — and the site's own listing
+    // ends with E2B3R, BASIC's warm entry, so the loaded program survives the
+    // entry and RUN can execute it.
+    let rom = RomFile::from_env("bundled-basic-program");
+    let output = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--preset",
+            "resistor-calculator",
+            "--max-cycles",
+            "6000000",
+        ],
+        b"E2B3R\nRUN\n",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap().replace('\r', "");
+    assert!(stdout.contains("THE RESISTOR CALCULATOR"), "{stdout:?}");
+    assert!(stdout.contains("CREATED BY PAOLO DI LEO"), "{stdout:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "[stopped]");
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn bundled_assembly_program_runs_from_its_published_entry() {
+    let rom = RomFile::from_env("bundled-assembly");
+    let output = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--preset",
+            "15-puzzle",
+            "--max-cycles",
+            "3000000",
+        ],
+        b"0300R\n",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap().replace('\r', "");
+    assert!(stdout.contains("15 PUZZLE - BY JEFF JETTON"), "{stdout:?}");
+    assert!(stdout.contains("INSTRUCTIONS (Y/N)?"), "{stdout:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "[stopped]");
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn presets_longer_than_a_ram_bank_are_rejected_with_that_reason() {
+    // `little-tower` runs from $0300 to $14CD in the published listing, so it
+    // needs the $1000-$1FFF expansion this machine does not model. The host
+    // must say so through the bank error rather than boot a truncated image.
+    let rom = RomFile::from_env("bundled-expansion");
+    let output = run_apple1_cli(&["--rom", rom.path(), "--preset", "little-tower"], b"");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must fit within one Apple I RAM bank"),
+        "{stderr}"
+    );
 }
 
 #[test]
