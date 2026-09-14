@@ -33,11 +33,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     apple1::{
-        Session, StopReason, TraceOptions, create_machine, load_program, load_rom,
+        ProgramSource, Session, StopReason, TraceOptions, create_machine, load_rom,
         parse_program_address,
     },
     config::{self, AppConfig, BorderStyle, ColorMode, ScreenColor},
-    format_registers, run_demo_with_trace,
+    format_registers,
+    presets::{APPLE1_PRESETS, ProgramPreset},
+    run_demo_with_trace,
     terminal::{TerminalGuard, TerminalMode},
 };
 
@@ -51,6 +53,7 @@ const MIN_HEIGHT: u16 = 30;
 pub struct Apple1Launch {
     pub rom: Option<PathBuf>,
     pub program: Option<PathBuf>,
+    pub preset: Option<&'static ProgramPreset>,
     pub program_address: u16,
     pub max_cycles: Option<u64>,
     pub trace: bool,
@@ -66,6 +69,7 @@ impl Default for Apple1Launch {
         Self {
             rom: None,
             program: None,
+            preset: None,
             program_address: 0,
             max_cycles: None,
             trace: false,
@@ -122,6 +126,9 @@ enum PathTarget {
 
 #[derive(Debug)]
 enum Overlay {
+    Programs {
+        selected: usize,
+    },
     Menu {
         kind: MenuKind,
         selected: usize,
@@ -216,6 +223,7 @@ struct ConfigForm {
     rom: String,
     program: String,
     program_address: String,
+    preset: Option<&'static ProgramPreset>,
     focus: ConfigFocus,
     edit: Option<ConfigEdit>,
     status: Option<String>,
@@ -238,6 +246,7 @@ struct Resources {
     program: Option<Vec<u8>>,
     program_address: u16,
     rom_path: PathBuf,
+    preset: Option<&'static ProgramPreset>,
 }
 
 #[derive(Debug)]
@@ -310,6 +319,7 @@ impl App {
                 rom,
                 program,
                 program_address: format!("0x{:04X}", launch.program_address),
+                preset: launch.preset,
                 focus: ConfigFocus::Rom,
                 edit: None,
                 status: None,
@@ -380,27 +390,35 @@ impl App {
     }
 
     fn validate_resources(&self) -> Result<Resources, String> {
-        let program_address = parse_program_address(&self.form.program_address).map_err(|_| {
-            "程序加载地址无效：请输入 0–65535 的十进制数，或 0xE000 / $E000 形式的十六进制地址"
-                .to_owned()
-        })?;
+        let program_address = if let Some(preset) = self.form.preset {
+            preset.address
+        } else {
+            parse_program_address(&self.form.program_address).map_err(|_| {
+                "程序加载地址无效：请输入 0–65535 的十进制数，或 0xE000 / $E000 形式的十六进制地址"
+                    .to_owned()
+            })?
+        };
         let rom_path = Self::text_path(&self.form.rom, "ROM")?;
         let rom_text = rom_path
             .to_str()
             .ok_or("ROM 路径不是 UTF-8，不能用于此 TUI 表单")?;
         let rom = load_rom(rom_text).map_err(|error| error.to_string())?;
-        let program_path = if self.form.program.is_empty() {
+        let source = if let Some(preset) = self.form.preset {
+            Some(ProgramSource::Preset(preset))
+        } else if self.form.program.is_empty() {
             None
         } else {
-            Some(Self::text_path(&self.form.program, "程序")?)
+            Some(ProgramSource::File {
+                path: &self.form.program,
+                address: program_address,
+            })
         };
-        let program = program_path
-            .as_ref()
-            .map(|path| -> Result<Vec<u8>, String> {
-                let text = path
-                    .to_str()
-                    .ok_or_else(|| "程序路径不是 UTF-8，不能用于此 TUI 表单".to_owned())?;
-                load_program(text, program_address).map_err(|error| error.to_string())
+        let program = source
+            .map(|source| {
+                source
+                    .load()
+                    .map(|(bytes, _)| bytes)
+                    .map_err(|error| error.to_string())
             })
             .transpose()?;
         let absolute_rom = fs::canonicalize(&rom_path)
@@ -410,6 +428,7 @@ impl App {
             program,
             program_address,
             rom_path: absolute_rom,
+            preset: self.form.preset,
         })
     }
 
@@ -515,7 +534,17 @@ impl App {
                 if let Some(stop) = stop {
                     self.stop(stop);
                 } else {
-                    self.notify("[NEW MACHINE] 已启动");
+                    let message = self
+                        .resources
+                        .as_ref()
+                        .and_then(|resources| resources.preset)
+                        .map_or_else(
+                            || "[NEW MACHINE] 已启动".into(),
+                            |preset| {
+                                format!("{} 已加载 · 输入 {:04X}R 启动", preset.name, preset.entry)
+                            },
+                        );
+                    self.notify(message);
                 }
             }
             Err(error) => {
@@ -995,6 +1024,10 @@ impl App {
     }
 
     fn config_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::F(3) && self.form.edit.is_none() {
+            self.open_programs();
+            return;
+        }
         if key.code == KeyCode::F(4) {
             match self.form.focus {
                 ConfigFocus::Rom => self.open_browser(PathTarget::Rom),
@@ -1071,6 +1104,11 @@ impl App {
                 };
             }
             KeyCode::Enter => match self.form.focus {
+                ConfigFocus::Program if self.form.preset.is_some() => self.open_programs(),
+                ConfigFocus::ProgramAddress if self.form.preset.is_some() => {
+                    self.form.status =
+                        Some("预置程序使用固定加载地址；按 F3 可切换为本地文件".into());
+                }
                 ConfigFocus::Validate => {
                     let _ = self.validate_and_save();
                 }
@@ -1085,6 +1123,19 @@ impl App {
             },
             _ => {}
         }
+    }
+
+    fn open_programs(&mut self) {
+        let selected = self.form.preset.map_or_else(
+            || usize::from(!self.form.program.is_empty()),
+            |preset| {
+                APPLE1_PRESETS
+                    .iter()
+                    .position(|item| item.id == preset.id)
+                    .map_or(0, |index| index + 2)
+            },
+        );
+        self.overlay = Some(Overlay::Programs { selected });
     }
 
     fn settings_key(&mut self, key: KeyEvent) {
@@ -1134,6 +1185,28 @@ impl App {
             return;
         };
         match overlay {
+            Overlay::Programs { mut selected } => {
+                match key.code {
+                    KeyCode::Esc => return,
+                    KeyCode::Up => selected = selected.saturating_sub(1),
+                    KeyCode::Down => selected = (selected + 1).min(APPLE1_PRESETS.len() + 1),
+                    KeyCode::Enter => {
+                        self.form.preset =
+                            selected.checked_sub(2).map(|index| &APPLE1_PRESETS[index]);
+                        self.form.focus = ConfigFocus::Program;
+                        self.form.status = None;
+                        if selected == 0 {
+                            self.form.program.clear();
+                            self.form.program_address = "0x0000".into();
+                        } else if selected == 1 {
+                            self.form.edit = Some(ConfigEdit::new(self.form.program.clone()));
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+                self.overlay = Some(Overlay::Programs { selected });
+            }
             Overlay::Error(_) => {
                 if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
                     self.dirty = true;
@@ -1262,6 +1335,7 @@ impl App {
                                 self.form.rom = text.to_owned();
                             } else {
                                 self.form.program = text.to_owned();
+                                self.form.preset = None;
                             }
                             self.form.status = None;
                         } else {
@@ -1543,6 +1617,9 @@ fn next_menu(kind: MenuKind) -> MenuKind {
 fn footer(app: &App, width: u16, theme: &Theme) -> Line<'static> {
     let vertical = if theme.ascii { "Up/Down" } else { "↑↓" };
     let hints = match &app.overlay {
+        Some(Overlay::Programs { .. }) => {
+            vec![("Enter", "选择"), ("Esc", "返回"), (vertical, "移动")]
+        }
         Some(Overlay::Menu { .. }) => vec![
             ("Enter", "执行"),
             ("Esc", "关闭"),
@@ -1598,7 +1675,21 @@ fn footer(app: &App, width: u16, theme: &Theme) -> Line<'static> {
                     ]
                 } else {
                     vec![
-                        ("Enter", if field { "编辑" } else { "执行" }),
+                        (
+                            "Enter",
+                            if app.form.focus == ConfigFocus::Program && app.form.preset.is_some() {
+                                "选择"
+                            } else if app.form.focus == ConfigFocus::ProgramAddress
+                                && app.form.preset.is_some()
+                            {
+                                "查看"
+                            } else if field {
+                                "编辑"
+                            } else {
+                                "执行"
+                            },
+                        ),
+                        ("F3", "预置"),
                         ("Esc", "返回"),
                         (vertical, "选择"),
                         ("Tab/S-Tab", "切换"),
@@ -1953,6 +2044,8 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
                     )
                 },
             )
+        } else if let Some(preset) = app.form.preset {
+            format!("{} @ ${:04X}", preset.name, preset.address)
         } else if app.form.program.is_empty() {
             "未加载".into()
         } else {
@@ -2131,6 +2224,24 @@ fn edit_view(edit: &ConfigEdit, width: u16) -> (&str, u16) {
 }
 
 fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
+    let program = app
+        .form
+        .preset
+        .map_or(app.form.program.as_str(), |preset| preset.name);
+    let address = app.form.preset.map_or_else(
+        || app.form.program_address.clone(),
+        |preset| format!("0x{:04X}", preset.address),
+    );
+    let program_hint = app.form.preset.map_or_else(
+        || "F3 选择预置 · F4 浏览本地文件".into(),
+        |preset| {
+            format!(
+                "已内置 {} B · 启动后输入 {:04X}R",
+                preset.bytes.len(),
+                preset.entry
+            )
+        },
+    );
     let card = centered(
         Rect::new(0, 0, area.width.saturating_sub(4).min(96), 26),
         area,
@@ -2165,17 +2276,21 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         ),
         (
             ConfigFocus::Program,
-            "02  程序文件 · 可选",
-            app.form.program.as_str(),
+            "02  程序 · F3",
+            program,
             "未选择程序",
-            "留空则只启动 Woz Monitor",
+            program_hint.as_str(),
         ),
         (
             ConfigFocus::ProgramAddress,
             "03  加载地址",
-            app.form.program_address.as_str(),
+            address.as_str(),
             "输入程序加载地址",
-            "十进制 / 0xE000 / $E000",
+            if app.form.preset.is_some() {
+                "预置程序自动设置加载地址"
+            } else {
+                "十进制 / 0xE000 / $E000"
+            },
         ),
     ]
     .into_iter()
@@ -2196,6 +2311,10 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             block = block.border_style(style).title_style(style).title(
                 Line::from(if edit.is_some() {
                     " 编辑中 "
+                } else if app.form.preset.is_some() && focus == ConfigFocus::Program {
+                    " Enter 选择 "
+                } else if app.form.preset.is_some() && focus == ConfigFocus::ProgramAddress {
+                    " 固定地址 "
                 } else {
                     " Enter 编辑 "
                 })
@@ -2233,7 +2352,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .unwrap_or(if app.form.edit.is_some() {
             "Enter 确认修改，Esc 放弃本次编辑。"
         } else {
-            "选择字段后按 Enter 编辑；路径也可用 F4 浏览。"
+            "F3 选择预置程序；Enter 编辑字段；F4 浏览路径。"
         });
     frame.render_widget(
         Paragraph::new(status)
@@ -2355,7 +2474,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n鼠标：点击顶栏展开下拉菜单，移动选择，点击菜单项执行；再次点击标题或点击外部收起。显示设置可开关鼠标菜单，旧配置若已关闭，可用 F10 进入设置开启。\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页：方向键或 Tab/Shift+Tab 选择，Enter 进入编辑，再按 Enter 确认，Esc 取消编辑。编辑时可粘贴单行文本，左右键/Home/End 移动光标，Ctrl+U 清空；路径可按 F4 浏览。机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
+    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n鼠标：点击顶栏展开下拉菜单，移动选择，点击菜单项执行；再次点击标题或点击外部收起。显示设置可开关鼠标菜单，旧配置若已关闭，可用 F10 进入设置开启。\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页：方向键或 Tab/Shift+Tab 选择，Enter 进入编辑，再按 Enter 确认，Esc 取消编辑。编辑时可粘贴单行文本，左右键/Home/End 移动光标，Ctrl+U 清空；路径可按 F4 浏览。配置页 F3 选择预置程序；BASIC (Huston) 自动加载到 $E000，启动后输入 E000R。机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("帮助"))
@@ -2371,6 +2490,7 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
     } else {
         let width = area.width.saturating_sub(8).clamp(20, 70);
         let height = match overlay {
+            Overlay::Programs { .. } => (APPLE1_PRESETS.len() as u16 + 6).min(area.height),
             Overlay::Browser { .. } => area.height.saturating_sub(6).min(20),
             Overlay::RebootConfirm { .. } | Overlay::ReplaceConfirm { .. } => area.height.min(12),
             _ => 5,
@@ -2401,6 +2521,37 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
     }
     frame.render_widget(Clear, popup);
     match overlay {
+        Overlay::Programs { selected } => {
+            let block = theme.block(" 选择程序 ").padding(Padding::horizontal(1));
+            let inner = block.inner(popup);
+            frame.render_widget(block.style(theme.panel()), popup);
+            let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
+            let items = ["不加载程序", "本地二进制文件…"]
+                .into_iter()
+                .chain(APPLE1_PRESETS.iter().map(|preset| preset.name))
+                .enumerate()
+                .map(|(index, name)| {
+                    ListItem::new(name).style(if index == *selected {
+                        theme.selected()
+                    } else {
+                        theme.text()
+                    })
+                });
+            frame.render_widget(List::new(items), rows[0]);
+            let hint = selected.checked_sub(2).map_or_else(
+                || "Enter 选择 · Esc 返回".into(),
+                |index| {
+                    let preset = &APPLE1_PRESETS[index];
+                    format!(
+                        "{} B @ ${:04X}\n启动后输入 {:04X}R",
+                        preset.bytes.len(),
+                        preset.address,
+                        preset.entry
+                    )
+                },
+            );
+            frame.render_widget(Paragraph::new(hint).style(theme.muted()), rows[1]);
+        }
         Overlay::Menu { kind, selected } => {
             let lines = menu_entries(*kind)
                 .iter()
@@ -2662,7 +2813,126 @@ mod tests {
             program: Some(vec![0x4c, 0x00, 0x00]),
             program_address: 0,
             rom_path: PathBuf::from(path),
+            preset: None,
         }
+    }
+
+    #[test]
+    fn preset_picker_supports_cancel_file_and_empty_selection_at_all_sizes() {
+        let mut app = App::new(None);
+        app.page = Page::Config;
+        app.terminal_size = (120, 40);
+        app.form.program = "/original/program.bin".into();
+        app.form.program_address = "0x0200".into();
+        let key = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        key(&mut app, KeyCode::F(3));
+        key(&mut app, KeyCode::Down);
+        app.handle_paste("ignored".into());
+        key(&mut app, KeyCode::Esc);
+        assert!(app.form.preset.is_none());
+        assert_eq!(app.form.program, "/original/program.bin");
+        key(&mut app, KeyCode::F(3));
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.form.preset, Some(&APPLE1_PRESETS[0]));
+        assert!(app.input.is_empty());
+
+        for (width, height) in [(44, 30), (80, 30), (120, 40)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text = buffer_text(terminal.backend().buffer());
+            assert!(
+                text.contains("BASIC (Huston)") && text.contains("0xE000"),
+                "{text}"
+            );
+            assert!(
+                text.replace(' ', "").contains("02程序·F3"),
+                "field titles must not overlap: {text}"
+            );
+            key(&mut app, KeyCode::Enter);
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text = buffer_text(terminal.backend().buffer());
+            assert!(
+                text.contains("BASIC (Huston)") && text.contains("E000R"),
+                "{text}"
+            );
+            key(&mut app, KeyCode::Esc);
+        }
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.form.edit.is_none(), "a preset's address is fixed");
+        assert_eq!(
+            app.form.program_address, "0x0200",
+            "keep the external file's address"
+        );
+
+        key(&mut app, KeyCode::F(3));
+        key(&mut app, KeyCode::Up);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.form.preset.is_none());
+        assert_eq!(
+            app.form.edit.as_ref().unwrap().text,
+            "/original/program.bin"
+        );
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::F(3));
+        key(&mut app, KeyCode::Up);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.form.preset.is_none() && app.form.program.is_empty());
+        assert_eq!(app.form.program_address, "0x0000");
+    }
+
+    #[test]
+    fn bundled_image_survives_reset_and_is_restored_on_reboot() {
+        use hesper_cpu6502::Bus;
+
+        let preset = &APPLE1_PRESETS[0];
+        let mut app = App::new(Some(Apple1Launch {
+            preset: Some(preset),
+            max_cycles: Some(1_000_000),
+            ..Apple1Launch::default()
+        }));
+        app.config_path = None;
+        assert_eq!(app.form.preset, Some(preset));
+        let (bytes, address) = ProgramSource::Preset(preset).load().unwrap();
+        let mut resources = resources("/unused/rom.bin");
+        resources.rom[..3].copy_from_slice(&[0x4C, 0x00, 0xFF]); // JMP $FF00
+        resources.rom[0xFC..0xFE].copy_from_slice(&0xFF00u16.to_le_bytes());
+        resources.program = Some(bytes);
+        resources.program_address = address;
+        resources.preset = Some(preset);
+        app.start_resources(resources, false);
+        assert!(!app.faulted);
+        let bus = app.session.as_mut().unwrap().machine_mut().bus_mut();
+        for (index, byte) in preset.bytes.iter().enumerate() {
+            assert_eq!(bus.read(preset.address + index as u16), *byte);
+        }
+        bus.write(0xE000, 0xEA);
+        app.reset();
+        assert_eq!(
+            app.session
+                .as_mut()
+                .unwrap()
+                .machine_mut()
+                .bus_mut()
+                .read(0xE000),
+            0xEA
+        );
+        let before = app.session.as_ref().unwrap().total_cpu_cycles();
+        app.form.preset = None;
+        app.reboot();
+        assert!(!app.faulted);
+        assert_eq!(
+            app.session
+                .as_mut()
+                .unwrap()
+                .machine_mut()
+                .bus_mut()
+                .read(0xE000),
+            0x4C
+        );
+        assert!(app.session.as_ref().unwrap().total_cpu_cycles() > before);
+        assert_eq!(app.resources.as_ref().unwrap().preset, Some(preset));
     }
 
     #[test]

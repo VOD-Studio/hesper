@@ -51,6 +51,15 @@ cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin
 
 也可以先运行 `cargo run -p hesper`，在启动中心选择 Apple-1。配置页用方向键或 Tab / Shift+Tab 选择字段，Enter 进入编辑，再按 Enter 确认，Esc 放弃本次编辑；路径可按 F4 浏览。编辑时支持左右键、Home / End、Ctrl+U 清空和单行粘贴。完成后选择“校验并保存”或“启动”。TUI 配置只保存 ROM 路径和显示偏好，不保存机器内存或会话。
 
+配置页按 **F3** 可选择内置的 **BASIC (Huston)**，自动加载到 `$E000`；启动后输入 `E000R` 进入 BASIC，再输入 `PRINT 1+2` 可得到 `3`。也可选择本地二进制文件或不加载程序。预置选择仅在本次进程中保留。
+
+```sh
+cargo run -p hesper -- apple1 --list-presets
+cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset basic-huston
+```
+
+预置程序随可执行文件内置，无需保留原始下载文件。镜像来源和校验值见 [`预置资源说明`](crates/cli/assets/README.md)。
+
 ## Workspace 结构
 
 ```text

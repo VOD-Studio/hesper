@@ -29,6 +29,8 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 | --- | --- |
 | `--rom <path>` | 文本/管道模式必填；TUI 中可在配置页输入，256 字节 Woz Monitor ROM |
 | `--program <path>` | 可选，启动时加载原始二进制程序，默认地址 `$0000` |
+| `--preset <id>` | 加载内置预置程序并使用固定地址；与 `--program`、`--program-address` 互斥 |
+| `--list-presets` | 列出预置名称、大小、加载地址和启动命令，无需 ROM |
 | `--program-address <N>` | 指定程序加载地址；支持十进制、`0xE000` 或引号包裹的 `'$E000'`。整个文件必须落在 `$0000–$0FFF` 或 `$E000–$EFFF` 的同一块 RAM 内 |
 | `--max-cycles <N>` | 真实 CPU 周期预算上限（不含刷新停钟的板级时间），用完即退出 |
 | `--trace` / `--bus-trace` | 指令／总线诊断，运行结束后写 stderr（不进入机器画面） |
@@ -39,6 +41,14 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 加载地址只决定文件放在哪里，不改变 RESET 向量，也不自动运行程序。TUI 配置页可编辑加载地址；CLI 指定的地址用于预填，未指定时预填 `0x0000`。启动和替换会话使用表单中的地址，重新上电沿用已确认的原始程序字节和地址；物理 RESET 保留两块 RAM。
 
 ### 加载 Integer BASIC
+
+内置的 `basic-huston` 是用户提供的 4096 字节 BASIC 镜像，加载范围为 `$E000–$EFFF`，来源与 SHA-256 见 [`预置资源说明`](../../crates/cli/assets/README.md)。可直接选择：
+
+```sh
+cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset basic-huston
+```
+
+TUI 启动中心按 `C` 打开配置页，按 `F3` 打开程序列表，用上下键选择 **BASIC (Huston)**，Enter 确认，然后选择“启动”。加载地址自动设置，进入 Woz Monitor 后输入 `E000R`。列表也可切换为“本地二进制文件”或“不加载程序”；Esc 关闭列表并保留原选择。替换已有会话沿用原有确认流程，RESET 保留 RAM，重新上电恢复所选程序的原始字节。
 
 使用本地已有的 4096 字节 `basic-c.bin`，把它放到高地址 RAM：
 
@@ -67,7 +77,7 @@ cargo build --locked -p hesper --release
 RUN
 ```
 
-该程序依次输出 `1`、`4`、`9`。BASIC 镜像由用户自行提供，不包含在仓库内；这条路径直接加载二进制，不经过磁带接口。
+该程序依次输出 `1`、`4`、`9`。预置和本地文件都直接加载二进制，不经过磁带接口；预置选择与本地程序路径、地址只在本次 TUI 进程中保留，不写入配置文件。
 
 不带 `--max-cycles` 时正常启动 Apple-1 TUI：
 

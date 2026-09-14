@@ -10,8 +10,10 @@ use std::{
 
 use hesper::{
     DEFAULT_MAX_STEPS, DemoEvent,
-    apple1::{parse_program_address, run_apple1},
-    format_bus_trace, format_instruction_trace, format_registers, run_demo_with_trace,
+    apple1::{ProgramSource, parse_program_address, run_apple1},
+    format_bus_trace, format_instruction_trace, format_registers,
+    presets::APPLE1_PRESETS,
+    run_demo_with_trace,
     tui::{self, Apple1Launch},
 };
 
@@ -40,6 +42,9 @@ configuration page. In text/pipe mode --rom remains required.
 Options:
   --rom <path>           Path to the 256-byte Woz Monitor ROM
   --program <path>       Optional raw program file to load into RAM
+  --preset <id>          Load a bundled program (use --list-presets to list)
+                        Exclusive with --program and --program-address
+  --list-presets         List bundled programs, load addresses and entry points
   --program-address <N>  Load address: decimal, 0xHEX, or '$HEX' (default: 0)
                         Entire file must fit in $0000–$0FFF or $E000–$EFFF
   --max-cycles <N>       Maximum total CPU cycles before the emulator exits
@@ -133,6 +138,7 @@ fn parse_apple1(
         trace_limit: DEFAULT_TRACE_LIMIT,
         ..Apple1Launch::default()
     };
+    let mut program_address_set = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--rom" => {
@@ -145,7 +151,30 @@ fn parse_apple1(
                     args.next().ok_or("--program requires a file path")?,
                 ));
             }
+            "--preset" => {
+                let id = args.next().ok_or("--preset requires a preset id")?;
+                launch.preset = Some(
+                    APPLE1_PRESETS
+                        .iter()
+                        .find(|preset| preset.id == id)
+                        .ok_or_else(|| format!("unknown preset: {id}; use --list-presets"))?,
+                );
+            }
+            "--list-presets" => {
+                for preset in APPLE1_PRESETS {
+                    println!(
+                        "{}  {}  {} bytes @ ${:04X}  start: {:04X}R",
+                        preset.id,
+                        preset.name,
+                        preset.bytes.len(),
+                        preset.address,
+                        preset.entry
+                    );
+                }
+                return Ok(None);
+            }
             "--program-address" => {
+                program_address_set = true;
                 launch.program_address = parse_program_address(
                     &args.next().ok_or("--program-address requires an address")?,
                 )
@@ -180,6 +209,9 @@ fn parse_apple1(
             _ => return Err(format!("unknown apple1 argument: {arg}; use 'apple1 --help'").into()),
         }
     }
+    if launch.preset.is_some() && (launch.program.is_some() || program_address_set) {
+        return Err("--preset cannot be combined with --program or --program-address".into());
+    }
     launch.direct = true;
     Ok(Some(launch))
 }
@@ -202,15 +234,25 @@ fn run_apple1_subcommand(args: impl Iterator<Item = String>) -> Result<(), Box<d
         .as_ref()
         .ok_or("missing required --rom <path>\nUse 'apple1 --help' for usage")?;
     let rom = rom.to_str().ok_or("ROM path is not valid UTF-8")?;
-    let program = launch
-        .program
-        .as_ref()
-        .map(|path| path.to_str().ok_or("program path is not valid UTF-8"))
-        .transpose()?;
+    let program = if let Some(preset) = launch.preset {
+        Some(ProgramSource::Preset(preset))
+    } else {
+        launch
+            .program
+            .as_ref()
+            .map(|path| {
+                path.to_str()
+                    .map(|path| ProgramSource::File {
+                        path,
+                        address: launch.program_address,
+                    })
+                    .ok_or("program path is not valid UTF-8")
+            })
+            .transpose()?
+    };
     run_apple1(
         rom,
         program,
-        launch.program_address,
         launch.max_cycles,
         launch.trace,
         launch.bus_trace,

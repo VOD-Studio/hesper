@@ -172,6 +172,58 @@ fn invalid_program_addresses_are_rejected_before_loading_resources() {
 }
 
 #[test]
+fn presets_can_be_listed_without_rom_and_conflicting_options_are_rejected() {
+    let output = run_apple1_cli(&["--list-presets"], b"");
+    assert!(output.status.success());
+    let listing = String::from_utf8(output.stdout).unwrap();
+    for expected in ["basic-huston", "4096 bytes @ $E000", "start: E000R"] {
+        assert!(listing.contains(expected), "{listing}");
+    }
+    assert_rejected(
+        &run_apple1_cli(&["--preset"], b""),
+        "--preset requires a preset id",
+    );
+    assert_rejected(
+        &run_apple1_cli(&["--preset", "absent"], b""),
+        "unknown preset: absent",
+    );
+    for conflicting in [["--program", "absent.bin"], ["--program-address", "0"]] {
+        for args in [
+            ["--preset", "basic-huston", conflicting[0], conflicting[1]],
+            [conflicting[0], conflicting[1], "--preset", "basic-huston"],
+        ] {
+            assert_rejected(&run_apple1_cli(&args, b""), "--preset cannot be combined");
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn bundled_basic_runs_calculations_and_a_numbered_loop() {
+    let rom = RomFile::from_env("bundled-basic");
+    let output = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--preset",
+            "basic-huston",
+            "--max-cycles",
+            "5000000",
+        ],
+        b"E000R\nPRINT 1+2\n10 FOR I=1 TO 3\n20 PRINT I*I\n30 NEXT I\n40 END\nRUN\n",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap().replace('\r', "");
+    assert!(stdout.contains("\n3\n"), "{stdout:?}");
+    assert!(stdout.contains("\n1\n4\n9\n"), "{stdout:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "[stopped]");
+}
+
+#[test]
 fn missing_rom_file_is_reported() {
     let missing = env::temp_dir().join(format!("hesper-apple1-absent-{}.bin", process::id()));
     let output = run_apple1_cli(&["--rom", missing.to_str().unwrap()], b"");

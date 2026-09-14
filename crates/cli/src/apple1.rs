@@ -23,6 +23,7 @@ use std::{
 
 use crate::{
     format_bus_trace, format_instruction_trace,
+    presets::ProgramPreset,
     terminal::{TerminalGuard, TerminalMode},
 };
 use crossterm::{
@@ -327,11 +328,28 @@ impl Session {
     }
 }
 
+/// A file has a host-selected address; a preset carries its fixed address.
+pub enum ProgramSource<'a> {
+    File { path: &'a str, address: u16 },
+    Preset(&'static ProgramPreset),
+}
+
+impl ProgramSource<'_> {
+    pub(crate) fn load(self) -> Result<(Vec<u8>, u16), Box<dyn Error>> {
+        match self {
+            Self::File { path, address } => Ok((load_program(path, address)?, address)),
+            Self::Preset(preset) => {
+                Apple1Bus::validate_ram_load(preset.address, preset.bytes.len())?;
+                Ok((preset.bytes.to_vec(), preset.address))
+            }
+        }
+    }
+}
+
 /// Run the Apple I with the given ROM and optional program.
 pub fn run_apple1(
     rom_path: &str,
-    program_path: Option<&str>,
-    program_address: u16,
+    program_source: Option<ProgramSource<'_>>,
     max_cycles: Option<u64>,
     trace: bool,
     bus_trace: bool,
@@ -346,9 +364,13 @@ pub fn run_apple1(
     // mutate; a bad path, wrong image, or oversized program fails here
     // with nothing partially applied and no cycle executed.
     let rom = load_rom(rom_path)?;
-    let program = program_path
-        .map(|path| load_program(path, program_address))
-        .transpose()?;
+    let (program, program_address) = match program_source {
+        Some(source) => {
+            let (bytes, address) = source.load()?;
+            (Some(bytes), address)
+        }
+        None => (None, 0),
+    };
 
     // 2. Build the machine and the session. Nothing has executed yet: with
     // `--max-cycles 0` the run stops here having reported zero cycles.

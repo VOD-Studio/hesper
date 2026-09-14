@@ -732,3 +732,16 @@ BASIC 文件来自用户本地 `~/Downloads/basic-c.bin`，SHA-256 为 `e423c5c1
 - macOS cmux 原生终端运行本次 debug 二进制，实际检查卡片布局、蓝色选择态、黄色编辑态与可见光标；方向键进入程序字段，Enter 后输入中文路径，Esc 后恢复未选择程序；加载地址清空并输入 `0xE000`，Enter 确认后停留当前字段。测试退出，无资源启动或配置保存操作。
 
 这次原生终端验证仅覆盖配置编辑流程，不代表完整 P01–P16、Linux/Windows 或远程 CI 验收。未改 CPU 或 Apple I 机器行为，未添加依赖。本轮按功能点本地提交，未 push。
+
+## 2026-09-14：内置 BASIC 预置与程序选择
+
+按用户请求内置其提供的 `basic-huston.bin`，4096 字节，SHA-256 为 `311c85f22996e655ae3a0881e0841a547c52f5ec20cd810035ec91ce13a27cbe`。镜像逐字节保持原样，由 CLI 宿主通过 `include_bytes!` 打包；预置加载到 `$E000–$EFFF`，启动后在 Woz Monitor 输入 `E000R`。TUI 配置页 F3 可选择预置、本地文件或不加载程序；CLI 增加 `--preset basic-huston` 与 `--list-presets`。程序选择不写入个人配置，替换会话沿用既有确认和累计周期预算。
+
+本地验证：
+
+- `make verify`：格式、全目标 check、workspace debug/release 测试各 236 项通过，17 项 ROM 测试按约定 ignored；Clippy、demo 与 diff 检查通过。日志：`.cache/presets-qa/verify.log`。
+- `make wozmon-tests`：既有缓存 ROM 下 4 项机器测试与 13 项 CLI 测试通过。新增真实二进制回归运行 `PRINT 1+2` 得到 `3`，行号循环得到 `1、4、9`，正常 EOF 退出。日志：`.cache/presets-qa/wozmon.log`。
+- macOS PTY 在 44×30、120×40 下实际从 F3 列表选择 BASIC、取消后重选、确认替换已有会话，随后运行 BASIC 得到 `3`。宽屏另外验证物理 RESET 后 `E2B3R` 暖启动保留行号程序、`RUN` 得到 `42`，重新上电再运行 BASIC 得到 `7`；退出恢复 termios、备用屏与 bracketed paste，既有个人配置内容不变。日志与屏幕文本：`.cache/presets-qa/pty-results.log`、`preset-*.txt`。
+- 离线回归检查镜像哈希、完整 4 KB 加载、预置与本地文件切换、固定地址、RESET 保留／重建恢复原始字节，以及窄屏标题和选择列表可见。`cargo build --locked -p hesper --release` 已更新本地可执行文件。
+
+本轮只改宿主加载与选择界面，未添加依赖。未运行完整外部 CPU corpus、远程 CI 或 Linux/Windows 终端验证。本轮按功能点本地提交，未 push。
