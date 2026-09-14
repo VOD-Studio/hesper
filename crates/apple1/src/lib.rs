@@ -4,27 +4,29 @@
 //!
 //! The real Apple I motherboard has a jumper area that lets a builder
 //! assign each 4 KiB memory bank to RAM, ROM, or I/O; this crate fixes one
-//! baseline configuration instead of modeling arbitrary jumpering:
+//! 8 KiB configuration instead of modeling arbitrary jumpering:
 //!
 //! | Range           | Size   | Device                            |
 //! |-----------------|--------|-----------------------------------|
 //! | `$0000–$0FFF`   | 4 KiB  | RAM                               |
-//! | `$D010–$D013`   | 4 B    | MC6821 PIA (keyboard + display)   |
+//! | `$Dxxx`, A4=1   | 4 B + aliases | MC6821 PIA (keyboard + display) |
+//! | `$E000–$EFFF`   | 4 KiB  | RAM (e.g. Integer BASIC image)     |
 //! | `$FF00–$FFFF`   | 256 B  | Woz Monitor ROM                   |
 //! | everything else | —      | open bus                          |
 //!
-//! This is the commonly documented Apple I baseline (first 4 KiB RAM bank
-//! at `$0000`, PIA at `$D010–$D013`, 256‑byte monitor ROM at `$FF00–$FFFF`
-//! with the reset vector at `$FFFC/D` pointing to `$FF00`). The original
+//! The first 4 KiB RAM bank is at `$0000`; the second is fixed at `$E000`
+//! for programs such as Integer BASIC. PIA remains at `$D010–$D013` and
+//! monitor ROM at `$FF00–$FFFF`, with the reset vector at `$FFFC/D`
+//! pointing to `$FF00`. This models both RAM banks as installed. The original
 //! Operation Manual schematics and printed pages have been page‑checked for
 //! the address decode, RESET/CLEAR SCREEN wiring, and PIA register selection;
 //! see `docs/references.md#apple-i` and `docs/apple1/hardware-evidence.md`
-//! for the full source‑to‑implementation correlation matrix. The specific
-//! four‑address PIA range omits documented address aliases (e.g. `$D014`
-//! selects Port A on real hardware but returns open bus here — see H04).
+//! for the full source‑to‑implementation correlation matrix. PIA selection
+//! is `(addr & 0xF010) == 0xD010`, with registers selected by `addr & 3`;
+//! aliases such as `$D014` and BASIC's `$D0F2` share register side effects.
 //! Treat the RAM/ROM/PIA address ranges as a documented, reproducible
-//! configuration; the PIA alias gap and open‑bus convention are known
-//! simulation differences, not from‑schematic guarantees for every board
+//! configuration; the open-bus convention is a known simulation
+//! difference, not a from-schematic guarantee for every board
 //! revision.
 //!
 //! ROM writes are silently ignored (read‑only ROM). Open bus deterministically

@@ -28,12 +28,37 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 | 选项 | 说明 |
 | --- | --- |
 | `--rom <path>` | 文本/管道模式必填；TUI 中可在配置页输入，256 字节 Woz Monitor ROM |
-| `--program <path>` | 可选，启动时额外加载到 `$0000` 的程序 |
+| `--program <path>` | 可选，启动时加载原始二进制程序，默认地址 `$0000` |
+| `--program-address <N>` | 指定程序加载地址；支持十进制、`0xE000` 或引号包裹的 `'$E000'`。整个文件必须落在 `$0000–$0FFF` 或 `$E000–$EFFF` 的同一块 RAM 内 |
 | `--max-cycles <N>` | 真实 CPU 周期预算上限（不含刷新停钟的板级时间），用完即退出 |
 | `--trace` / `--bus-trace` | 指令／总线诊断，运行结束后写 stderr（不进入机器画面） |
 | `--trace-limit <N>` | 保留最近 N 条诊断记录，1..4096，默认 64；两种 trace 共用这个上限 |
 
 `--max-cycles` 计的是真实 CPU 总线周期；总线诊断每行以 `M=<会话主板时钟>` 开头，并按 `C<CPU 序号>` 续接，因此刷新停钟在 trace 里表现为 M 的间隔而不是伪造的读写记录。显示没有速度参数：终端固定按原板时序在光标槽接受字符。
+
+加载地址只决定文件放在哪里，不改变 RESET 向量，也不自动运行程序。TUI 配置页显示 CLI 指定的地址，重新上电沿用原始程序字节和地址；物理 RESET 保留两块 RAM。
+
+### 加载 Integer BASIC
+
+使用本地已有的 4096 字节 `basic-c.bin`，把它放到高地址 RAM：
+
+```sh
+cargo build --locked -p hesper --release
+./target/release/hesper apple1 --rom "$HESPER_APPLE1_ROM" \
+  --program ~/Downloads/basic-c.bin --program-address 0xE000
+```
+
+进入 Woz Monitor 后输入 `E000R`，看到 BASIC 的 `>` 提示符后输入 `PRINT 1+2`，结果为 `3`。带行号的程序可以用 `RUN` 执行：
+
+```basic
+10 FOR I=1 TO 3
+20 PRINT I*I
+30 NEXT I
+40 END
+RUN
+```
+
+该程序依次输出 `1`、`4`、`9`。BASIC 镜像由用户自行提供，不包含在仓库内；这条路径直接加载二进制，不经过磁带接口。
 
 不带 `--max-cycles` 时正常启动 Apple-1 TUI：
 

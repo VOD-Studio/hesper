@@ -162,6 +162,16 @@ fn non_numeric_max_cycles_is_rejected() {
 }
 
 #[test]
+fn invalid_program_addresses_are_rejected_before_loading_resources() {
+    let output = run_apple1_cli(&["--program-address"], b"");
+    assert_rejected(&output, "--program-address requires an address");
+    for address in ["", "-1", "65536", "0x10000", "0x", "$", "E000", "xyz"] {
+        let output = run_apple1_cli(&["--program-address", address], b"");
+        assert_rejected(&output, "--program-address requires a 16-bit address");
+    }
+}
+
+#[test]
 fn missing_rom_file_is_reported() {
     let missing = env::temp_dir().join(format!("hesper-apple1-absent-{}.bin", process::id()));
     let output = run_apple1_cli(&["--rom", missing.to_str().unwrap()], b"");
@@ -328,7 +338,78 @@ fn oversized_program_is_rejected() {
     let rom = RomFile::from_env("big-program");
     let program = TempFile::new("program-4097", &vec![0xEAu8; 4097]);
     let output = run_apple1_cli(&["--rom", rom.path(), "--program", program.path()], b"");
-    assert_rejected(&output, "program exceeds 4 KiB Apple I RAM");
+    assert_rejected(&output, "must fit within one Apple I RAM bank");
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn program_address_loads_and_runs_in_both_ram_banks() {
+    let rom = RomFile::from_env("program-address");
+    // Original code: print '*' through the same PIA alias used by BASIC,
+    // wait for the character to finish, then return to Woz Monitor.
+    let program = TempFile::new(
+        "program-address",
+        &[
+            0xA9, 0xAA, // LDA #$AA
+            0x2C, 0xF2, 0xD0, 0x30, 0xFB, // BIT $D0F2 / BMI (wait ready)
+            0x8D, 0xF2, 0xD0, // STA $D0F2
+            0x2C, 0xF2, 0xD0, 0x30, 0xFB, // BIT $D0F2 / BMI (wait done)
+            0x4C, 0x00, 0xFF, // JMP $FF00
+        ],
+    );
+    for (address, command, dump) in [
+        (None, "0R\n", "0000: A9"),
+        (Some("768"), "300R\n", "0300: A9"),
+        (Some("0xE000"), "E000R\n", "E000: A9"),
+        (Some("0XE000"), "E000R\n", "E000: A9"),
+        (Some("$E000"), "E000R\n", "E000: A9"),
+        (Some("57344"), "E000R\n", "E000: A9"),
+    ] {
+        let mut args = vec![
+            "--rom",
+            rom.path(),
+            "--program",
+            program.path(),
+            "--max-cycles",
+            ROM_TEST_MAX_CYCLES,
+        ];
+        if let Some(address) = address {
+            args.extend(["--program-address", address]);
+        }
+        let output = run_apple1_cli(&args, command.as_bytes());
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(dump), "{stdout:?}");
+        assert!(stdout.contains('*'), "the program must execute: {stdout:?}");
+        assert!(
+            stdout.ends_with("\\\r\n"),
+            "must return to Woz Monitor: {stdout:?}"
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("max cycles reached"));
+    }
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn program_load_cannot_cross_ram_banks_or_target_io_and_rom() {
+    let rom = RomFile::from_env("program-range");
+    let program = TempFile::new("program-range", &[0xEA, 0xEA]);
+    for address in [
+        "0x0FFF", "0x1000", "0xD010", "0xDFFF", "0xEFFF", "0xF000", "0xFF00", "0xFFFF",
+    ] {
+        let output = run_apple1_cli(
+            &[
+                "--rom",
+                rom.path(),
+                "--program",
+                program.path(),
+                "--program-address",
+                address,
+            ],
+            b"",
+        );
+        assert_rejected(&output, "must fit within one Apple I RAM bank");
+    }
 }
 
 /// Trace records the CLI kept, one per line on stderr, above the stop

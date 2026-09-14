@@ -1,21 +1,26 @@
-//! Apple I machine Bus: 4 KiB RAM, 256-byte ROM, PIA at `$D010‑$D013`.
+//! Apple I machine Bus: two 4 KiB RAM banks, 256-byte ROM, and MC6821 PIA.
 //!
 //! ## Address map
 //!
 //! | Range             | Device            |
 //! |-------------------|-------------------|
 //! | `$0000–$0FFF`     | 4 KiB RAM         |
-//! | `$1000–$CFFF`     | open bus          |
-//! | `$D010–$D013`     | MC6821 PIA        |
-//! | `$D014–$FEFF`     | open bus          |
+//! | `$Dxxx` with A4=1 | MC6821 PIA, register selected by A1/A0 |
+//! | `$E000–$EFFF`     | 4 KiB RAM         |
 //! | `$FF00–$FFFF`     | 256-byte Woz Monitor ROM |
+//! | everything else  | open bus          |
+//!
+//! PIA selection is `(addr & 0xF010) == 0xD010` (Apple-1 Operation Manual
+//! hardware notes and Sheet 2/3; see `docs/apple1/hardware-evidence.md` H04).
+//! Thus $D0F2 (used by BASIC) and $D012 access the same Port B register.
 //!
 //! Open bus deterministically returns the last value driven on the data bus
 //! (initialised to zero). This is a **simulation convention** for
 //! reproducibility; real unmapped Apple I addresses float and can return
-//! noise. ROM writes are silently ignored.  The 4 KiB RAM is not mirrored.
+//! noise. ROM writes are silently ignored. The RAM banks are independent,
+//! not mirrored.
 
-use std::fmt;
+use std::{fmt, ops::Range};
 
 use hesper_cpu6502::Bus;
 
@@ -45,10 +50,9 @@ impl fmt::Display for RomSizeError {
 
 impl std::error::Error for RomSizeError {}
 
-/// Error returned when a host RAM load does not fit entirely inside the
-/// Apple I's 4 KiB RAM. Distinct from the CPU crate's fixed 64 KiB
-/// `LoadError`: this bus decodes RAM only at `$0000–$0FFF`, so both the
-/// start address and the length are checked against 4 KiB.
+/// Error returned when a host RAM load does not fit entirely inside
+/// one of the Apple I's 4 KiB RAM banks (`$0000–$0FFF`, `$E000–$EFFF`).
+/// A load cannot cross a bank boundary or an unmapped region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RamLoadError {
     pub start: u16,
@@ -59,7 +63,7 @@ impl fmt::Display for RamLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "cannot load {} bytes at ${:04X}: exceeds 4 KiB Apple I RAM",
+            "cannot load {} bytes at ${:04X}: must fit within one Apple I RAM bank ($0000–$0FFF or $E000–$EFFF)",
             self.len, self.start
         )
     }
@@ -68,7 +72,9 @@ impl fmt::Display for RamLoadError {
 impl std::error::Error for RamLoadError {}
 
 impl Apple1Bus {
-    pub const RAM_SIZE: usize = 4 * 1024;
+    pub const RAM_BANK_SIZE: usize = 4 * 1024;
+    pub const RAM_SIZE: usize = 2 * Self::RAM_BANK_SIZE;
+    pub const HIGH_RAM_BASE: u16 = 0xE000;
     pub const ROM_SIZE: usize = 256;
     pub const PIA_BASE: u16 = 0xD010;
     pub const ROM_BASE: u16 = 0xFF00;
@@ -96,20 +102,39 @@ impl Apple1Bus {
 
     /// Host load into RAM (non‑wrapping, transactional).  Returns an error
     /// if the start address is outside RAM or the region does not fit
-    /// entirely within the 4 KiB RAM; nothing is copied on error.
+    /// entirely within one 4 KiB bank; nothing is copied on error.
+    /// Empty loads at a bank's exclusive end ($1000 or $F000) are allowed.
     pub fn load_ram(&mut self, start: u16, bytes: &[u8]) -> Result<(), RamLoadError> {
-        let offset = usize::from(start);
-        if offset > Self::RAM_SIZE || bytes.len() > Self::RAM_SIZE - offset {
-            return Err(RamLoadError {
-                start,
-                len: bytes.len(),
-            });
-        }
-        self.ram[offset..offset + bytes.len()].copy_from_slice(bytes);
+        let range = Self::ram_range(start, bytes.len())?;
+        self.ram[range].copy_from_slice(bytes);
         Ok(())
     }
 
-    /// Side‑effect‑free host inspection of RAM.
+    /// Validate a host load before creating a machine or changing memory.
+    pub fn validate_ram_load(start: u16, len: usize) -> Result<(), RamLoadError> {
+        Self::ram_range(start, len).map(|_| ())
+    }
+
+    fn ram_range(start: u16, len: usize) -> Result<Range<usize>, RamLoadError> {
+        let error = RamLoadError { start, len };
+        let (bank, offset) = match start {
+            0x0000..=0x1000 => (0, usize::from(start)),
+            0xE000..=0xF000 => (
+                Self::RAM_BANK_SIZE,
+                usize::from(start - Self::HIGH_RAM_BASE),
+            ),
+            _ => return Err(error),
+        };
+        if len > Self::RAM_BANK_SIZE - offset {
+            return Err(error);
+        }
+        let begin = bank + offset;
+        Ok(begin..begin + len)
+    }
+
+    /// Side-effect-free host inspection of both packed RAM banks: the first
+    /// 4 KiB corresponds to $0000–$0FFF, the second to $E000–$EFFF.
+    /// Slice indices are not CPU addresses for the second bank.
     pub fn ram_slice(&self) -> &[u8] {
         &self.ram
     }
@@ -132,8 +157,11 @@ impl Apple1Bus {
     /// Decode an address to determine which device handles it.
     fn decode(addr: u16) -> Device {
         match addr {
-            0x0000..=0x0FFF => Device::Ram,
-            0xD010..=0xD013 => Device::Pia,
+            0x0000..=0x0FFF => Device::Ram(usize::from(addr)),
+            0xE000..=0xEFFF => {
+                Device::Ram(Self::RAM_BANK_SIZE + usize::from(addr - Self::HIGH_RAM_BASE))
+            }
+            _ if addr & 0xF010 == Self::PIA_BASE => Device::Pia,
             0xFF00..=0xFFFF => Device::Rom,
             _ => Device::Open,
         }
@@ -142,7 +170,7 @@ impl Apple1Bus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Device {
-    Ram,
+    Ram(usize),
     Rom,
     Pia,
     Open,
@@ -151,7 +179,7 @@ enum Device {
 impl Bus for Apple1Bus {
     fn read(&mut self, addr: u16) -> u8 {
         let value = match Self::decode(addr) {
-            Device::Ram => self.ram[usize::from(addr)],
+            Device::Ram(offset) => self.ram[offset],
             Device::Rom => self.rom[usize::from(addr - Self::ROM_BASE)],
             Device::Pia => self.pia.read(addr),
             Device::Open => self.last_read,
@@ -163,7 +191,7 @@ impl Bus for Apple1Bus {
     fn write(&mut self, addr: u16, value: u8) {
         self.last_read = value;
         match Self::decode(addr) {
-            Device::Ram => self.ram[usize::from(addr)] = value,
+            Device::Ram(offset) => self.ram[offset] = value,
             Device::Rom => { /* ROM is read‑only */ }
             Device::Pia => self.pia.write(addr, value),
             Device::Open => { /* open bus: write is ignored */ }
@@ -216,6 +244,32 @@ mod tests {
         // Read back: ORB & DDRB = $2A & $7F = $2A
         let val = bus.read(0xD012);
         assert_eq!(val, 0x2A);
+    }
+
+    #[test]
+    fn pia_aliases_share_registers_and_read_side_effects() {
+        let mut bus = Apple1Bus::new(&dummy_rom()).unwrap();
+        bus.write(0xD0F2, 0x7F); // BASIC's display alias: DDRB
+        assert_eq!(bus.read(0xD012), 0x7F);
+        bus.write(0xDFFF, 0x04); // CRB alias selects the data register
+        bus.write(0xD012, 0x2A);
+        bus.pia_mut().set_port_b_inputs(0x80);
+        bus.pia_mut().set_cb1(true);
+        assert_eq!(bus.read(0xD017), 0x84); // canonical flag visible in an alias
+        assert_eq!(bus.read(0xD0F2), 0xAA);
+        assert_eq!(bus.read(0xD013), 0x04); // alias read clears the same IRQ flag
+        bus.write(0xD0F1, 0x04);
+        bus.pia_mut().set_port_a_inputs(0xC1);
+        bus.pia_mut().set_ca1(true);
+        assert_eq!(bus.read(0xD015), 0x84);
+        assert_eq!(bus.read(0xDFFC), 0xC1);
+        assert!(bus.pia_mut().take_port_a_read());
+        assert_eq!(bus.read(0xD011), 0x04);
+        for address in [0xC0F2, 0xD002, 0xD0E2] {
+            bus.write(address, 0x55);
+            bus.read(0xFF00);
+            assert_eq!(bus.read(address), 0xD8, "${address:04X} is not selected");
+        }
     }
 
     #[test]
@@ -288,14 +342,66 @@ mod tests {
     }
 
     #[test]
-    fn ram_load_error_names_the_apple_i_ram_size() {
+    fn ram_load_error_names_the_apple_i_ram_banks() {
         let err = RamLoadError {
             start: 0x0FFE,
             len: 4,
         };
         assert_eq!(
             err.to_string(),
-            "cannot load 4 bytes at $0FFE: exceeds 4 KiB Apple I RAM"
+            "cannot load 4 bytes at $0FFE: must fit within one Apple I RAM bank ($0000–$0FFF or $E000–$EFFF)"
         );
+    }
+
+    #[test]
+    fn high_ram_is_independent_writable_and_not_mirrored() {
+        let mut bus = Apple1Bus::new(&dummy_rom()).unwrap();
+        bus.load_ram(0xE000, &[0xEA; Apple1Bus::RAM_BANK_SIZE])
+            .unwrap();
+        bus.write(0x0000, 0x12);
+        bus.write(0x0FFF, 0x34);
+        bus.write(0xEFFF, 0x56);
+        assert_eq!(bus.read(0x0000), 0x12);
+        assert_eq!(bus.read(0x0FFF), 0x34);
+        assert_eq!(bus.read(0xE000), 0xEA);
+        assert_eq!(bus.read(0xEFFF), 0x56);
+        for address in [0x1000, 0xDFEF, 0xF000, 0xFEFF] {
+            bus.write(address, 0x99);
+            bus.read(0x0000);
+            assert_eq!(
+                bus.read(address),
+                0x12,
+                "${address:04X} must remain open bus"
+            );
+        }
+    }
+
+    #[test]
+    fn bank_crossing_and_unmapped_loads_are_transactional() {
+        let mut bus = Apple1Bus::new(&dummy_rom()).unwrap();
+        bus.load_ram(0x0000, &[0x11; Apple1Bus::RAM_BANK_SIZE])
+            .unwrap();
+        bus.load_ram(0xE000, &[0x22; Apple1Bus::RAM_BANK_SIZE])
+            .unwrap();
+        bus.load_ram(0xEFFF, &[0x33]).unwrap();
+        bus.load_ram(0xF000, &[]).unwrap();
+        let before = bus.ram_slice().to_vec();
+        for (start, len) in [
+            (0x0FFF, 2),
+            (0x1000, 1),
+            (0xD010, 1),
+            (0xDFFF, 2),
+            (0xE000, 4097),
+            (0xEFFF, 2),
+            (0xF000, 1),
+            (0xFFFF, 2),
+        ] {
+            assert_eq!(
+                bus.load_ram(start, &vec![0xFF; len]),
+                Err(RamLoadError { start, len })
+            );
+            assert_eq!(bus.ram_slice(), before);
+        }
+        assert!(Apple1Bus::validate_ram_load(0xE000, usize::MAX).is_err());
     }
 }

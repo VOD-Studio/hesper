@@ -39,7 +39,9 @@ configuration page. In text/pipe mode --rom remains required.
 
 Options:
   --rom <path>           Path to the 256-byte Woz Monitor ROM
-  --program <path>       Optional program file to load into RAM at $0000
+  --program <path>       Optional raw program file to load into RAM
+  --program-address <N>  Load address: decimal, 0xHEX, or '$HEX' (default: 0)
+                        Entire file must fit in $0000–$0FFF or $E000–$EFFF
   --max-cycles <N>       Maximum total CPU cycles before the emulator exits
   --trace                Enable instruction trace
   --bus-trace            Enable bus-level trace
@@ -124,6 +126,19 @@ fn run_demo(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn parse_program_address(value: &str) -> Result<u16, &'static str> {
+    let parsed = if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .or_else(|| value.strip_prefix('$'))
+    {
+        u16::from_str_radix(hex, 16)
+    } else {
+        value.parse::<u16>()
+    };
+    parsed.map_err(|_| "--program-address requires a 16-bit address (decimal, 0xHEX, or $HEX)")
+}
+
 fn parse_apple1(
     mut args: impl Iterator<Item = String>,
 ) -> Result<Option<Apple1Launch>, Box<dyn Error>> {
@@ -142,6 +157,11 @@ fn parse_apple1(
                 launch.program = Some(PathBuf::from(
                     args.next().ok_or("--program requires a file path")?,
                 ));
+            }
+            "--program-address" => {
+                launch.program_address = parse_program_address(
+                    &args.next().ok_or("--program-address requires an address")?,
+                )?;
             }
             "--max-cycles" => {
                 launch.max_cycles = Some(
@@ -200,6 +220,7 @@ fn run_apple1_subcommand(args: impl Iterator<Item = String>) -> Result<(), Box<d
     run_apple1(
         rom,
         program,
+        launch.program_address,
         launch.max_cycles,
         launch.trace,
         launch.bus_trace,

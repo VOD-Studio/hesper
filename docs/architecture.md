@@ -24,8 +24,10 @@ Apple1::type_char() / type_str() / drain_output() / cpu() / bus() / bus_mut() / 
 ```
 
 - **一个 master tick 是一个 14.31818 MHz 晶振周期**（`crates/apple1/src/timing.rs`）。D11 的 ÷14 产生字符时钟；D6/D7 级联给出 65 槽水平序列，`H6 && H10` 在计数 129／139／149／159（槽 34／44／54／64）选出四个刷新槽。一个水平周期 910 master tick，其中 61 次真实 CPU 总线访问。
+- **RAM 固定为两块独立的 4 KiB**：`$0000–$0FFF` 与 `$E000–$EFFF`，共 8 KiB。`load_ram(start, bytes)` 与 `validate_ram_load(start, len)` 共用范围校验；加载必须完整落在一块内，失败不写入，不跨越开路区、PIA 或 ROM。`ram_slice()` 按低地址 RAM、高地址 RAM 顺序紧凑排列，第二块的切片索引不是 CPU 地址。CLI 的 `--program-address` 默认 `$0000`，加载和重建均使用指定地址，RESET 入口不变。
 - **刷新抑制 Φ2，不用 RDY**。刷新槽上 CPU 停在 Φ2、PIA 无 E、没有总线访问；板时钟、视频计数与 B3 单稳态照常推进。`tick().cpu` 只在真实 Φ2 完成时给出 `Cycle`，所以 `cpu_cycles()` 小于 `master_ticks()/14`。刷新不经 `Bus::read/write`，因此不改变 open bus 的上次读取值，也不产生伪造的 `stalled` 记录。
 - **`set_reset_line` 与 `begin_reset` 不混用**：前者是物理 RESET 输入（CPU、PIA 与键盘重同步都经它），后者是宿主同步入口。`Apple1::reset()` 是物理线路的同步封装，按**真实 CPU 周期**计保持与完成预算。
+- **PIA 片选**：`(addr & 0xF010) == 0xD010`，寄存器由地址最低两位选择；`$D0F2` 与 `$D012` 共用 Port B 及其读取副作用。
 - **PIA 的 CB2 是真实输出握手**（`pia.rs`）：CRB 位 5/4/3 选择模式，写 ORB 只在下一个 E 沿拉低 CB2，CB1 的有效沿（由 CRB 位 1 选择，方向按数据表定义的低电平有效）释放它。PB7 由 `DA = !CB2` 驱动；`data_lines()` 把未驱动线解析为 TTL 高。
 - **视频终端是循环存储模型**（`display.rs`）：1024 个六位字符槽（960 可见 + 64 消隐）、40 字符 2519 行缓冲、C7 请求锁存。字符只在光标槽被扫到时被接受（一圈 ≈ 一帧），CR 逐槽清到行尾，滚动由垂直重载前移显示原点完成。屏幕／光标／输出流是宿主文本投影，保存在不参与控制逻辑的并行数组里。
 - **机器重建**（Ctrl-N）归零两个时钟与显示；物理 RESET 不归零它们、不清屏、不丢弃已排队输入。

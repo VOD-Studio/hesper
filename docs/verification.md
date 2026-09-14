@@ -688,3 +688,20 @@ PTY 检查另发现：窄屏启动中心的中文字符可能横跨下拉框边�
 默认配置改为用户主目录下的 `~/.config/hesper/config.toml`，通过现有 `directories::BaseDirs::home_dir()` 定位主目录；不再使用系统特定的配置目录。当前用户的原配置已复制到新位置，ROM 路径与鼠标等偏好保持一致，旧文件保留。
 
 `cargo test -p hesper --lib --locked`（41 项）和 `make verify` 全部通过，debug/release 二进制已更新。release 的 macOS PTY 检查确认：启动读入既有鼠标与 ROM 设置、配置页显示新路径、执行校验保存时实际替换新路径文件且配置内容不变、旧文件未被修改、退出恢复终端。证据：`.cache/tui-config-qa/verify.log`、`pty-results.log`、`config-path-saved.txt` 与 `config-path-fixed.ansi`。本轮按功能点本地提交，未 push。
+
+
+## 2026-09-14 — BASIC 加载地址与第二组 RAM
+
+Apple I 固定配置增加 `$E000–$EFFF` 的独立可写 4 KiB RAM，与 `$0000–$0FFF` 共计 8 KiB。`--program-address` 支持十进制、`0x`/`0X` 前缀和引号包裹的 `$` 前缀，默认仍为 `$0000`；整段加载必须位于同一块 RAM，跨边界、开路区、PIA、ROM 与 16 位溢出均报错，失败不产生部分加载。文本模式、TUI 资源校验、替换和重新上电共用地址；物理 RESET 保留两块 RAM。
+
+实测发现用户提供的 `basic-c.bin` 在 `$E3D5` 执行 `BIT $D0F2`，此前仅映射 `$D010–$D013` 会把它当作开路总线，从而停在显示忙轮询。按已核对的 [H04 片选条件](apple1/hardware-evidence.md#h04pia-完整选择条件与寄存器镜像)，PIA 现采用 `(addr & 0xF010) == 0xD010`，别名共享寄存器与读取副作用。新增别名回归在修复前失败（经 `$D0F2` 写 DDRB 后，`$D012` 错读为 0），修复后通过。未改 CPU、PIA 握手时序或 BASIC 镜像。
+
+实际验证：
+
+- `make verify`：格式、全目标 check、workspace debug/release 测试、Clippy、demo 和 diff 检查通过；debug/release 各 226 项通过、16 项真实 ROM 测试按约定 ignored。转录：`.cache/basic-qa/verify.log`。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试与 12 项 CLI 测试通过；新增原创程序通过 BASIC 使用的 `$D0F2` 别名输出 `*`，覆盖默认地址、十进制及三种十六进制前缀，另验证禁止跨 RAM 边界和加载到 I/O/ROM。
+- TUI 单元回归覆盖高地址程序启动、RESET 保留两块 RAM、重新上电恢复原始字节及地址，并清除运行期间的 RAM 修改。
+- `cargo build --locked -p hesper --release`：已更新 release 二进制。实际 debug/release 管道加载用户的 4096 字节 `basic-c.bin` 后，`E000R` 进入 BASIC，`PRINT 1+2` 输出 `3`；保存 `FOR I=1 TO 3` / `PRINT I*I` / `NEXT I` / `END` 四行后，`RUN` 输出 `1`、`4`、`9` 并返回提示符，未耗尽 8000000 周期预算。转录：`.cache/basic-qa/basic-debug.log`、`basic-release.log`、`basic-results.log`。
+- release 的 macOS PTY（120×40）验证了同一 CLI 加载地址进入 TUI、BASIC 计算、Ctrl-R 后再次运行、Ctrl-N 确认重新上电后按 `$E000` 重载；启动中心显示 8 KiB RAM 与 `4096 B @ $E000`，正常退出后 termios、备用屏与 bracketed paste 恢复。转录：`.cache/basic-qa/pty-results.log`、`basic-tui-fixed.ansi` 及相关 `.txt` 屏幕快照。
+
+BASIC 文件来自用户本地 `~/Downloads/basic-c.bin`，SHA-256 为 `e423c5c1acff4bea521a72dd4ce4b1435a442cfaad2604b1bfd6edd0fb6d0fc9`；Woz Monitor 使用既有缓存。两份镜像均未改写、下载或提交。这是该镜像的算术与行号程序实测，不是全部 BASIC 语义或其他 BASIC 版本的兼容性认证。未运行完整外部 CPU corpus、远程 CI、Linux/Windows 或原生桌面终端视觉验收。本轮按功能点本地提交，未 push。

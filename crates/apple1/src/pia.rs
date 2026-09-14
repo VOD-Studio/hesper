@@ -387,8 +387,8 @@ impl Pia6821 {
 
     // --- Bus-facing read / write ---
 
-    /// Read a PIA register.  `addr` should be in `$D010..$D013`.
-    /// Only the lowest two address bits matter.
+    /// Read a PIA register after the machine bus has selected this chip.
+    /// Only the lowest two address bits matter, including for address aliases.
     ///
     /// CR bit 2 selects the data register vs. the DDR for reads as well as
     /// writes; only a peripheral data-register read has the side effects

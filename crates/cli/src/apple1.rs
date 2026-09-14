@@ -331,6 +331,7 @@ impl Session {
 pub fn run_apple1(
     rom_path: &str,
     program_path: Option<&str>,
+    program_address: u16,
     max_cycles: Option<u64>,
     trace: bool,
     bus_trace: bool,
@@ -345,15 +346,17 @@ pub fn run_apple1(
     // mutate; a bad path, wrong image, or oversized program fails here
     // with nothing partially applied and no cycle executed.
     let rom = load_rom(rom_path)?;
-    let program = program_path.map(load_program).transpose()?;
+    let program = program_path
+        .map(|path| load_program(path, program_address))
+        .transpose()?;
 
     // 2. Build the machine and the session. Nothing has executed yet: with
     // `--max-cycles 0` the run stops here having reported zero cycles.
-    let machine = create_machine(&rom, program.as_deref())?;
+    let machine = create_machine(&rom, program.as_deref(), program_address)?;
     let mut session = Session::new(machine, max_cycles, trace_options);
 
     let outcome = if io::stdin().is_terminal() {
-        run_interactive(&mut session, &rom, program.as_deref())
+        run_interactive(&mut session, &rom, program.as_deref(), program_address)
     } else {
         run_batch(&mut session)
     };
@@ -397,17 +400,11 @@ pub(crate) fn load_rom(path: &str) -> Result<[u8; 256], Box<dyn Error>> {
     Ok(rom)
 }
 
-/// Read an optional raw program image loaded at `$0000`. Any length that
-/// fits the Apple I's 4 KiB RAM is accepted, including empty.
-pub(crate) fn load_program(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+/// Read a raw program image that fits wholly within one Apple I RAM bank.
+pub(crate) fn load_program(path: &str, address: u16) -> Result<Vec<u8>, Box<dyn Error>> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read program file '{path}': {e}"))?;
-    if bytes.len() > Apple1Bus::RAM_SIZE {
-        return Err(format!(
-            "program '{path}' is {} bytes: program exceeds 4 KiB Apple I RAM",
-            bytes.len()
-        )
-        .into());
-    }
+    Apple1Bus::validate_ram_load(address, bytes.len())
+        .map_err(|e| format!("program '{path}': {e}"))?;
     Ok(bytes)
 }
 
@@ -427,12 +424,13 @@ fn hex(bytes: &[u8]) -> String {
 pub(crate) fn create_machine(
     rom: &[u8; 256],
     program: Option<&[u8]>,
+    program_address: u16,
 ) -> Result<Apple1, Box<dyn Error>> {
     let mut machine = Apple1::new(rom)?;
     if let Some(bytes) = program {
         machine
             .bus_mut()
-            .load_ram(0x0000, bytes)
+            .load_ram(program_address, bytes)
             .map_err(|e| format!("cannot load program: {e}"))?;
     }
     Ok(machine)
@@ -709,6 +707,7 @@ fn run_interactive(
     session: &mut Session,
     rom: &[u8; 256],
     program: Option<&[u8]>,
+    program_address: u16,
 ) -> Result<StopReason, Box<dyn Error>> {
     let view = View::for_stdout(
         io::stdout().is_terminal(),
@@ -764,7 +763,7 @@ fn run_interactive(
                         announce(view, label, &mut status, &mut redraw, &mut stdout)?;
                     }
                     Action::Recreate => {
-                        session.machine = create_machine(rom, program)?;
+                        session.machine = create_machine(rom, program, program_address)?;
                         announce(view, "[NEW MACHINE]", &mut status, &mut redraw, &mut stdout)?;
                         let stop = session.boot()?;
                         present(view, session, &mut redraw, &mut stdout)?;
@@ -891,7 +890,7 @@ mod tests {
             assert_eq!(View::for_stdout(is_terminal, term), expected);
         }
         let session = Session::new(
-            create_machine(&test_rom(0), None).unwrap(),
+            create_machine(&test_rom(0), None, 0).unwrap(),
             Some(0),
             TraceOptions::new(false, false, 64).unwrap(),
         );
@@ -920,7 +919,7 @@ mod tests {
 
     fn session_with(max_cycles: Option<u64>, trace: TraceOptions) -> Session {
         let rom = test_rom(0x0000);
-        let machine = create_machine(&rom, Some(SPIN)).unwrap();
+        let machine = create_machine(&rom, Some(SPIN), 0).unwrap();
         Session::new(machine, max_cycles, trace)
     }
 
@@ -987,7 +986,7 @@ mod tests {
         let before = session.total_cpu_cycles;
         assert!(before >= BOOT_BATCH_CPU_CYCLES);
 
-        session.machine = create_machine(&rom, Some(SPIN)).unwrap();
+        session.machine = create_machine(&rom, Some(SPIN), 0).unwrap();
         assert_eq!(session.machine.cpu_cycles(), 0, "the machine is new");
         assert_eq!(session.machine.master_ticks(), 0, "the machine is new");
         assert_eq!(
@@ -1087,7 +1086,7 @@ mod tests {
         program.push(0x00);
 
         let mut session = Session::new(
-            create_machine(&test_rom(0x0000), Some(&program)).unwrap(),
+            create_machine(&test_rom(0x0000), Some(&program), 0).unwrap(),
             None,
             TraceOptions {
                 instructions: false,

@@ -48,6 +48,7 @@ const MIN_HEIGHT: u16 = 30;
 pub struct Apple1Launch {
     pub rom: Option<PathBuf>,
     pub program: Option<PathBuf>,
+    pub program_address: u16,
     pub max_cycles: Option<u64>,
     pub trace: bool,
     pub bus_trace: bool,
@@ -62,6 +63,7 @@ impl Default for Apple1Launch {
         Self {
             rom: None,
             program: None,
+            program_address: 0,
             max_cycles: None,
             trace: false,
             bus_trace: false,
@@ -168,6 +170,7 @@ struct ConfigForm {
 struct Resources {
     rom: [u8; 256],
     program: Option<Vec<u8>>,
+    program_address: u16,
     rom_path: PathBuf,
 }
 
@@ -325,7 +328,7 @@ impl App {
                 let text = path
                     .to_str()
                     .ok_or_else(|| "程序路径不是 UTF-8，不能用于此 TUI 表单".to_owned())?;
-                load_program(text).map_err(|error| error.to_string())
+                load_program(text, self.launch.program_address).map_err(|error| error.to_string())
             })
             .transpose()?;
         let absolute_rom = fs::canonicalize(&rom_path)
@@ -333,6 +336,7 @@ impl App {
         Ok(Resources {
             rom,
             program,
+            program_address: self.launch.program_address,
             rom_path: absolute_rom,
         })
     }
@@ -404,7 +408,11 @@ impl App {
                 return;
             }
         };
-        let machine = match create_machine(&resources.rom, resources.program.as_deref()) {
+        let machine = match create_machine(
+            &resources.rom,
+            resources.program.as_deref(),
+            resources.program_address,
+        ) {
             Ok(machine) => machine,
             Err(error) => {
                 self.form.status = Some(error.to_string());
@@ -483,7 +491,11 @@ impl App {
         let (Some(resources), Some(session)) = (&self.resources, &mut self.session) else {
             return;
         };
-        let machine = match create_machine(&resources.rom, resources.program.as_deref()) {
+        let machine = match create_machine(
+            &resources.rom,
+            resources.program.as_deref(),
+            resources.program_address,
+        ) {
             Ok(machine) => machine,
             Err(error) => {
                 self.error(format!("无法重新上电：{error}"));
@@ -1793,7 +1805,13 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         let program = if let Some(resources) = &app.resources {
             resources.program.as_ref().map_or_else(
                 || "未加载".into(),
-                |bytes| format!("已加载 {} B", bytes.len()),
+                |bytes| {
+                    format!(
+                        "已加载 {} B @ ${:04X}",
+                        bytes.len(),
+                        resources.program_address
+                    )
+                },
             )
         } else if app.form.program.is_empty() {
             "未加载".into()
@@ -1809,7 +1827,7 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             Line::default(),
             parameter("CPU   ", "MOS 6502 / NMOS".into()),
             parameter("显示  ", "40×24 字符".into()),
-            parameter("RAM   ", "4 KiB".into()),
+            parameter("RAM   ", "8 KiB（两组 4 KiB）".into()),
             parameter("ROM   ", format!("{status} · 256 B")),
             parameter("路径  ", rom_path),
             parameter("程序  ", program),
@@ -1980,6 +1998,10 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             Span::styled("程序路径（可选）: ", theme.muted()),
             Span::styled(&app.form.program, focused(ConfigFocus::Program)),
         ]),
+        Line::from(format!(
+            "程序加载地址: ${:04X}（--program-address）",
+            app.launch.program_address
+        )),
         Line::from("F4 浏览当前字段目录；目录最多显示 512 项，不递归扫描。"),
         Line::from(Span::styled("[校验并保存]", focused(ConfigFocus::Validate))),
         Line::from(Span::styled("[启动]", focused(ConfigFocus::Launch))),
@@ -1997,7 +2019,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_info(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let text = "Apple-1 固定机器配置\n\n$0000–$0FFF：4 KiB RAM\n$D010–$D013：MC6821 PIA（键盘与显示）\n$FF00–$FFFF：256 B Woz Monitor ROM\n\n当前模型驱动 NMOS 6502、PIA 与 40×24 字符显示。DRAM 刷新与显示忙时序按仓库已有近似建模；不宣称 Apple II、非官方 opcode 或所有板卡修订的兼容性。";
+    let text = "Apple-1 固定机器配置\n\n$0000–$0FFF：4 KiB RAM\n$E000–$EFFF：4 KiB RAM（可加载 BASIC）\n$D010–$D013 及硬件别名：MC6821 PIA（键盘与显示）\n$FF00–$FFFF：256 B Woz Monitor ROM\n\n当前模型驱动 NMOS 6502、PIA 与 40×24 字符显示。DRAM 刷新与显示忙时序按仓库已有近似建模；不宣称 Apple II、非官方 opcode 或所有板卡修订的兼容性。";
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("模拟器信息"))
@@ -2361,8 +2383,47 @@ mod tests {
         Resources {
             rom: test_rom(),
             program: Some(vec![0x4c, 0x00, 0x00]),
+            program_address: 0,
             rom_path: PathBuf::from(path),
         }
+    }
+
+    #[test]
+    fn high_program_address_survives_reset_and_reboot() {
+        use hesper_cpu6502::Bus;
+
+        let mut app = App::new(Some(Apple1Launch {
+            program_address: 0xE000,
+            max_cycles: Some(1_000_000),
+            ..Apple1Launch::default()
+        }));
+        app.config_path = None;
+        let mut resources = resources("/unused/rom.bin");
+        resources.rom[0xFC..0xFE].copy_from_slice(&0xE000u16.to_le_bytes());
+        resources.program = Some(vec![0x4C, 0x00, 0xE0]); // JMP $E000
+        resources.program_address = app.launch.program_address;
+        app.start_resources(resources, false);
+        assert!(!app.faulted);
+        let bus = app.session.as_mut().unwrap().machine_mut().bus_mut();
+        assert_eq!(bus.read(0xE000), 0x4C);
+        assert_eq!(bus.read(0x0000), 0);
+        bus.write(0x0300, 0x12);
+        bus.write(0xE100, 0x34);
+        app.reset();
+        assert!(!app.faulted);
+        let bus = app.session.as_mut().unwrap().machine_mut().bus_mut();
+        assert_eq!(bus.read(0x0300), 0x12);
+        assert_eq!(bus.read(0xE100), 0x34);
+        // Reboot uses the active resource address, even if launch settings differ.
+        app.launch.program_address = 0;
+        app.reboot();
+        assert!(!app.faulted);
+        let bus = app.session.as_mut().unwrap().machine_mut().bus_mut();
+        assert_eq!(bus.read(0xE000), 0x4C);
+        assert_eq!(bus.read(0xE002), 0xE0);
+        assert_eq!(bus.read(0xE100), 0);
+        assert_eq!(bus.read(0x0300), 0);
+        assert_eq!(app.resources.as_ref().unwrap().program_address, 0xE000);
     }
 
     fn buffer_text(buffer: &Buffer) -> String {
@@ -2586,7 +2647,12 @@ mod tests {
         let resources = resources("/original/rom.bin");
         app.config.apple1.rom_path = Some(resources.rom_path.clone());
         let mut session = Session::new(
-            create_machine(&resources.rom, resources.program.as_deref()).unwrap(),
+            create_machine(
+                &resources.rom,
+                resources.program.as_deref(),
+                resources.program_address,
+            )
+            .unwrap(),
             Some(budget),
             TraceOptions::new(false, true, 64).unwrap(),
         );
@@ -3158,7 +3224,7 @@ mod tests {
         app.page = Page::Apple1;
         app.terminal_size = (120, 40);
         app.session = Some(Session::new(
-            create_machine(&test_rom(), Some(&[0x4c, 0x00, 0x00])).unwrap(),
+            create_machine(&test_rom(), Some(&[0x4c, 0x00, 0x00]), 0).unwrap(),
             None,
             TraceOptions::new(false, false, 64).unwrap(),
         ));
