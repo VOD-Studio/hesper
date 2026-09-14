@@ -59,7 +59,9 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
 | Ctrl-P | 暂停／继续：暂停期间不跑自由批次，按键仍排队；Ctrl-R／Ctrl-N 仍会执行并保持暂停 |
 | Ctrl-N | 用原始 ROM／程序字节重建机器（新 RAM、空屏），会话周期计数与预算保留 |
 
-TUI 配置使用系统配置目录中的 `hesper/config.toml`，只保存已校验的绝对 ROM 路径和显示偏好；路径或 TOML 损坏不会被自动覆盖，也不会影响 `demo` 或文本/管道 Apple-1 路径。
+TUI 配置固定使用用户主目录下的 `~/.config/hesper/config.toml`，只保存已校验的绝对 ROM 路径和显示偏好；路径或 TOML 损坏不会被自动覆盖，也不会影响 `demo` 或文本/管道 Apple-1 路径。升级前若使用 macOS 的 `~/Library/Application Support/hesper/config.toml`，可将原配置复制到新位置；新版本只读取新路径。
+
+顶栏菜单在对应标题下方展开。鼠标左键点击标题打开或收起菜单；展开后移动鼠标可切换分类、高亮菜单项，点击项目执行，点击外部收起。F10／F2 和方向键、Enter、Esc 仍可完整操作菜单。鼠标菜单默认开启；已有配置中的 `ui.mouse = false` 会保留，可按 F10 进入「显示 → 显示设置」，用上下键选中「鼠标菜单」、Enter 开启，再选择「保存设置」。鼠标仅操作菜单，确认框仍需键盘确认；退出 TUI 时会关闭鼠标捕获。
 
 **stdout 被重定向时**（`> file`、管道）仍是纯字符流，绝不写入光标／清屏等控制序列。
 

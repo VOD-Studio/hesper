@@ -681,4 +681,10 @@ PTY 检查另发现：窄屏启动中心的中文字符可能横跨下拉框边�
 - 既有本地 Woz Monitor ROM 的 PTY：运行时打开菜单停止推进、关闭后恢复、鼠标暂停和重新上电确认隔离通过；菜单打开时 SIGTERM 退出后同样完成终端恢复。未下载 ROM。转录：`.cache/tui-menu-qa/pty-results.log` 与该目录中的 `.ansi` 文件。
 - 视觉核对：检查实际终端输出重绘的 `mouse-44x30-session.png` 与 `apple1-mouse-session.png`，下拉框贴合对应标题、边框完整，底部提示仍可见。
 
-上述图像是 PTY 输出重绘；系统 Terminal 的界面控制被工具安全限制拒绝，未完成原生桌面终端字体/鼠标的视觉验收。未实测 Linux/Windows 或运行远程 CI。本轮未提交、推送或发布。
+上述图像是 PTY 输出重绘；系统 Terminal 的界面控制被工具安全限制拒绝，未完成原生桌面终端字体/鼠标的视觉验收。未实测 Linux/Windows 或运行远程 CI。本轮按功能点本地提交，未 push。
+
+## 2026-09-14 — 固定配置路径
+
+默认配置改为用户主目录下的 `~/.config/hesper/config.toml`，通过现有 `directories::BaseDirs::home_dir()` 定位主目录；不再使用系统特定的配置目录。当前用户的原配置已复制到新位置，ROM 路径与鼠标等偏好保持一致，旧文件保留。
+
+`cargo test -p hesper --lib --locked`（41 项）和 `make verify` 全部通过，debug/release 二进制已更新。release 的 macOS PTY 检查确认：启动读入既有鼠标与 ROM 设置、配置页显示新路径、执行校验保存时实际替换新路径文件且配置内容不变、旧文件未被修改、退出恢复终端。证据：`.cache/tui-config-qa/verify.log`、`pty-results.log`、`config-path-saved.txt` 与 `config-path-fixed.ansi`。本轮按功能点本地提交，未 push。

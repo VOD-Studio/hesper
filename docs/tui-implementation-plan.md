@@ -51,7 +51,7 @@
 
 - `ratatui = "0.30.2"`：布局、列表、文本、边框、缓冲区和测试后端。
 - `crossterm = "0.29.0"`：沿用键盘、窗口尺寸、raw mode、备用屏幕、粘贴等能力。
-- 配置序列化采用 `serde` + `toml`；配置目录采用 `directories::ProjectDirs::from("", "", "hesper")`。执行时选择兼容的稳定版本并更新 Cargo.lock，不使用 Git 主干依赖。[TOML 官方 API](https://docs.rs/toml/latest/toml/)、[ProjectDirs 官方 API](https://docs.rs/directories/latest/directories/struct.ProjectDirs.html)
+- 配置序列化采用 `serde` + `toml`；通过 `directories::BaseDirs` 定位用户主目录，配置固定放在 `~/.config/hesper/config.toml`。执行时选择兼容的稳定版本并更新 Cargo.lock，不使用 Git 主干依赖。[TOML 官方 API](https://docs.rs/toml/latest/toml/)、[BaseDirs 官方 API](https://docs.rs/directories/latest/directories/struct.BaseDirs.html)
 - 配置依赖仅添加到 CLI；CPU crate 保持无运行时依赖。
 - 优先使用 Ratatui 的布局和文字宽度能力。确有无法覆盖的字符处理需求时再添加小型依赖，并说明用途。
 - 不同时引入另一套 TUI 框架、通用状态库、动画库、主题框架或 CLI 解析框架。
@@ -163,7 +163,7 @@ CPU 错误把会话置为 Faulted，保留最后屏幕、失败位置和有界 t
 
 ### 6.2 配置文件
 
-使用上述 ProjectDirs 返回的 `config_dir()/config.toml`，配置页展示实际路径。文件格式示例：
+固定使用用户主目录下的 `.config/hesper/config.toml`，不再随系统配置目录或 `XDG_CONFIG_HOME` 改变；配置页展示实际路径。文件格式示例：
 
 ```toml
 schema_version = 1

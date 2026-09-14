@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use directories::ProjectDirs;
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -87,8 +87,8 @@ impl Default for AppConfig {
 }
 
 pub(crate) fn default_config_path() -> Result<PathBuf, String> {
-    ProjectDirs::from("", "", "hesper")
-        .map(|dirs| dirs.config_dir().join("config.toml"))
+    BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join(".config/hesper/config.toml"))
         .ok_or_else(|| "cannot determine Hesper configuration directory".to_owned())
 }
 
