@@ -233,7 +233,7 @@ Linux 在 Ubuntu 22.04 上构建，使用 glibc，不是 musl 静态包；macOS 
 
 Wasm 产物为 `hesper-{cpu6502,apple1}-vX.Y.Z-wasm32-unknown-unknown-{web,nodejs}.tar.gz`，共 4 个包，包含实际验证过的 `.wasm`、JS、TypeScript 声明与说明文件。所有 10 个压缩包的哈希写入 `SHA256SUMS`，与产物一起上传。下载后可运行 `sha256sum -c SHA256SUMS` 校验。
 
-在 Actions 中手动运行 `Release`（或 `gh workflow run release.yml --ref master`）会验证并构建全部产物，只保存在 Actions artifacts，不创建或修改 Release。发布失败可重跑原 tag 的工作流；未发布的 draft 可补传产物，已经正式发布的 Release 不会被覆盖。不要移动已发布 tag；修复后使用新版本。此前 `v0.2.0` 是手动源码发布，本自动产物流程从后续版本开始生效。详细验证结果继续记录在 `docs/verification.md`。
+在 Actions 中手动运行 `Release`（或 `gh workflow run release.yml --ref master`）会验证并构建全部产物，只保存在 Actions artifacts，不创建或修改 Release。发布失败可重跑原 tag 的工作流；未发布的 draft 可补传产物，已经正式发布的 Release 不会被覆盖。不要移动已发布 tag；修复后使用新版本。`v0.2.0` 已将初次源码发布补齐为上述 CLI／Wasm 产物发布。详细验证结果继续记录在 `docs/verification.md`。
 
 ## 文档
 

@@ -4,14 +4,6 @@
 
 ## [Unreleased]
 
-### 新增
-
-- **发布 CI**：推送版本 tag 后自动校验 workspace 版本与 changelog，运行常规／全量 CPU 验证，构建 Linux、macOS、Windows 的 x86_64／ARM64 CLI，并将 CPU／Apple I 的 web／nodejs Wasm 包、SHA-256 校验文件和对应 changelog 发布到 GitHub Release；支持只构建不发布的手动试跑。
-
-### 修复
-
-- **Windows CLI**：仅在 Unix 平台注册 `SIGHUP/SIGQUIT`，修复 Windows 缺少这些信号常量导致的编译失败。
-
 ## [0.2.0] - 2026-09-15
 
 首次带 tag 的仓库发布，汇总此前 `0.1.0` 开发阶段的现有能力；`0.1.0` 未创建正式 Release。
@@ -24,17 +16,19 @@
 - **程序资源**：内置 Woz Monitor 和 42 个程序预置，支持 BASIC 与多段镜像加载；提供启动命令、来源、哈希、许可证记录和逐项兼容性矩阵。
 - **Wasm / Web**：独立的 CPU 与 Apple I JS/Wasm 绑定、TypeScript 声明，以及通过 Worker 驱动的 React 工作台，提供字符屏、程序装载、CPU 单步、寄存器、内存和总线观察。
 - **验证工具**：固定 SingleStep、Klaus、十进制和 Visual6502 revD 数据及重放入口，CPU 引脚／物理 RESET 对照，Woz Monitor 集成测试，以及 Bun、Node.js 和真实浏览器绑定检查。
+- **发布 CI**：推送版本 tag 后自动校验 workspace 版本与 changelog，运行常规／全量 CPU 验证，构建 Linux、macOS、Windows 的 x86_64／ARM64 CLI，并将 CPU／Apple I 的 web／nodejs Wasm 包、SHA-256 校验文件和对应 changelog 发布到 GitHub Release；支持只构建不发布的手动试跑。
 
 ### 修复
 
 - **Apple I**：修正 PIA 寄存器选择与读回、键盘消费、PA7 固定高电平、RESET 与清屏分离，以及条件垂直重载和滚动帧长。
 - **CLI / TUI**：修正 Enter 的 CR/LF 处理、程序加载地址与高位 RAM、配置粘贴和文件列表滚动、窄窗口布局、终端能力适配及会话预算／诊断边界。
 - **Wasm 构建**：生成包的 README 从 workspace 读取版本号，避免继续输出硬编码的 `0.1.0`。
+- **Windows CLI**：仅在 Unix 平台注册 `SIGHUP/SIGQUIT`，修复 Windows 缺少这些信号常量导致的编译失败；文件浏览器测试按路径语义比较选中文件，兼容 Windows 分隔符。
 
 ### 版本管理
 
 - 6 个 Rust crate 从共同的开发版本 `0.1.0` 升至 `0.2.0`；新增本 changelog 与发布维护约定。
-- 本次发布为 GitHub 源码发布；crate 仍设置 `publish = false`。
+- 本次 GitHub Release 包含源码、6 个 CLI 压缩包、4 个 Wasm 压缩包及 `SHA256SUMS`；crate 仍设置 `publish = false`。
 
 ### 已知边界
 
