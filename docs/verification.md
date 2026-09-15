@@ -1101,3 +1101,31 @@ TUI 保留旧配置的外部路径优先级，清空并保存后移除该覆盖�
 
 日志与 PTY 转录在 `.cache/bundled-rom-qa/`。本轮未执行全量外部 CPU corpus、
 远程 CI 或跨平台真实终端视觉矩阵；PTY 与 TestBackend 证据不代替这些范围。
+
+## 2026-09-15：0.2.0 发布验证
+
+本次将 6 个 Rust crate 的 workspace 版本统一升级为 `0.2.0`，新增根 changelog
+与发布维护约定，并让 Wasm 包说明读取 workspace 版本。未修改 CPU 或机器语义。
+
+本地 macOS / `aarch64-apple-darwin` 验证：
+
+- `cargo metadata --locked --offline --no-deps --format-version 1`：6 个 workspace
+  crate 均为 `0.2.0`；`Cargo.lock` 仅更新这 6 个本地包的版本。
+- `make verify`：格式、全目标检查、debug/release workspace 测试、Clippy、CLI
+  demo 和空白检查全部通过。
+- `make full`：1,510,000 条官方 SingleStep 用例的状态／周期／总线对照通过；
+  Klaus functional 到达 `$3469`，Bruce Clark decimal 到达 `$024B`，Klaus
+  interrupt 在 `--feedback-delay 4` 下到达 `$06F5`；Visual6502 原模型重现
+  246 组 pins 和 419 组 RESET 观察，Rust pins 目标 11 项通过。
+- `make wasm-browser-test`：实际 Wasm 构建、Bun / Node.js、TypeScript 和无头
+  Chrome 检查通过；4 份生成的 Wasm README 均声明 `0.2.0`。
+- `examples/web` 下 `bun run check`：类型、lint 和 5 项实际 Wasm 宿主测试通过；
+  `bun run build` 成功，重新生成 42 个预置、内置 ROM 与两套 Wasm 资源。
+
+首次并行运行 Web 检查时，预置测试超过默认 5 秒且在 500 次推进内未观察到目标
+文本；一次单项复现也未达到目标。宿主按墙钟时间限制每次推进，测试的固定推进
+次数受机器负载影响。其他验证结束后，原测试未修改即串行通过（5 项约 1.76 秒）。
+此项负载敏感性仍存在；没有通过放宽断言或修改机器行为掩盖失败。
+
+以上是本地执行证据，远程 CI 以发布提交对应的 GitHub Actions 记录为准。
+本轮未重跑跨平台真实终端视觉矩阵，也不扩大已有硬件或预置兼容性声明。

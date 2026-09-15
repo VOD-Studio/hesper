@@ -106,6 +106,8 @@ make tools-test                                  # bun test tools/ (Bun regressi
 
 ## Testing & QA
 
+- All Rust crates share `workspace.package.version`. Record user-visible changes under `Unreleased` in root `CHANGELOG.md`, including affected components and compatibility changes. Follow README's release checklist; validation evidence belongs in `docs/verification.md`, not in place of a changelog.
+
 - Tests use Rust’s built-in integration-test harness; follow existing targets and reuse `crates/cpu6502/tests/support/` rather than adding another framework.
 - Routine regression is deterministic and offline after Cargo dependencies are fetched: run both debug and release workspace tests. Checked-in coverage includes arithmetic/boundary checks, official-opcode specification, sampled SingleStep cases, and CPU comparisons against both pin and physical-RESET traces.
 - For changed behavior, run the focused integration target first, then `make verify`. CPU timing, pin, interrupt, or RESET changes also require the relevant full external layer.

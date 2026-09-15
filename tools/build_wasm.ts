@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const manifest = readFileSync(resolve(root, "Cargo.toml"), "utf8");
+const packageVersion = Bun.TOML.parse(manifest).workspace?.package?.version;
+if (typeof packageVersion !== "string" || !packageVersion) throw new Error("Cargo.toml must define workspace.package.version");
 const version = manifest.match(/^wasm-bindgen = "=([^"]+)"$/m)?.[1];
 if (!version) throw new Error("Cargo.toml must pin wasm-bindgen exactly");
 const local = resolve(root, ".cache/wasm-tools/bin/wasm-bindgen");
@@ -32,7 +34,7 @@ if (mode === "setup") {
       run([bindgen, `target/wasm32-unknown-unknown/release/hesper_${library}_wasm.wasm`,
         "--target", target, "--out-dir", out, "--out-name", `hesper_${library}`]);
       writeFileSync(resolve(out, "README.md"),
-        `# hesper-${library} (${target})\n\nVersion: 0.1.0. Built with wasm-bindgen ${version}.\n\n` +
+        `# hesper-${library} (${target})\n\nVersion: ${packageVersion}. Built with wasm-bindgen ${version}.\n\n` +
         "Usage and interface contract: docs/wasm.md in the Hesper source repository.\n" +
         (library === "apple1" ? "\nWoz Monitor ROM is supplied by the caller and is not included.\n\n" +
           "Includes P-Lab's Apple-1 2513 replacement glyph data, CC BY 4.0.\n" +

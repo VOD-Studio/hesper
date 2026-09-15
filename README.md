@@ -202,7 +202,17 @@ cargo test -p hesper-cpu6502 --test pins --release
 
 前者证明固定上游模型能重现仓库观察，后者证明 Hesper CPU 与这些观察一致。详细数据来源、哈希、许可证、成功条件和单用例重放命令见 [`crates/cpu6502/tests/data/README.md`](crates/cpu6502/tests/data/README.md)。本地执行结果见 [`docs/verification.md`](docs/verification.md) 的相关记录；CPU 全量验证与 Apple I 联调分别报告。
 
+## 版本与发布
+
+当前版本为 **0.2.0**，变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布见 [GitHub Releases](https://github.com/VOD-Studio/hesper/releases)。
+
+所有 Rust crate 使用统一版本，由根 `Cargo.toml` 的 `workspace.package.version` 管理；一次发布对应一个 `vX.Y.Z` tag 和一份 changelog。当前通过 GitHub 发布源码，保留 `publish = false`，不发布到 crates.io；`examples/web` 是私有示例应用，随仓库发布。
+
+用户可见变更先记入 changelog 的 `Unreleased`，注明受影响的组件和兼容性变化。发布时更新 workspace 版本、`Cargo.lock` 和此处版本，将条目移入带日期的版本小节；运行 `make verify`、`make full`、`make wasm-browser-test`，以及 Web 示例的 `bun run check` / `bun run build`。确认发布提交的 CI 通过后创建 tag，以该版本小节作为 GitHub Release 说明。详细验证结果继续记录在 `docs/verification.md`。
+
 ## 文档
+
+- [`CHANGELOG.md`](CHANGELOG.md)：按版本维护的用户可见变更
 
 - [`docs/architecture.md`](docs/architecture.md)：架构、状态、总线和引脚时序契约
 - [`docs/opcodes.md`](docs/opcodes.md)：官方 opcode 支持与测试矩阵
