@@ -10,19 +10,8 @@
 //! bare-LF-terminated line reproduces exactly what the CLI sees from a real
 //! terminal session, without needing a PTY in the test harness.
 //!
-//! Argument and file validation is checked offline. The tests that need a
-//! real Woz Monitor ROM image (supplied externally; see
-//! `crates/cli/tests/support/wozmon_rom.rs` and
-//! `crates/apple1/tests/data/README.md`) are `#[ignore]`d so the default
-//! `cargo test --workspace` stays self-contained and offline. Run them
-//! explicitly with the resource present:
-//!
-//! ```sh
-//! HESPER_APPLE1_ROM=/path/to/wozmon.bin cargo test -p hesper --test apple1 -- --ignored
-//! ```
-
-#[path = "support/wozmon_rom.rs"]
-mod wozmon_rom;
+//! All tests run offline with the bundled Woz Monitor ROM, including normal
+//! startup without --rom and validation of optional external overrides.
 
 use std::{
     env, fs,
@@ -33,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use wozmon_rom::RomFile;
+const EXPECTED_SHA256: &str = "e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25";
 
 /// Wall-clock ceiling for one CLI run. Every emulator run in these tests is
 /// bounded by `--max-cycles` or by stdin EOF, so hitting this means the
@@ -218,18 +207,9 @@ fn presets_can_be_listed_without_rom_and_conflicting_options_are_rejected() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn bundled_basic_runs_calculations_and_a_numbered_loop() {
-    let rom = RomFile::from_env("bundled-basic");
     let output = run_apple1_cli(
-        &[
-            "--rom",
-            rom.path(),
-            "--preset",
-            "basic-huston",
-            "--max-cycles",
-            "5000000",
-        ],
+        &["--preset", "basic-huston", "--max-cycles", "5000000"],
         b"E000R\nPRINT 1+2\n10 FOR I=1 TO 3\n20 PRINT I*I\n30 NEXT I\n40 END\nRUN\n",
     );
     assert!(
@@ -244,23 +224,14 @@ fn bundled_basic_runs_calculations_and_a_numbered_loop() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn bundled_basic_program_runs_after_the_published_warm_entry() {
     // `resistor-calculator` is a BASIC program: the preset carries Huston
     // BASIC at $E000, the tape header at $004A and the tokenized program at
     // $0800, exactly as the site transfers it — and the site's own listing
     // ends with E2B3R, BASIC's warm entry, so the loaded program survives the
     // entry and RUN can execute it.
-    let rom = RomFile::from_env("bundled-basic-program");
     let output = run_apple1_cli(
-        &[
-            "--rom",
-            rom.path(),
-            "--preset",
-            "resistor-calculator",
-            "--max-cycles",
-            "6000000",
-        ],
+        &["--preset", "resistor-calculator", "--max-cycles", "6000000"],
         b"E2B3R\nRUN\n",
     );
     assert!(
@@ -275,18 +246,9 @@ fn bundled_basic_program_runs_after_the_published_warm_entry() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn bundled_assembly_program_runs_from_its_published_entry() {
-    let rom = RomFile::from_env("bundled-assembly");
     let output = run_apple1_cli(
-        &[
-            "--rom",
-            rom.path(),
-            "--preset",
-            "15-puzzle",
-            "--max-cycles",
-            "3000000",
-        ],
+        &["--preset", "15-puzzle", "--max-cycles", "3000000"],
         b"0300R\n",
     );
     assert!(
@@ -301,13 +263,11 @@ fn bundled_assembly_program_runs_from_its_published_entry() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn presets_longer_than_a_ram_bank_are_rejected_with_that_reason() {
     // `little-tower` runs from $0300 to $14CD in the published listing, so it
     // needs the optional $1000-$1FFF expansion, disabled by default. The host
     // must say so through the bank error rather than boot a truncated image.
-    let rom = RomFile::from_env("bundled-expansion");
-    let output = run_apple1_cli(&["--rom", rom.path(), "--preset", "little-tower"], b"");
+    let output = run_apple1_cli(&["--preset", "little-tower"], b"");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -317,13 +277,9 @@ fn presets_longer_than_a_ram_bank_are_rejected_with_that_reason() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn expansion_ram_allows_little_tower_to_reach_its_menu() {
-    let rom = RomFile::from_env("little-tower-expanded");
     let output = run_apple1_cli(
         &[
-            "--rom",
-            rom.path(),
             "--preset",
             "little-tower",
             "--expansion-ram",
@@ -345,8 +301,6 @@ fn expansion_ram_allows_little_tower_to_reach_its_menu() {
     assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "[stopped]");
     let output = run_apple1_cli(
         &[
-            "--rom",
-            rom.path(),
             "--preset",
             "little-tower",
             "--expansion-ram",
@@ -387,7 +341,7 @@ fn right_size_but_wrong_rom_is_rejected() {
     assert_rejected(&output, "ROM SHA-256 mismatch");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains(wozmon_rom::EXPECTED_SHA256),
+        stderr.contains(EXPECTED_SHA256),
         "expected the pinned fingerprint in the message, got: {stderr:?}"
     );
 }
@@ -406,13 +360,8 @@ fn right_size_but_wrong_rom_is_rejected() {
 const ROM_TEST_MAX_CYCLES: &str = "2000000";
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn apple1_cli_boots_to_prompt() {
-    let rom = RomFile::from_env("boot");
-    let output = run_apple1_cli(
-        &["--rom", rom.path(), "--max-cycles", ROM_TEST_MAX_CYCLES],
-        b"",
-    );
+    let output = run_apple1_cli(&["--max-cycles", ROM_TEST_MAX_CYCLES], b"");
     assert!(
         output.status.success(),
         "expected exit 0, got {:?}",
@@ -426,14 +375,12 @@ fn apple1_cli_boots_to_prompt() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn a_tiny_budget_stops_exactly_where_it_says() {
     // The ROM is still fully validated with a zero budget; what must not
     // happen is any emulated cycle beyond the ceiling. Before the session
     // budget existed, `--max-cycles 1` ran 50 013 cycles.
-    let rom = RomFile::from_env("tiny-budget");
     for budget in ["0", "1"] {
-        let output = run_apple1_cli(&["--rom", rom.path(), "--max-cycles", budget], b"");
+        let output = run_apple1_cli(&["--max-cycles", budget], b"");
         assert!(
             output.status.success(),
             "a budget stop is graceful, got {:?}",
@@ -453,13 +400,11 @@ fn a_tiny_budget_stops_exactly_where_it_says() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn repeated_input_cannot_push_the_run_past_its_budget() {
     // 100 lines of input used to buy 100 more batches: the same run
     // reported 262 013 cycles against a 51 000-cycle ceiling.
-    let rom = RomFile::from_env("budget-input");
     let input: Vec<u8> = b"F\n".repeat(100);
-    let output = run_apple1_cli(&["--rom", rom.path(), "--max-cycles", "51000"], &input);
+    let output = run_apple1_cli(&["--max-cycles", "51000"], &input);
     assert!(
         output.status.success(),
         "a budget stop is graceful, got {:?}",
@@ -473,16 +418,11 @@ fn repeated_input_cannot_push_the_run_past_its_budget() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn apple1_cli_examine_command_terminated_by_bare_lf_is_executed() {
     // Regression test: a bare-LF line ending (what a real canonical
     // terminal actually delivers for Enter) must still be recognized as
     // the Woz Monitor's line terminator, not silently swallowed.
-    let rom = RomFile::from_env("examine");
-    let output = run_apple1_cli(
-        &["--rom", rom.path(), "--max-cycles", ROM_TEST_MAX_CYCLES],
-        b"FF00.FF0F\n",
-    );
+    let output = run_apple1_cli(&["--max-cycles", ROM_TEST_MAX_CYCLES], b"FF00.FF0F\n");
     assert!(
         output.status.success(),
         "expected exit 0, got {:?}",
@@ -497,11 +437,9 @@ fn apple1_cli_examine_command_terminated_by_bare_lf_is_executed() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn apple1_cli_write_and_examine_ram_terminated_by_bare_lf() {
-    let rom = RomFile::from_env("write-examine");
     let output = run_apple1_cli(
-        &["--rom", rom.path(), "--max-cycles", ROM_TEST_MAX_CYCLES],
+        &["--max-cycles", ROM_TEST_MAX_CYCLES],
         b"300: aB cD eF\n300.302\n",
     );
     assert!(
@@ -519,18 +457,14 @@ fn apple1_cli_write_and_examine_ram_terminated_by_bare_lf() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn oversized_program_is_rejected() {
-    let rom = RomFile::from_env("big-program");
     let program = TempFile::new("program-4097", &vec![0xEAu8; 4097]);
-    let output = run_apple1_cli(&["--rom", rom.path(), "--program", program.path()], b"");
+    let output = run_apple1_cli(&["--program", program.path()], b"");
     assert_rejected(&output, "must fit within one Apple I RAM bank");
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn program_address_loads_and_runs_in_both_ram_banks() {
-    let rom = RomFile::from_env("program-address");
     // Original code: print '*' through the same PIA alias used by BASIC,
     // wait for the character to finish, then return to Woz Monitor.
     let program = TempFile::new(
@@ -552,8 +486,6 @@ fn program_address_loads_and_runs_in_both_ram_banks() {
         (Some("57344"), "E000R\n", "E000: A9"),
     ] {
         let mut args = vec![
-            "--rom",
-            rom.path(),
             "--program",
             program.path(),
             "--max-cycles",
@@ -576,22 +508,13 @@ fn program_address_loads_and_runs_in_both_ram_banks() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn program_load_cannot_cross_ram_banks_or_target_io_and_rom() {
-    let rom = RomFile::from_env("program-range");
     let program = TempFile::new("program-range", &[0xEA, 0xEA]);
     for address in [
         "0x0FFF", "0x1000", "0xD010", "0xDFFF", "0xEFFF", "0xF000", "0xFF00", "0xFFFF",
     ] {
         let output = run_apple1_cli(
-            &[
-                "--rom",
-                rom.path(),
-                "--program",
-                program.path(),
-                "--program-address",
-                address,
-            ],
+            &["--program", program.path(), "--program-address", address],
             b"",
         );
         assert_rejected(&output, "must fit within one Apple I RAM bank");
@@ -610,19 +533,9 @@ fn trace_lines(output: &Output) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn a_bus_trace_reports_every_executed_cycle_including_the_reset_vector() {
-    let rom = RomFile::from_env("bus-trace");
     let output = run_apple1_cli(
-        &[
-            "--rom",
-            rom.path(),
-            "--max-cycles",
-            "20",
-            "--bus-trace",
-            "--trace-limit",
-            "4096",
-        ],
+        &["--max-cycles", "20", "--bus-trace", "--trace-limit", "4096"],
         b"",
     );
     assert!(
@@ -654,19 +567,9 @@ fn a_bus_trace_reports_every_executed_cycle_including_the_reset_vector() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn the_trace_limit_bounds_both_kinds_together() {
-    let rom = RomFile::from_env("trace-limit");
     let bus_only = run_apple1_cli(
-        &[
-            "--rom",
-            rom.path(),
-            "--max-cycles",
-            "20",
-            "--bus-trace",
-            "--trace-limit",
-            "4",
-        ],
+        &["--max-cycles", "20", "--bus-trace", "--trace-limit", "4"],
         b"",
     );
     let bus_lines = trace_lines(&bus_only);
@@ -678,8 +581,6 @@ fn the_trace_limit_bounds_both_kinds_together() {
 
     let both = run_apple1_cli(
         &[
-            "--rom",
-            rom.path(),
             "--max-cycles",
             "20",
             "--bus-trace",
@@ -699,15 +600,7 @@ fn the_trace_limit_bounds_both_kinds_together() {
     // Unbounded enough to keep everything: the instruction trace reports
     // the completed physical RESET sequence, the bus trace does not.
     let instructions = run_apple1_cli(
-        &[
-            "--rom",
-            rom.path(),
-            "--max-cycles",
-            "20",
-            "--trace",
-            "--trace-limit",
-            "4096",
-        ],
+        &["--max-cycles", "20", "--trace", "--trace-limit", "4096"],
         b"",
     );
     let instruction_lines = trace_lines(&instructions);
@@ -723,20 +616,16 @@ fn the_trace_limit_bounds_both_kinds_together() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn tracing_does_not_change_what_the_machine_does() {
     // Both runs get the same generous budget so that the comparison covers
     // the deposit and the examine dump actually completing, not two runs
     // cut off at the same early point.
-    let rom = RomFile::from_env("trace-neutral");
     let plain = run_apple1_cli(
-        &["--rom", rom.path(), "--max-cycles", ROM_TEST_MAX_CYCLES],
+        &["--max-cycles", ROM_TEST_MAX_CYCLES],
         b"300: AB CD EF\n300.302\n",
     );
     let traced = run_apple1_cli(
         &[
-            "--rom",
-            rom.path(),
             "--max-cycles",
             ROM_TEST_MAX_CYCLES,
             "--trace",
@@ -756,7 +645,6 @@ fn tracing_does_not_change_what_the_machine_does() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn an_unsupported_opcode_fails_with_the_trace_that_led_to_it() {
     // $02 is not an official NMOS opcode; the monitor's own RUN command
     // jumps straight into it.
@@ -768,11 +656,8 @@ fn an_unsupported_opcode_fails_with_the_trace_that_led_to_it() {
     // boot costs ~50 000, and the batch loop's three-frame quiet drain
     // runs twice. Measured: the monitor jumps into $0300 at about 514 500
     // CPU cycles, so 800 000 leaves roughly 1.5x margin.
-    let rom = RomFile::from_env("bad-opcode");
     let output = run_apple1_cli(
         &[
-            "--rom",
-            rom.path(),
             "--max-cycles",
             "800000",
             "--bus-trace",
@@ -797,4 +682,22 @@ fn an_unsupported_opcode_fails_with_the_trace_that_led_to_it() {
         8,
         "the records leading to the error must still be reported, got: {lines:?}"
     );
+}
+
+#[test]
+fn external_rom_override_matches_bundled_firmware() {
+    let rom = TempFile::new(
+        "bundled-rom-override",
+        include_bytes!("../assets/wozmon.bin"),
+    );
+    let input = b"FF00.FF0F\n";
+    let bundled = run_apple1_cli(&["--max-cycles", ROM_TEST_MAX_CYCLES], input);
+    let external = run_apple1_cli(
+        &["--rom", rom.path(), "--max-cycles", ROM_TEST_MAX_CYCLES],
+        input,
+    );
+    assert!(bundled.status.success());
+    assert_eq!(bundled.status.code(), external.status.code());
+    assert_eq!(bundled.stdout, external.stdout);
+    assert_eq!(bundled.stderr, external.stderr);
 }

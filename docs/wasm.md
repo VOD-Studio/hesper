@@ -27,7 +27,7 @@ target/wasm-packages/
 └── apple1/{web,nodejs}/hesper_apple1{.js,.d.ts,_bg.wasm,_bg.wasm.d.ts}
 ```
 
-每个目录包含 README；Apple I README 同时保留内嵌 P-Lab 字模的作者、来源、CC BY 4.0 许可证和格式转换说明。**Woz Monitor / BASIC ROM 不内嵌、不下载、不随包分发**，由宿主提供。
+每个目录包含 README；Apple I README 同时保留内嵌 P-Lab 字模的作者、来源、CC BY 4.0 许可证和格式转换说明。**WASM 包不内嵌、不下载或分发 Woz Monitor / BASIC ROM**，由调用方提供；CLI 的内置资源不改变 WASM 接口。
 
 输出由 `wasm-bindgen` 生成，不手改生成文件。构建和测试不要求根目录 `package.json`、前端构建器或应用框架。`make verify` 保持原有本机 Rust 检查；WASM 包执行在独立 CI job 中检查。
 

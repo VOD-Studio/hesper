@@ -56,7 +56,7 @@ SingleStepTests 阅读固定于提交 `2f6980a2d95757486c7bee24355c360e40e2a224`
 
 ### Woz Monitor ROM
 
-256 字节，`$FF00–$FFFF`，RESET 向量 `$FFFC/D` → `$FF00`。汇编源码见 [jefftranter/6502](https://github.com/jefftranter/6502/tree/master/asm/wozmon)，SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`。本项目不内嵌、不提交该镜像；资源获取与校验见 [`crates/apple1/tests/data/README.md`](../crates/apple1/tests/data/README.md)。
+256 字节，`$FF00–$FFFF`，RESET 向量 `$FFFC/D` → `$FF00`。汇编源码见 [jefftranter/6502](https://github.com/jefftranter/6502/tree/master/asm/wozmon)，SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`。CLI 默认内置该镜像；资源来源、权利归属与校验见 [`crates/apple1/tests/data/README.md`](../crates/apple1/tests/data/README.md)。
 
 ## Rust 工程资料
 

@@ -1067,3 +1067,37 @@ WozMon 的 SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119d
 - CPU 对照比较 100 个真实总线周期及指令完成快照，覆盖写入、RMW、RDY 重读、SO、NMI 和物理 RESET 输入；Apple I 原创回显程序对照 1,000,000 个 master tick 后的屏幕、光标、输出、寄存器、累计时钟和帧数，并核对前 2048 tick 的数字视频采样摘要。不同批次划分产生相同结果。
 - 额外 JS 检查验证半周期、单步预算耗尽后的续跑、非法 opcode 的结构化错误、参数拒绝、内存／快照／实例隔离、RESET 与 CLEAR SCREEN 分离、输入队列累计上限、报错前字符输出可取回。常规测试用原创程序与合成复位向量 ROM，不下载或嵌入 Woz Monitor。Apple I 分发目录携带已有 P-Lab 字模的来源、CC BY 4.0 许可证和转换说明。
 - CI 已增加独立 WASM job，但本轮没有运行远程 CI。未改 CPU 语义／板级时序，未重跑完整外部 CPU conformance 或 ROM-gated 联调；绑定验收不代表 Apple I M3 或完整浏览器前端 M5 验收。本轮未提交或推送。
+
+
+## CLI 内置 Woz Monitor ROM
+
+2026-09-15：基于 `21cf494` 的本地工作区改动，未提交、未推送。
+
+按项目要求将既有缓存 ROM 原样纳入 `crates/cli/assets/wozmon.bin`，由 CLI
+通过 `include_bytes!` 内置。256 字节，SHA-256：
+`e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`。
+CLI 不传 `--rom`、TUI 的 ROM 字段留空时使用内置镜像；外部路径仍校验大小和哈希，
+TUI 保留旧配置的外部路径优先级，清空并保存后移除该覆盖。机器库和 WASM
+接口仍由宿主提供 ROM 字节，未改 CPU 或主板时序。
+
+删除 `tools/prepare_wozmon.ts`、`tools/prepare_wozmon.test.ts` 及
+`wozmon`、`wozmon-verify`、`wozmon-tests` Make 目标。真实 ROM 测试复用内置
+资源，取消全部相关 `#[ignore]`；CLI 交互测试默认不传 ROM 路径，并保留外部
+镜像错误校验及内置/外部输出一致性比较。
+
+验证结果：
+
+- `cargo test --locked -p hesper --test apple1 -p hesper-apple1 --test wozmon`：
+  CLI 25 项、机器 Woz Monitor 4 项通过，0 ignored。
+- `make verify`：格式、全目标检查、debug/release workspace 测试（各 290 项）、
+  Clippy、CLI demo 和空白检查全部通过。TUI 回归覆盖空 ROM 字段从启动中心启动，
+  并清除已保存的外部覆盖；同一套用例覆盖 44×30 至 180×50 布局。
+- 在独立空工作目录运行构建后的 `hesper apple1 --max-cycles 2000000`，不传
+  `--rom`；输入 `FF00.FF0F`，完整 ROM 转储匹配，退出码 0。
+- macOS PTY 120×40、44×30：使用 `hesper apple1 --rom ''` 显式置空 TUI ROM
+  字段，以隔离个人配置里原有的外部路径；真实启动、输入 `FF00.FF0F`、完整转储、
+  SIGTERM 退出及 termios 恢复均通过。最初检查脚本等待不存在的“运行”文案而超时，
+  后改为等待实际监控程序提示符并重建终端文本后核对完整转储。
+
+日志与 PTY 转录在 `.cache/bundled-rom-qa/`。本轮未执行全量外部 CPU corpus、
+远程 CI 或跨平台真实终端视觉矩阵；PTY 与 TestBackend 证据不代替这些范围。

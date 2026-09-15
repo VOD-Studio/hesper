@@ -4,30 +4,21 @@ Apple I 的硬件架构、历史背景和 Woz Monitor 全面介绍见 [`apple-1-
 
 所有输出片段均为本地实际运行结果，不是编造的示意输出。
 
-## 1. 准备 ROM
+## 1. 内置 ROM
 
-ROM 不内嵌、不提交；请先确认使用权限。安装 Bun 后，`make wozmon` 调用 `tools/prepare_wozmon.ts` 从 <https://github.com/alangarf/apple-one/blob/master/roms/wozmon.hex> 下载 HEX、转换并校验 256 字节和 SHA-256，通过后写入被 Git 忽略的 `.cache/apple1/wozmon.bin`。普通构建和测试不会自动下载，详见 [`资源说明`](../../crates/apple1/tests/data/README.md)。
-
-```sh
-make wozmon
-export HESPER_APPLE1_ROM="$PWD/.cache/apple1/wozmon.bin"
-```
-
-校验：
-
-```sh
-bun tools/prepare_wozmon.ts --verify "$HESPER_APPLE1_ROM"
-```
+Hesper 已内置 256 字节 Woz Monitor，启动无需下载或配置路径。
+来源、SHA-256 与权利归属见 [`资源说明`](../../crates/apple1/tests/data/README.md)。
+可选 `--rom <path>` 用于提供同一版本的本地镜像，长度和哈希仍会校验。
 
 ## 2. CLI 快速启动
 
 ```sh
-cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
+cargo run -p hesper -- apple1 --help
 ```
 
 | 选项 | 说明 |
 | --- | --- |
-| `--rom <path>` | 文本/管道模式必填；TUI 中可在配置页输入，256 字节 Woz Monitor ROM |
+| `--rom <path>` | 可选，本地镜像覆盖内置 Woz Monitor；要求 256 字节且哈希匹配。TUI 的 ROM 字段留空使用内置镜像 |
 | `--program <path>` | 可选，启动时加载原始二进制程序，默认地址 `$0000` |
 | `--preset <id>` | 加载内置预置程序（42 个，见下节）并使用其固定地址；与 `--program`、`--program-address` 互斥 |
 | `--list-presets` | 列出全部内置程序的分类、id、大小、载入范围、启动命令、来源页与许可证，无需 ROM |
@@ -58,8 +49,8 @@ cargo run --locked -p hesper -- apple1 --list-presets
 多数程序在 Woz Monitor 提示符下按载入地址启动，例如 `--preset 15-puzzle` 后输入 `0300R`：
 
 ```sh
-cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset 15-puzzle
-cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset basic-huston
+cargo run --locked -p hesper -- apple1 --preset 15-puzzle
+cargo run --locked -p hesper -- apple1 --preset basic-huston
 ```
 
 内置的 `basic-huston`（以及 `basic-c`／`basic-d`／`basic-pagetable`）是站点发布的 4096
@@ -72,14 +63,14 @@ Graphics、Twinkle、Resistor Calculator、Stopwatch）在站点上总是与 BAS
 不会清掉刚载入的程序——随后输入 `RUN` 即可运行：
 
 ```sh
-cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset hamurabi
+cargo run --locked -p hesper -- apple1 --preset hamurabi
 # 进入 Woz Monitor 后：E2B3R，然后 RUN
 ```
 
 `little-tower` 占用 `$0300–$14CD`，需在 TUI 启动配置中开启“扩展 RAM”，或添加 `--expansion-ram`：
 
 ```sh
-cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset little-tower --expansion-ram
+cargo run --locked -p hesper -- apple1 --preset little-tower --expansion-ram
 # 进入 Monitor 后输入 0300R，再按 1 开始游戏
 ```
 
@@ -99,14 +90,14 @@ TUI 启动中心按 `C` 打开配置页，按 `F3` 打开程序列表：列表�
 
 ```sh
 cargo build --locked -p hesper --release
-./target/release/hesper apple1 --rom "$HESPER_APPLE1_ROM" \
+./target/release/hesper apple1 \
   --program ~/Downloads/basic-c.bin --program-address 0xE000
 ```
 
 也可以完全在 TUI 中配置，无需传入这两个程序参数：
 
 1. 运行 `./target/release/hesper tui`，在启动中心按 `C` 打开配置页。
-2. 填写 ROM 路径，再按 `Tab` 到“程序路径”，填写二进制文件的绝对路径，或按 `F4` 选择文件。
+2. ROM 路径留空使用内置镜像，再按 `Tab` 到“程序路径”，填写二进制文件的绝对路径，或按 `F4` 选择文件。
 3. 按 `Tab` 到“程序加载地址”，按 `Ctrl+U` 清空默认值，输入 `0xE000`（也接受 `$E000` 或 `57344`）。支持退格和单行粘贴。
 4. 按 `Tab` 到“校验并保存”，或再按一次 `Tab` 到“启动”，按 `Enter` 执行；地址格式错误、超出 16 位或文件跨越 RAM 边界都会显示错误并保留当前会话。
 
@@ -127,7 +118,7 @@ RUN
 不带 `--max-cycles` 时正常启动 Apple-1 TUI：
 
 ```sh
-cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM"
+cargo run -p hesper -- apple1
 ```
 
 ```
@@ -200,7 +191,7 @@ CLI 通过管道读取 stdin 时同样有效，适合脚本或 CI smoke check。
 
 ```sh
 printf 'FF00.FF0F\r\n300: A9 2A 8D 12 D0 4C 05 03\r\n300R\r\n' \
-  | cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --max-cycles 2000000
+  | cargo run -p hesper -- apple1 --max-cycles 2000000
 ```
 
 从真实交互式终端敲 Enter 同样能正确工作：终端的 canonical 模式会把物理 Enter（CR）翻译成 LF 再交给读取进程，CLI 在把整行内容送进模拟键盘前会先剥掉这个行尾，统一补发一次 CR（`crates/cli/src/apple1.rs`）；因此第 3～5 节里的交互示例在真实终端里逐字敲同样命令即可复现，不需要额外操心行结束符。

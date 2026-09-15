@@ -36,11 +36,11 @@ fn print_apple1_usage() {
         "\
 Usage: hesper apple1 [--rom <path>] [OPTIONS]
 
-On a usable terminal this opens the Apple-1 TUI. Without --rom it opens the
-configuration page. In text/pipe mode --rom remains required.
+On a usable terminal this opens the Apple-1 TUI. The Woz Monitor ROM is
+bundled; --rom optionally supplies a matching local image.
 
 Options:
-  --rom <path>           Path to the 256-byte Woz Monitor ROM
+  --rom <path>           Override the bundled Woz Monitor ROM with a local image
   --program <path>       Optional raw program file to load into RAM
   --preset <id>          Load a bundled program; every program published by
                         https://apple1software.com/ (Games, Fun, Programming,
@@ -260,8 +260,8 @@ fn run_apple1_subcommand(args: impl Iterator<Item = String>) -> Result<(), Box<d
     let rom = launch
         .rom
         .as_ref()
-        .ok_or("missing required --rom <path>\nUse 'apple1 --help' for usage")?;
-    let rom = rom.to_str().ok_or("ROM path is not valid UTF-8")?;
+        .map(|path| path.to_str().ok_or("ROM path is not valid UTF-8"))
+        .transpose()?;
     let program = if let Some(preset) = launch.preset {
         Some(ProgramSource::Preset(preset))
     } else {

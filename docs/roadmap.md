@@ -77,7 +77,7 @@ M3 Apple I 文本系统已能实际交互使用：8 KiB RAM、Woz Monitor、BASI
 - 机器模块拥有内存映射和设备状态；CPU 继续只通过 Bus 访问。宿主负责文件、终端、墙钟节流及停止条件，不把文件 I/O、休眠或展示放进 CPU／机器执行逻辑。
 - 用模拟周期推进 CPU 和设备，必要时明确半周期事件位置。设备握手、视频和音频不能依赖终端刷新次数或宿主运行速度；不同推进批次必须可重放相同输入序列。
 - 原始手册、原理图和目标固件在各阶段入口核对并记录链接、章节、修订与采用的假设。实现存在不代表对应硬件依据已核对完成；尚未闭合的配置与资源项仍须明确保留。
-- 不提交 Apple ROM、商业软件或来源不明镜像。合法资源由宿主加载，记录版本、大小、哈希和使用权限；公开可下载不等于有权再分发。资源缺失时可继续原创程序验证，但不能将相应系统联调标为通过。
+- Woz Monitor 按 2026-09-15 的项目要求内置于 CLI，保留来源、大小、哈希和第三方权利归属说明；其他机器资源按各自明确范围处理。机器库由宿主传入 ROM，资源缺失时不能将相应系统联调标为通过。
 - 普通回归自包含、离线可运行；外部固件／软件联调单独显式执行，缺数据、哈希不符、零匹配或超限必须明确失败。目标程序若需要未支持 opcode，另行决定是否扩展 CPU 范围，不能静默 NOP 或修改原程序绕过失败。
 
 ## M3：Apple I 文本系统（部分实现，尚未整体验收）
@@ -100,7 +100,7 @@ M3 Apple I 文本系统已能实际交互使用：8 KiB RAM、Woz Monitor、BASI
 
 **当前机器总线**（2026-09-14）：`crates/apple1/` 实现两组独立 4 KiB RAM（`$0000–$0FFF`、`$E000–$EFFF`）、256 B 只读 Woz Monitor ROM（`$FF00–$FFFF`）、PIA 及其地址镜像、确定性开路总线。固定配置、RESET 与 CLEAR SCREEN 分离、CPU／PIA 共用系统复位、板级时钟与刷新门控记录在 `crates/apple1/src/lib.rs` 和 [架构契约](architecture.md)。Woz Monitor 的入口、向量、哈希与资源要求见 [`资源说明`](../crates/apple1/tests/data/README.md)；`bus.rs` 单元测试与 `tests/machine.rs` 的原创 CPU 程序验证总线和设备，不依赖真实 ROM。
 
-**已解决的资源冲突**：此前 `crates/apple1/tests/wozmon.rs` 与 `crates/cli/tests/apple1.rs` 内嵌完整 256 字节 Woz Monitor ROM，与“不提交 Apple ROM”的约束冲突。现已移除嵌入字节；需要真实 Woz Monitor 交互的测试改为从调用者提供的 `HESPER_APPLE1_ROM` 路径加载并核对 SHA-256，标记 `#[ignore]` 使默认 `cargo test --workspace` 保持离线自包含，显式请求（`make wozmon-tests ROM=<path>`）缺资源时明确失败而非静默跳过。原先从测试夹具反向提取 ROM 的工具已退役。当前由 `tools/prepare_wozmon.ts`／`make wozmon` 在用户显式请求时下载并校验到忽略缓存，`--verify`／`make wozmon-verify` 只做离线校验；不内嵌、不提交 ROM，下载不构成使用或再分发授权。旧 Python 校验器已移除。
+**当前 ROM 交付方式**（2026-09-15）：CLI 内置 `crates/cli/assets/wozmon.bin`，TUI 和文本模式默认使用；可选外部路径仍校验长度和固定 SHA-256。真实 Woz Monitor 测试复用内置资源并纳入默认 workspace 测试，不再依赖 `HESPER_APPLE1_ROM`。下载/校验脚本及三个 WozMon Make 目标已删除。此前外部资源方案的历史证据保留在 `docs/verification.md`。
 
 **一手资料核对状态**：2026-09-11 已核对 Apple-1 Operation Manual（1976）印刷页 1/7/8 与三张原理图、MC6820 原厂数据表（1976，PDF 第 41–50 页）及 MC6821 数据表（1985/1994，印刷页 8–10）的指定页。来源、定位和当前实现关系见 [`硬件依据矩阵`](apple1/hardware-evidence.md)；相关项的当前状态如下：
 
@@ -154,7 +154,7 @@ H04 的地址译码缺口、H14 的 Apple I 显示握手缺口和 H12 的读回�
 - [x] 将交互场景固定为有总预算的事件序列，比较关键屏幕内容、内存结果和必要总线事件；保留失败前的有限 trace、机器配置及资源标识。能看到启动提示不等于全部交互通过。
 - [x] 复验本地 CPU／机器／CLI 回归；更新架构、支持范围、实际命令和验证记录。若本阶段改动 CPU 执行语义，额外重跑受影响的完整固定外部范围；不得只凭机器程序能运行就认定 CPU 无回归。
 
-**已落地**（2026-09-10）：`crates/apple1/tests/wozmon.rs`（库 API，标记 `#[ignore]`，需 `HESPER_APPLE1_ROM`）与 `crates/cli/tests/apple1.rs`（真实二进制＋管道，同样需要该环境变量）用外部提供的 Woz Monitor 镜像核对启动提示符、`FF00.FF0F` ROM 转储、`300: AB CD EF` 写入＋`300.302` 回读、写入并 `300R` 运行小程序四类交互，均是有总预算的确定性事件序列比较，不是“看到提示就算过”。真实 PTY 会话（Python `pty.fork`）额外验证了从真实复位路径启动、Ctrl-R 再次物理复位后重新回到提示符、Ctrl-N 用原始 ROM 重建机器后重新启动——“回到监控程序以及再次复位”在库测试和真实终端两个层面都有独立证据。本阶段没有修改 CPU 执行语义（改动仅限 `crates/apple1`／`crates/cli`），因此没有重跑 SingleStep／Klaus／Visual6502 完整外部一致性范围；这不是遗漏，是因为没有触碰的代码不需要重新证明。架构（`crates/apple1/src/lib.rs`）、资源清单（`crates/apple1/tests/data/README.md`）、路线图（本文件）与下方验证记录均已同步更新。
+**已落地**（2026-09-10）：`crates/apple1/tests/wozmon.rs`（库 API）与 `crates/cli/tests/apple1.rs`（真实二进制＋管道）用 Woz Monitor 镜像（2026-09-15 起改用内置资源，纳入普通测试）核对启动提示符、`FF00.FF0F` ROM 转储、`300: AB CD EF` 写入＋`300.302` 回读、写入并 `300R` 运行小程序四类交互，均是有总预算的确定性事件序列比较，不是“看到提示就算过”。真实 PTY 会话（Python `pty.fork`）额外验证了从真实复位路径启动、Ctrl-R 再次物理复位后重新回到提示符、Ctrl-N 用原始 ROM 重建机器后重新启动——“回到监控程序以及再次复位”在库测试和真实终端两个层面都有独立证据。本阶段没有修改 CPU 执行语义（改动仅限 `crates/apple1`／`crates/cli`），因此没有重跑 SingleStep／Klaus／Visual6502 完整外部一致性范围；这不是遗漏，是因为没有触碰的代码不需要重新证明。架构（`crates/apple1/src/lib.rs`）、资源清单（`crates/apple1/tests/data/README.md`）、路线图（本文件）与下方验证记录均已同步更新。
 
 **验收**：上述监控程序交互实际在 CLI 完成，并有可重复的无界面场景；原创离线回归不依赖用户 ROM。M3.1～M3.4 的目标项无已知未解决差异，许可与尚未覆盖的硬件行为有明确记录。分别报告本地验证、远程 CI 与提交／发布状态。
 

@@ -67,7 +67,8 @@ cargo run --locked -p hesper-apple1 --release --example video -- /tmp/hesper-vid
 # 可选 TEXT（1..255 字节 ASCII，可含 CR）和从第几个自然帧结束后开始采集：
 cargo run --locked -p hesper-apple1 --release --example video -- /tmp/hesper-video-write F 1
 make verify
-make wozmon-tests
+cargo test --locked -p hesper-apple1 --test wozmon
+cargo test --locked -p hesper --test apple1
 ```
 
 输出目录必须不存在。示例运行原创 6502 程序，通过 PIA 握手写字；默认等写入完成并经过两个空闲自然帧，再从真实 HSYNC 沿开始采集。提供 FRAME 则可捕获写入／滚动中的画面。准备及采样均有预算；没有完整帧、行不完整、文本非法或目录已存在都会报错。

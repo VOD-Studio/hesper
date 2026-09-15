@@ -16,11 +16,7 @@
 #   make wasm-test  构建包并运行实际 JS 绑定与原生 Rust 对照测试
 #   make wasm-browser-test  用独立无头 Chrome 加载 web 产物运行同组检查
 #   make wasm-typecheck  用固定版本 TypeScript 检查产物的调用类型（首次联网）
-#   make wozmon [ROM=<path>]      用 Bun 下载并校验 ROM（默认 .cache/apple1/wozmon.bin）
-#   make wozmon-verify ROM=<path>  校验用户自备 Woz Monitor ROM 的大小与哈希
-#   make wozmon-tests ROM=<path>   显式运行需要该 ROM 的 --ignored 集成测试
-#                  （ROM 不内嵌或提交；下载需显式请求，见 crates/apple1/tests/data/README.md）
-#   make tools-test  用 Bun 运行 tools/ 下 5 个验证脚本自身的回归测试
+#   make tools-test  用 Bun 运行 tools/ 下 4 个验证脚本自身的回归测试
 #                  （不在 verify 中：冷缓存首次运行需要联网真实下载）
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
@@ -35,7 +31,7 @@
 
 .PHONY: verify fmt fix check test test-release clippy demo diff build build-release \
         wasm wasm-setup wasm-build wasm-test wasm-browser-test wasm-typecheck \
-        tools-test wozmon wozmon-verify wozmon-tests \
+        tools-test \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -101,23 +97,6 @@ wasm-browser-test: wasm-test wasm-typecheck
 # 冷缓存时真实下载固定上游数据，因此不加入 verify。
 tools-test:
 	bun test tools/
-
-# ---- Woz Monitor ROM (explicit download only; never committed) ----
-ROM ?= .cache/apple1/wozmon.bin
-# Cargo runs tests from each crate directory; pass an absolute ROM path.
-ROM_PATH = $(if $(filter /%,$(ROM)),$(ROM),$(CURDIR)/$(ROM))
-
-wozmon:
-	bun tools/prepare_wozmon.ts "$(ROM_PATH)"
-
-# make wozmon-verify ROM=/path/to/wozmon.bin
-wozmon-verify:
-	bun tools/prepare_wozmon.ts --verify "$(ROM_PATH)"
-
-# make wozmon-tests ROM=/path/to/wozmon.bin
-wozmon-tests:
-	HESPER_APPLE1_ROM="$(ROM_PATH)" cargo test -p hesper-apple1 --test wozmon -- --ignored
-	HESPER_APPLE1_ROM="$(ROM_PATH)" cargo test -p hesper --test apple1 -- --ignored
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

@@ -248,7 +248,7 @@ Apple I 证明了 6502 可以驱动完整的独立计算机系统。随后 Commo
 
 **RDY 适用性：** CPU 核心已支持 RDY；当前固定 Apple I 文本配置没有设备驱动它，机器级 RDY 保持验收不适用，不属于缺失实现。键盘／显示忙等待不是 CPU RDY 等待，DRAM 刷新期间抑制 Φ2 也不是 RDY；具体配置和剩余验收范围见 [`docs/roadmap.md`](../roadmap.md) 的 M3.2／M3.4。
 
-**ROM 不内嵌、不提交。** Woz Monitor 的 256 字节镜像由用户显式通过 `make wozmon` 下载并校验 SHA-256（`e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`），保存到被 Git 忽略的缓存文件中。普通构建和测试不会自动下载。
+**CLI 已内置 Woz Monitor ROM。** 256 字节镜像保存在 `crates/cli/assets/wozmon.bin`，编译进可执行文件，启动无需下载；机器库仍接收宿主提供的 ROM 字节。来源和 SHA-256 见[资源说明](../../crates/apple1/tests/data/README.md)。
 
 本项目已经过 Woz Monitor 敲入短程序并实际运行验证——从 RESET 启动、内存检查、写入 RAM、R 命令执行到输出结果，所有路径均通过真实 CPU 模拟执行，没有修改 ROM 或伪造设备响应。详细使用示例见 [`examples.md`](examples.md)。
 

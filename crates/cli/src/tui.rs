@@ -258,7 +258,7 @@ impl ConfigForm {
 struct Resources {
     rom: [u8; 256],
     program: Option<ProgramImage>,
-    rom_path: PathBuf,
+    rom_path: Option<PathBuf>,
     expansion_ram: bool,
     preset: Option<&'static ProgramPreset>,
 }
@@ -415,19 +415,8 @@ impl App {
         self.dirty = true;
     }
 
-    fn text_path(text: &str, what: &str) -> Result<PathBuf, String> {
-        if text.is_empty() {
-            Err(format!("请先输入{what}路径"))
-        } else {
-            Ok(PathBuf::from(text))
-        }
-    }
-
     fn validate_resources(&self) -> Result<Resources, String> {
-        let rom_path = Self::text_path(&self.form.rom, "ROM")?;
-        let rom_text = rom_path
-            .to_str()
-            .ok_or("ROM 路径不是 UTF-8，不能用于此 TUI 表单")?;
+        let rom_text = (!self.form.rom.is_empty()).then_some(self.form.rom.as_str());
         let rom = load_rom(rom_text).map_err(|error| error.to_string())?;
         // A preset carries its own addresses; without one the field must parse
         // even before a file is chosen, so a half-typed address never sits in
@@ -455,8 +444,12 @@ impl App {
                     .map_err(|error| error.to_string())
             })
             .transpose()?;
-        let absolute_rom = fs::canonicalize(&rom_path)
-            .map_err(|error| format!("无法规范化 ROM 路径 '{}': {error}", rom_path.display()))?;
+        let absolute_rom = rom_text
+            .map(|path| {
+                fs::canonicalize(path)
+                    .map_err(|error| format!("无法规范化 ROM 路径 '{path}': {error}"))
+            })
+            .transpose()?;
         Ok(Resources {
             rom,
             program,
@@ -489,7 +482,7 @@ impl App {
     }
 
     fn save_rom_path(&mut self, resources: &Resources) {
-        self.config.apple1.rom_path = Some(resources.rom_path.clone());
+        self.config.apple1.rom_path = resources.rom_path.clone();
         self.config.apple1.expansion_ram = resources.expansion_ram;
         self.form.status = Some(match self.save_config() {
             Ok(()) => "ROM 已校验，配置已保存".into(),
@@ -1028,11 +1021,7 @@ impl App {
         match self.center_action() {
             CenterAction::Resume => self.open_page(Page::Apple1),
             CenterAction::Configure => {
-                self.form.status = if self.form.rom.is_empty() {
-                    None
-                } else {
-                    self.validate_resources().err()
-                };
+                self.form.status = self.validate_resources().err();
                 self.open_page(Page::Config);
             }
             CenterAction::Launch => {
@@ -1714,7 +1703,7 @@ pub fn run(launch: Option<Apple1Launch>) -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(Some(launch));
     guard.set_mouse(app.config.ui.mouse)?;
-    if app.launch.direct && !app.form.rom.is_empty() {
+    if app.launch.direct {
         app.start_configured(false);
     }
     while !app.exit {
@@ -2334,13 +2323,15 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             CenterAction::Resume if app.faulted => "会话故障",
             CenterAction::Resume => "会话已保留",
             CenterAction::Launch => "已校验",
-            _ if app.form.rom.is_empty() => "未配置",
             _ => "资源待检查",
         };
         let rom_path = if let Some(resources) = &app.resources {
-            resources.rom_path.display().to_string()
+            resources.rom_path.as_ref().map_or_else(
+                || "内置 Woz Monitor".into(),
+                |path| path.display().to_string(),
+            )
         } else if app.form.rom.is_empty() {
-            "尚未选择".into()
+            "内置 Woz Monitor".into()
         } else {
             app.form.rom.clone()
         };
@@ -2667,10 +2658,10 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     for (index, (focus, label, value, placeholder, hint)) in [
         (
             ConfigFocus::Rom,
-            "01  ROM 镜像 · 必填",
+            "01  ROM 镜像 · 可选",
             app.form.rom.as_str(),
-            "选择 Woz Monitor 镜像",
-            "Woz Monitor · 256 B · 启动时校验镜像",
+            "内置 Woz Monitor",
+            "留空使用内置 ROM · 外部镜像校验 256 B 与哈希",
         ),
         (
             ConfigFocus::Program,
@@ -3127,7 +3118,10 @@ fn draw_overlay(
                 "替换并启动",
                 format!(
                     "替换会丢弃当前 RAM、设备状态和输入队列；会话周期预算与 trace 保留。\nROM：{}",
-                    resources.rom_path.display()
+                    resources.rom_path.as_ref().map_or_else(
+                        || "内置 Woz Monitor".into(),
+                        |path| path.display().to_string()
+                    )
                 ),
                 *confirmed,
             );
@@ -3345,7 +3339,7 @@ mod tests {
         Resources {
             rom: test_rom(),
             program: Some(ProgramImage::single(0, vec![0x4c, 0x00, 0x00]).unwrap()),
-            rom_path: PathBuf::from(path),
+            rom_path: Some(PathBuf::from(path)),
             expansion_ram: false,
             preset: None,
         }
@@ -4513,7 +4507,7 @@ mod tests {
         app.terminal_size = (120, 40);
         app.page = Page::Apple1;
         let resources = resources("/original/rom.bin");
-        app.config.apple1.rom_path = Some(resources.rom_path.clone());
+        app.config.apple1.rom_path = resources.rom_path.clone();
         let mut session = Session::new(
             create_machine(
                 &resources.rom,
@@ -4557,8 +4551,8 @@ mod tests {
             assert_eq!(session.machine().cpu().registers(), before_registers);
             assert_eq!(session.machine().bus().ram_slice()[0x0300], 0xab);
             assert_eq!(
-                app.resources.as_ref().unwrap().rom_path,
-                Path::new("/original/rom.bin")
+                app.resources.as_ref().unwrap().rom_path.as_deref(),
+                Some(Path::new("/original/rom.bin"))
             );
             assert_eq!(
                 app.config.apple1.rom_path.as_deref(),
@@ -4627,8 +4621,8 @@ mod tests {
                 .contains("unsupported opcode")
         );
         assert_eq!(
-            app.resources.as_ref().unwrap().rom_path,
-            Path::new("/replacement/rom.bin")
+            app.resources.as_ref().unwrap().rom_path.as_deref(),
+            Some(Path::new("/replacement/rom.bin"))
         );
     }
 
@@ -4921,10 +4915,15 @@ mod tests {
             app.selected_machine = 0;
             app.form.rom.clear();
             app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-            assert_eq!(app.page, Page::Config);
+            assert_eq!(app.page, Page::Apple1);
             assert!(
-                app.form.status.is_none(),
-                "empty initial configuration is not an error"
+                app.session.is_some(),
+                "empty ROM field uses bundled firmware"
+            );
+            assert!(app.resources.as_ref().unwrap().rom_path.is_none());
+            assert!(
+                app.config.apple1.rom_path.is_none(),
+                "clear the saved override"
             );
         }
     }

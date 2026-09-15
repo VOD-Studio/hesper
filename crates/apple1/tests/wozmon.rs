@@ -1,14 +1,7 @@
 //! Woz Monitor integration tests.
 //!
-//! These require a real Woz Monitor ROM image supplied externally (see
-//! `crates/apple1/tests/support/wozmon_rom.rs` and
-//! `crates/apple1/tests/data/README.md`); they are `#[ignore]`d so the
-//! default `cargo test --workspace` stays self-contained and offline.
-//! Run explicitly with the resource present:
-//!
-//! ```sh
-//! HESPER_APPLE1_ROM=/path/to/wozmon.bin cargo test -p hesper-apple1 --test wozmon -- --ignored
-//! ```
+//! These use the CLI's bundled Woz Monitor and run in the normal offline
+//! workspace suite. See `crates/apple1/tests/data/README.md` for provenance.
 //!
 //! Every wait is for a *specific complete result* — a full prompt, a full
 //! dump line, bytes actually present in RAM — never for "output stopped for
@@ -174,7 +167,6 @@ fn boot() -> (Apple1, Vec<u8>) {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn wozmon_boots_and_shows_prompt() {
     let (_machine, output) = boot();
     // The Woz Monitor outputs backslash (prompt) with bit 7 set ($DC)
@@ -188,7 +180,6 @@ fn wozmon_boots_and_shows_prompt() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn wozmon_memory_examine_dumps_rom() {
     let (mut machine, _output) = boot();
 
@@ -208,7 +199,6 @@ fn wozmon_memory_examine_dumps_rom() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn wozmon_write_and_examine_ram() {
     let (mut machine, _output) = boot();
 
@@ -236,7 +226,6 @@ fn wozmon_write_and_examine_ram() {
 }
 
 #[test]
-#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn wozmon_write_and_run_program() {
     let (mut machine, _output) = boot();
 

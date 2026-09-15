@@ -54,13 +54,11 @@ const IDLE_BATCH_CPU_CYCLES: u64 = 2_000;
 /// input.
 const BOOT_BATCH_CPU_CYCLES: u64 = 50_000;
 
-/// The exact 256-byte Woz Monitor image this CLI accepts, by SHA-256.
-///
-/// The Apple I firmware is not shipped, embedded, or downloaded here (see
-/// `crates/apple1/tests/data/README.md`); the host supplies it with
-/// `--rom`. Pinning its identity keeps a wrong-but-same-length file from
-/// booting into unexplained garbage: the machine library still accepts any
-/// valid 256-byte ROM for original firmware, only this CLI is fixed.
+/// Default firmware, shared with the machine and CLI integration tests.
+const WOZMON_ROM: &[u8; 256] = include_bytes!("../assets/wozmon.bin");
+
+/// Fixed identity for optional external ROM overrides. The machine library
+/// still accepts any 256-byte ROM supplied by its host.
 const WOZMON_SHA256: [u8; 32] = [
     0xe5, 0xaf, 0x0d, 0x1c, 0x40, 0x57, 0xbd, 0x8e, 0x0e, 0xf5, 0xcb, 0x06, 0x9c, 0x20, 0x8f, 0xf7,
     0xcc, 0x09, 0x84, 0xa7, 0xdf, 0xf5, 0x3b, 0x12, 0xc5, 0xcf, 0x11, 0x9d, 0xe8, 0xcb, 0x5c, 0x25,
@@ -415,9 +413,9 @@ impl ProgramSource<'_> {
     }
 }
 
-/// Run the Apple I with the given ROM and optional program.
+/// Run the Apple I with the bundled ROM or an explicit override and optional program.
 pub fn run_apple1(
-    rom_path: &str,
+    rom_path: Option<&str>,
     program_source: Option<ProgramSource<'_>>,
     max_cycles: Option<u64>,
     trace: bool,
@@ -462,9 +460,11 @@ pub fn run_apple1(
     Ok(())
 }
 
-/// Read the Woz Monitor ROM: exactly 256 bytes and exactly the pinned
-/// image (see [`WOZMON_SHA256`]). No download, no way to skip the check.
-pub(crate) fn load_rom(path: &str) -> Result<[u8; 256], Box<dyn Error>> {
+/// Use the bundled ROM, or validate an explicitly supplied local image.
+pub(crate) fn load_rom(path: Option<&str>) -> Result<[u8; 256], Box<dyn Error>> {
+    let Some(path) = path else {
+        return Ok(*WOZMON_ROM);
+    };
     let bytes = fs::read(path).map_err(|e| format!("cannot read ROM file '{path}': {e}"))?;
     if bytes.len() != Apple1Bus::ROM_SIZE {
         return Err(format!(

@@ -98,10 +98,9 @@
 //! data, the terminal's DA line) is wired in by [`machine`]; the host drives
 //! keys through `Keyboard` rather than touching the PIA directly.
 //!
-//! The host is responsible for acquiring and loading the Woz Monitor ROM.
-//! This crate never downloads, embeds, or ships that 256‑byte image; see
-//! `crates/apple1/tests/data/README.md` for the resource and licensing
-//! notes and the tests that require it.
+//! The host supplies the ROM bytes. This machine library does not embed or
+//! download firmware; the CLI embeds Woz Monitor and the integration tests
+//! reuse that asset. See `crates/apple1/tests/data/README.md` for provenance.
 
 pub mod bus;
 pub mod display;

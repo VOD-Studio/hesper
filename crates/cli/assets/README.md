@@ -1,4 +1,4 @@
-# Bundled Apple-1 programs
+# Bundled Apple-1 resources
 
 `programs/` holds every program published by
 [The Apple-1 Software Library](https://apple1software.com/) — the site's four
@@ -11,8 +11,11 @@ one contiguous RAM block exactly as it appears in the site's own Wozmon listing
 (`GET /{category}/{slug}/wozmon?basic=false&autostart=true`, base64 inside
 JSON) — the same transfer format the project documents for real hardware. The
 host embeds the files with `include_bytes!`; the CLI and TUI contain no network
-code and never download anything, and the Woz Monitor ROM is still supplied
-externally with `--rom` and never shipped here.
+code and never download anything. `wozmon.bin` is the default bundled 256-byte
+Woz Monitor firmware; `--rom` is an optional local override. Firmware provenance,
+SHA-256 and rights attribution are recorded in
+[`the ROM resource notes`](../../apple1/tests/data/README.md).
+The program counts and sizes below exclude this firmware.
 
 The metadata for each program — id, category, author, year, licence label as
 published, source page, load address, start command — lives in
@@ -106,7 +109,7 @@ at `$E000` (not repeated here).
 CLI/TUI 的 `limitation` 区分镜像越界与诊断目标缺失；没有已知限制也不代表完整验收。
 启动命令、块地址及来源页见上表，不在这里维护第二份启动元数据。
 
-- **固定配置**：NMOS 6502、RAM `$0000–$0FFF` / `$E000–$EFFF`、外部 WozMon、
+- **固定配置**：NMOS 6502、RAM `$0000–$0FFF` / `$E000–$EFFF`、内置 WozMon、
   PIA 键盘和字符显示。可选 `--expansion-ram` 增加 `$1000–$1FFF` RAM，默认关闭；未建模 ACI、可变 RAM 跳线或具体扩展卡电气行为。
 - **B**：除固定配置外，预置自动载入 Huston BASIC，必须以 `E2B3R` 热启动后 `RUN`；
   `E000R` 冷启动会清除预先载入的 BASIC 程序。
@@ -167,9 +170,9 @@ CLI/TUI 的 `limitation` 区分镜像越界与诊断目标缺失；没有已知�
 
 ```sh
 cargo build --locked --offline -p hesper
-printf '0280R\n' | target/debug/hesper apple1 --rom .cache/apple1/wozmon.bin \
+printf '0280R\n' | target/debug/hesper apple1 \
   --preset memory-test-1000-1fff --max-cycles 8000000
-printf '0280R\n\n' | target/debug/hesper apple1 --rom .cache/apple1/wozmon.bin \
+printf '0280R\n\n' | target/debug/hesper apple1 \
   --preset memory-test-e000-efff --max-cycles 8000000
 ```
 
@@ -255,7 +258,7 @@ and listed here with the SHA-256 of its stored bytes.
   program execution; `UnmappedTestRam` must remain loadable.
 - `cargo test -p hesper --test apple1 presets_can_be_listed_without_rom_and_conflicting_options_are_rejected`
   — all preset ids are discoverable without ROM; conflicting load options fail.
-- ROM-gated (run with `make wozmon-tests`):
+- Real-ROM integration (included in `cargo test --workspace`; focused run: `cargo test -p hesper --test apple1`):
   `bundled_basic_runs_calculations_and_a_numbered_loop` (`basic-huston`),
   `bundled_basic_program_runs_after_the_published_warm_entry`
   (`resistor-calculator` at `E2B3R` then `RUN`),

@@ -67,14 +67,13 @@ cargo run -p hesper -- demo --bus-trace --trace-limit 4
 cargo run -p hesper -- demo --help
 ```
 
-Apple I Woz Monitor 交互（仅下载工具需要 Bun；请自行确认 ROM 使用权限，也可通过 `--rom` 提供已有的 256 字节、哈希匹配的 Woz Monitor 镜像）：
+Apple I Woz Monitor 交互（ROM 已内置，无需下载；`--rom` 可选，用于提供 256 字节、哈希匹配的本地镜像）：
 
 ```sh
-make wozmon                               # 下载并校验到 .cache/apple1/wozmon.bin
-cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin
+cargo run -p hesper -- apple1
 ```
 
-也可以先运行 `cargo run -p hesper`，在启动中心选择 Apple-1。配置页用方向键或 Tab / Shift+Tab 选择字段，Enter 进入编辑，再按 Enter 确认，Esc 放弃本次编辑；路径可按 F4 浏览。编辑时支持左右键、Home / End、Ctrl+U 清空和单行粘贴。完成后选择“校验并保存”或“启动”。TUI 配置只保存 ROM 路径和显示偏好，不保存机器内存或会话。
+也可以先运行 `cargo run -p hesper`，在启动中心选择 Apple-1 即可启动。ROM 字段留空使用内置镜像；已保存外部路径的用户可清空该字段并保存，切回内置镜像。配置页用方向键或 Tab / Shift+Tab 选择字段，Enter 进入编辑，再按 Enter 确认，Esc 放弃本次编辑；路径可按 F4 浏览。编辑时支持左右键、Home / End、Ctrl+U 清空和单行粘贴。完成后选择“校验并保存”或“启动”。TUI 配置只保存 ROM 路径和显示偏好，不保存机器内存或会话。
 
 配置页按 **F3** 打开程序列表，共 **42 个内置程序**，按 [The Apple-1 Software Library](https://apple1software.com/) 的四个分类（Games 游戏 / Fun 娱乐 / Programming 编程 / Utilities 工具）分组；列表上用 ↑↓ 移动、←→ 切换分类，下方详情栏给出该程序的载入范围、**启动命令**（如 `0300R`）、来源页与许可证，Enter 选中后配置页会显示同样的启动命令。也可选择本地二进制文件或不加载程序；预置选择仅在本次进程中保留。
 
@@ -82,16 +81,16 @@ cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin
 
 ```sh
 cargo run -p hesper -- apple1 --list-presets
-cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset basic-huston
-cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset hamurabi
+cargo run -p hesper -- apple1 --preset basic-huston
+cargo run -p hesper -- apple1 --preset hamurabi
 ```
 
-预置程序随可执行文件内置，无需保留原始下载文件；Woz Monitor ROM 仍由用户提供。**收录 42 个预置不代表全部兼容**：[逐项兼容性矩阵](crates/cli/assets/README.md#compatibility-matrix) 区分加载条件、局部运行证据和未验收功能。`little-tower` 需开启“扩展 RAM”（CLI：`--expansion-ram`），增加 `$1000–$1FFF` 的 4 KiB RAM；默认关闭时仍拒绝加载。`memory-test-1000-1fff` 在未开启时预期报告诊断错误。其余预置通过加载范围校验，不据此宣称功能兼容。
+预置程序随可执行文件内置，无需保留原始下载文件；Woz Monitor ROM 也随可执行文件内置。**收录 42 个预置不代表全部兼容**：[逐项兼容性矩阵](crates/cli/assets/README.md#compatibility-matrix) 区分加载条件、局部运行证据和未验收功能。`little-tower` 需开启“扩展 RAM”（CLI：`--expansion-ram`），增加 `$1000–$1FFF` 的 4 KiB RAM；默认关闭时仍拒绝加载。`memory-test-1000-1fff` 在未开启时预期报告诊断错误。其余预置通过加载范围校验，不据此宣称功能兼容。
 
 Little Tower 启动示例：
 
 ```sh
-cargo run --locked -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset little-tower --expansion-ram
+cargo run --locked -p hesper -- apple1 --preset little-tower --expansion-ram
 # 进入 Monitor 后输入 0300R，再按 1 开始游戏
 ```
 
@@ -156,16 +155,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 - Apple I 内存映射、PIA 握手、主板刷新、屏幕与 RESET 的原创程序回归
 - CLI 加载／诊断，以及 TUI 输入、布局、程序选择和会话生命周期回归
 
-`cargo test --workspace` 不包含验证脚本自身的回归、需要 Woz ROM 的 `#[ignore]` 测试和全量外部一致性。`tools/` 下 5 个脚本（3 个数据准备、Woz ROM 下载、Visual6502 重放驱动）的回归测试用 Bun 运行，冷缓存时会真实下载固定上游数据，因此不并入 `make verify`：
+`cargo test --workspace` 已包含真实 Woz Monitor 测试，不包含验证脚本自身的回归和全量外部一致性。`tools/` 下 4 个脚本（3 个数据准备、Visual6502 重放驱动）的回归测试用 Bun 运行，冷缓存时会真实下载固定上游数据，因此不并入 `make verify`：
 
 ```sh
 make tools-test        # 等价于 bun test tools/
 ```
 
-真实 Woz Monitor 联调单独显式运行，使用已有 ROM，不自动下载；缺文件或哈希不符会失败：
+真实 Woz Monitor 联调使用内置镜像，已纳入普通 workspace 测试，也可单独运行：
 
 ```sh
-make wozmon-tests ROM=.cache/apple1/wozmon.bin
+cargo test --locked -p hesper-apple1 --test wozmon
+cargo test --locked -p hesper --test apple1
 ```
 
 本地验证包括监控程序读写／执行、BASIC 算术与行号循环、部分预置启动和真实 PTY 交互。实际执行范围和结果见 [`docs/verification.md`](docs/verification.md) 的对应日期记录；普通测试通过不代表全部预置、全部硬件窗口或跨平台终端都已验收。
