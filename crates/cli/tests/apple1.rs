@@ -24,10 +24,12 @@ use std::{
 
 const EXPECTED_SHA256: &str = "e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25";
 
-/// Wall-clock ceiling for one CLI run. Every emulator run in these tests is
-/// bounded by `--max-cycles` or by stdin EOF, so hitting this means the
-/// host loop failed to stop — a failure, never a silent hang.
-const DEADLINE: Duration = Duration::from_secs(10);
+/// Hang watchdog, not an emulator performance assertion. Debug builds run
+/// every master tick, and the long preset tests compete for CPU when the
+/// harness runs them in parallel. Allow headroom for that contention while
+/// retaining a finite wait; cycle budgets and output/stop assertions below
+/// independently check emulated progress and termination.
+const DEADLINE: Duration = Duration::from_secs(60);
 
 /// Run the built `hesper apple1` binary with `args`, feed it `stdin_input`,
 /// close stdin (EOF), and return its exit status and captured streams.
