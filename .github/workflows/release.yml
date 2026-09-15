@@ -227,3 +227,36 @@ jobs:
           gh release upload "$RELEASE_TAG" dist/* --clobber
           gh release edit "$RELEASE_TAG" --draft=false --prerelease="$prerelease" \
             --title "Hesper $RELEASE_TAG" --notes-file notes/release-notes.md
+
+  pages:
+    needs: publish
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+      - name: Install stable Rust and Wasm build tools
+        run: |
+          rustup toolchain install stable --profile minimal
+          make wasm-setup
+      - name: Build web example
+        working-directory: examples/web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: examples/web/dist
+      - id: deployment
+        uses: actions/deploy-pages@v4

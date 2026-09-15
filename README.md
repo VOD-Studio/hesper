@@ -204,9 +204,9 @@ cargo test -p hesper-cpu6502 --test pins --release
 
 ## 版本与发布
 
-当前版本为 **0.2.0**，变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布见 [GitHub Releases](https://github.com/VOD-Studio/hesper/releases)。
+当前版本为 **0.2.1**，变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布见 [GitHub Releases](https://github.com/VOD-Studio/hesper/releases)。
 
-所有 Rust crate 使用统一版本，由根 `Cargo.toml` 的 `workspace.package.version` 管理；一次发布对应一个 `vX.Y.Z` tag 和一份 changelog。通过 GitHub Release 分发源码、CLI 和 Wasm，保留 `publish = false`，不发布到 crates.io；`examples/web` 是私有示例应用，随源码发布。
+所有 Rust crate 使用统一版本，由根 `Cargo.toml` 的 `workspace.package.version` 管理；一次发布对应一个 `vX.Y.Z` tag 和一份 changelog。通过 GitHub Release 分发源码、CLI 和 Wasm，保留 `publish = false`，不发布到 crates.io；`examples/web` 是私有示例应用，随源码发布，并在成功发布的 tag 后自动部署到 GitHub Pages。
 
 用户可见变更先记入 changelog 的 `Unreleased`，注明受影响的组件和兼容性变化。发布时更新 workspace 版本、`Cargo.lock` 和此处版本，将条目移入 `## [X.Y.Z] - YYYY-MM-DD` 小节，并更新底部版本链接。运行 `make verify`、`make full`、`make wasm-browser-test`，以及 Web 示例的 `bun run check` / `bun run build`，提交并推送后创建版本 tag：
 
@@ -216,7 +216,7 @@ git tag -a v0.2.1 -m 'Hesper v0.2.1'
 git push origin v0.2.1
 ```
 
-[`Release` 工作流](.github/workflows/release.yml) 接收 `v*` tag：先检查 tag 与 workspace 版本一致，且 changelog 有且仅有一段非空、带日期的对应版本说明；再运行常规检查、全量 CPU 一致性及平台构建。全部通过后上传完整产物并发布 Release，说明取自对应 changelog 小节，不包含 `Unreleased` 或其他版本。`vX.Y.Z-rc.N` 等预发布 tag 会标记为 prerelease。发布说明提取工具使用 Python 3.11+ 标准库，回归命令是 `python3 -m unittest discover -s tests/release`，已纳入常规 CI。
+[`Release` 工作流](.github/workflows/release.yml) 接收 `v*` tag：先检查 tag 与 workspace 版本一致，且 changelog 有且仅有一段非空、带日期的对应版本说明；再运行常规检查、全量 CPU 一致性及平台构建。全部通过后上传完整产物并发布 Release，随后构建 `examples/web` 并部署到 [GitHub Pages](https://vod-studio.github.io/hesper/)。说明取自对应 changelog 小节，不包含 `Unreleased` 或其他版本。`vX.Y.Z-rc.N` 等预发布 tag 会标记为 prerelease。发布说明提取工具使用 Python 3.11+ 标准库，回归命令是 `python3 -m unittest discover -s tests/release`，已纳入常规 CI。
 
 CLI 产物命名为 `hesper-vX.Y.Z-<Rust target>.<格式>`：
 

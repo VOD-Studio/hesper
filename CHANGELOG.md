@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-15
+
+- **Web example / GitHub Pages**：版本 tag 的 Release 成功发布后，自动构建并部署 `examples/web` 到 GitHub Pages。
+
 ## [0.2.0] - 2026-09-15
 
 首次带 tag 的仓库发布，汇总此前 `0.1.0` 开发阶段的现有能力；`0.1.0` 未创建正式 Release。
@@ -36,5 +40,6 @@
 - Apple I 与浏览器前端尚未完成整体验收；42 个预置并非全部验证兼容。原板字模逐点认证、电气特性、真实上电状态、磁带接口、扩展卡和完整机器存档仍不在已验收范围，Apple II 尚未实现。
 - 资源来源与许可证情况见[预置资源说明](https://github.com/VOD-Studio/hesper/blob/v0.2.0/crates/cli/assets/README.md)；硬件和验证范围见[路线图](https://github.com/VOD-Studio/hesper/blob/v0.2.0/docs/roadmap.md)与[验证记录](https://github.com/VOD-Studio/hesper/blob/v0.2.0/docs/verification.md)。
 
-[Unreleased]: https://github.com/VOD-Studio/hesper/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/VOD-Studio/hesper/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/VOD-Studio/hesper/releases/tag/v0.2.1
 [0.2.0]: https://github.com/VOD-Studio/hesper/releases/tag/v0.2.0
