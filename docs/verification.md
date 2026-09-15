@@ -1035,3 +1035,24 @@ WozMon 的 SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119d
 固定字模来源与 SHA-256 已记录，行 0、Q5..Q1 及代表字形按原厂图核对；全部 64 个字形与目标原板掩膜的独立逐点认证仍未完成。模拟视频电压、负载、TTL 传播／串扰、RC 容差和真实上电行为不在本次数字模型验收内。M3 整体验收保持未勾选；CPU 核心未改，未重跑完整 SingleStep／Klaus／Visual6502 外部层，未运行远程 CI。
 
 本轮按功能点本地提交，未 push。
+
+
+## 2026-09-15：可选 $1000–$1FFF 扩展 RAM
+
+- 默认仍为 `$0000–$0FFF` 与 `$E000–$EFFF` 两组 4 KiB RAM。`--expansion-ram`
+  或 TUI 启动配置的“扩展 RAM”开关增加 `$1000–$1FFF`，总计 12 KiB；允许加载块跨越
+  `$0FFF/$1000`，但不能越过 `$1FFF`、进入 I/O／ROM 或跨越未映射区域。
+- TUI 支持 Tab、Enter／空格和鼠标切换；校验保存／启动保存 `[apple1].expansion_ram`。
+  CLI 的显式开关覆盖保存的 TUI 偏好，`--no-expansion-ram` 强制关闭；脚本模式不读个人配置。
+  RESET 保留扩展 RAM；重新上电使用已确认资源的 RAM 配置，清空 RAM 后重载程序，保留原会话预算。
+- 加载先检查所有块，目标机器配置不匹配时不写入任何块。默认映射的既有测试仍通过；新增边界、
+  高低 RAM 独立性、失败原子性、旧配置默认关闭、保存往返、TUI 操作及 RESET／重启回归。
+- 本地 `make verify`（格式、check、debug／release 工作区测试、Clippy、demo、diff）通过。
+  `make wozmon-tests` 的 4 项机器测试和 17 项 CLI 测试通过，包含 Little Tower 标题／菜单及显式关闭扩展后的拒绝加载。
+- 真实 PTY 在 44×30、80×30、120×40、180×50 验证开关与程序选择器提示；120×40 执行
+  `0300R`、`1`、`S`，从森林进入湖岸。CLI 在 20000000 周期预算内执行
+  `0300R`、`1`、`LOOK`、`S`、`LOOK`，输出相应场景并以 `[stopped]` 结束。
+- 扩展 RAM 诊断：`printf '0280R\n\n' | target/release/hesper apple1 --rom .cache/apple1/wozmon.bin --preset memory-test-1000-1fff --expansion-ram --max-cycles 8000000`
+  输出 `PASS 01` 后到达指定预算。额外换行沿用既有诊断的批处理策略，防止无输出阶段提前遇到 EOF。
+- 本次实现的是明确的 RAM 地址映射，没有增加具体扩展卡的电气／刷新电路模型；未改 CPU 周期或板级时钟。
+  Little Tower 双词命令、物品交互和完整通关仍未验收；上述结果不扩展为全预置兼容性或远端 CI 通过声明。

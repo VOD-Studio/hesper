@@ -74,7 +74,16 @@ cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset basic-hust
 cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset hamurabi
 ```
 
-预置程序随可执行文件内置，无需保留原始下载文件；Woz Monitor ROM 仍由用户提供。**收录 42 个预置不代表全部兼容**：[逐项兼容性矩阵](crates/cli/assets/README.md#compatibility-matrix) 区分加载条件、局部运行证据和未验收功能。`little-tower` 缺少 `$1000–$1FFF` RAM，明确拒绝加载；`memory-test-1000-1fff` 能加载，但检测目标 RAM 未建模，预期报告诊断错误。其余预置通过加载范围校验，不据此宣称功能兼容。
+预置程序随可执行文件内置，无需保留原始下载文件；Woz Monitor ROM 仍由用户提供。**收录 42 个预置不代表全部兼容**：[逐项兼容性矩阵](crates/cli/assets/README.md#compatibility-matrix) 区分加载条件、局部运行证据和未验收功能。`little-tower` 需开启“扩展 RAM”（CLI：`--expansion-ram`），增加 `$1000–$1FFF` 的 4 KiB RAM；默认关闭时仍拒绝加载。`memory-test-1000-1fff` 在未开启时预期报告诊断错误。其余预置通过加载范围校验，不据此宣称功能兼容。
+
+Little Tower 启动示例：
+
+```sh
+cargo run --locked -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset little-tower --expansion-ram
+# 进入 Monitor 后输入 0300R，再按 1 开始游戏
+```
+
+TUI 启动配置中可用鼠标或 Tab 选中“扩展 RAM”，按 Enter／空格切换；“校验并保存”或“启动”会保存到配置文件 `[apple1]` 下的 `expansion_ram = true`。`--no-expansion-ram` 可覆盖 TUI 保存的设置；脚本模式只使用命令行参数，默认关闭。
 
 镜像来源、逐文件 SHA-256、启动命令与许可证说明见 [`预置资源说明`](crates/cli/assets/README.md)。其中 8 个来源页面声明了许可证，34 个未声明；公开下载、记录来源和哈希不等于再分发授权已明确。
 

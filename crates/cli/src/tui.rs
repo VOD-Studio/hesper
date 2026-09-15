@@ -55,6 +55,8 @@ pub struct Apple1Launch {
     pub program: Option<PathBuf>,
     pub preset: Option<&'static ProgramPreset>,
     pub program_address: u16,
+    /// Explicit CLI override; otherwise use the saved TUI preference.
+    pub expansion_ram: Option<bool>,
     pub max_cycles: Option<u64>,
     pub trace: bool,
     pub bus_trace: bool,
@@ -71,6 +73,7 @@ impl Default for Apple1Launch {
             program: None,
             preset: None,
             program_address: 0,
+            expansion_ram: None,
             max_cycles: None,
             trace: false,
             bus_trace: false,
@@ -172,6 +175,7 @@ enum ConfigFocus {
     Rom,
     Program,
     ProgramAddress,
+    ExpansionRam,
     Validate,
     Launch,
     Cancel,
@@ -183,6 +187,7 @@ impl ConfigFocus {
             Self::Rom,
             Self::Program,
             Self::ProgramAddress,
+            Self::ExpansionRam,
             Self::Validate,
             Self::Launch,
             Self::Cancel,
@@ -231,6 +236,7 @@ struct ConfigForm {
     rom: String,
     program: String,
     program_address: String,
+    expansion_ram: bool,
     preset: Option<&'static ProgramPreset>,
     focus: ConfigFocus,
     edit: Option<ConfigEdit>,
@@ -253,6 +259,7 @@ struct Resources {
     rom: [u8; 256],
     program: Option<ProgramImage>,
     rom_path: PathBuf,
+    expansion_ram: bool,
     preset: Option<&'static ProgramPreset>,
 }
 
@@ -329,6 +336,7 @@ impl App {
             .map_or_else(String::new, |path| path.display().to_string());
         let selected_machine = usize::from(config.last_selected == "demo");
         let direct = launch.direct;
+        let expansion_ram = launch.expansion_ram.unwrap_or(config.apple1.expansion_ram);
         Self {
             page: if direct { Page::Config } else { Page::Center },
             page_history: Vec::new(),
@@ -344,6 +352,7 @@ impl App {
                 rom,
                 program,
                 program_address: format!("0x{:04X}", launch.program_address),
+                expansion_ram,
                 preset: launch.preset,
                 focus: ConfigFocus::Program,
                 edit: None,
@@ -440,7 +449,11 @@ impl App {
             }
         };
         let program = source
-            .map(|source| source.load().map_err(|error| error.to_string()))
+            .map(|source| {
+                source
+                    .load(self.form.expansion_ram)
+                    .map_err(|error| error.to_string())
+            })
             .transpose()?;
         let absolute_rom = fs::canonicalize(&rom_path)
             .map_err(|error| format!("无法规范化 ROM 路径 '{}': {error}", rom_path.display()))?;
@@ -448,6 +461,7 @@ impl App {
             rom,
             program,
             rom_path: absolute_rom,
+            expansion_ram: self.form.expansion_ram,
             preset: self.form.preset,
         })
     }
@@ -476,8 +490,9 @@ impl App {
 
     fn save_rom_path(&mut self, resources: &Resources) {
         self.config.apple1.rom_path = Some(resources.rom_path.clone());
+        self.config.apple1.expansion_ram = resources.expansion_ram;
         self.form.status = Some(match self.save_config() {
-            Ok(()) => "ROM 已校验，路径已保存".into(),
+            Ok(()) => "ROM 已校验，配置已保存".into(),
             Err(error) => format!("配置未保存：{error}"),
         });
         self.dirty = true;
@@ -519,7 +534,11 @@ impl App {
                 return;
             }
         };
-        let machine = match create_machine(&resources.rom, resources.program.as_ref()) {
+        let machine = match create_machine(
+            &resources.rom,
+            resources.program.as_ref(),
+            resources.expansion_ram,
+        ) {
             Ok(machine) => machine,
             Err(error) => {
                 self.form.status = Some(error.to_string());
@@ -606,7 +625,11 @@ impl App {
         let (Some(resources), Some(session)) = (&self.resources, &mut self.session) else {
             return;
         };
-        let machine = match create_machine(&resources.rom, resources.program.as_ref()) {
+        let machine = match create_machine(
+            &resources.rom,
+            resources.program.as_ref(),
+            resources.expansion_ram,
+        ) {
             Ok(machine) => machine,
             Err(error) => {
                 self.error(format!("无法重新上电：{error}"));
@@ -1231,6 +1254,9 @@ impl App {
                     _ => self.form.focus.adjacent(false),
                 };
             }
+            KeyCode::Char(' ') if self.form.focus == ConfigFocus::ExpansionRam => {
+                self.activate_config_focus(self.form.focus);
+            }
             KeyCode::Enter => self.activate_config_focus(self.form.focus),
             _ => {}
         }
@@ -1252,6 +1278,10 @@ impl App {
             ConfigFocus::Program => self.open_programs(),
             ConfigFocus::ProgramAddress if self.form.preset.is_some() => {
                 self.form.status = Some("预置程序使用固定加载地址；按 F3 可切换为本地文件".into());
+            }
+            ConfigFocus::ExpansionRam => {
+                self.form.expansion_ram = !self.form.expansion_ram;
+                self.form.status = None;
             }
             ConfigFocus::Validate => {
                 let _ = self.validate_and_save();
@@ -1661,7 +1691,7 @@ impl App {
             rows[4],
         );
         if let Some(overlay) = &mut self.overlay {
-            draw_overlay(frame, rows[2], overlay, &theme);
+            draw_overlay(frame, rows[2], overlay, &theme, self.form.expansion_ram);
         }
         self.dirty = false;
     }
@@ -1877,6 +1907,8 @@ fn footer(app: &App, width: u16, theme: &Theme) -> Line<'static> {
                                 && app.form.preset.is_some()
                             {
                                 "查看"
+                            } else if app.form.focus == ConfigFocus::ExpansionRam {
+                                "切换"
                             } else if field {
                                 "编辑"
                             } else {
@@ -2537,7 +2569,7 @@ fn edit_view(edit: &ConfigEdit, width: u16) -> (&str, u16) {
 struct ConfigLayout {
     card: Rect,
     rows: [Rect; 7],
-    fields: [(ConfigFocus, Rect); 3],
+    fields: [(ConfigFocus, Rect); 4],
     buttons: [(ConfigFocus, Rect); 3],
 }
 
@@ -2567,6 +2599,10 @@ fn config_layout(area: Rect) -> ConfigLayout {
         (ConfigFocus::Rom, rows[1]),
         (ConfigFocus::Program, rows[2]),
         (ConfigFocus::ProgramAddress, rows[3]),
+        (
+            ConfigFocus::ExpansionRam,
+            Rect::new(rows[4].x, rows[4].y, rows[4].width, 1),
+        ),
     ];
     let button_cols = Layout::horizontal([
         Constraint::Length(14),
@@ -2611,6 +2647,22 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             Span::styled("  /  启动资源", theme.muted()),
         ])),
         layout.rows[0],
+    );
+    let expansion_style = if app.form.focus == ConfigFocus::ExpansionRam {
+        theme.selected()
+    } else if app.config_hover == Some(ConfigFocus::ExpansionRam) {
+        theme.hover()
+    } else {
+        theme.text()
+    };
+    frame.render_widget(
+        Paragraph::new(if app.form.expansion_ram {
+            "[x] 扩展 RAM $1000–$1FFF"
+        } else {
+            "[ ] 扩展 RAM $1000–$1FFF"
+        })
+        .style(expansion_style),
+        layout.fields[3].1,
     );
     for (index, (focus, label, value, placeholder, hint)) in [
         (
@@ -2706,7 +2758,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .unwrap_or(if app.form.edit.is_some() {
             "Enter 确认修改，Esc 放弃本次编辑。"
         } else {
-            "Enter 选择程序；其他字段 Enter 编辑；F4 浏览路径。"
+            "Enter 编辑或切换；F3 选程序；F4 浏览路径。"
         });
     frame.render_widget(
         Paragraph::new(status)
@@ -2716,7 +2768,12 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
                 theme.muted()
             })
             .wrap(Wrap { trim: false }),
-        layout.rows[4],
+        Rect::new(
+            layout.rows[4].x,
+            layout.rows[4].y + 1,
+            layout.rows[4].width,
+            layout.rows[4].height.saturating_sub(1),
+        ),
     );
     for ((focus, rect), label) in layout
         .buttons
@@ -2762,7 +2819,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_info(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let text = "Apple-1 固定机器配置\n\n$0000–$0FFF：4 KiB RAM\n$E000–$EFFF：4 KiB RAM（可加载 BASIC）\n$D010–$D013 及硬件别名：MC6821 PIA（键盘与显示）\n$FF00–$FFFF：256 B Woz Monitor ROM\n\n当前模型驱动 NMOS 6502、PIA 与 40×24 字符显示。DRAM 刷新与显示忙时序按仓库已有近似建模；不宣称 Apple II、非官方 opcode 或所有板卡修订的兼容性。";
+    let text = "Apple-1 内存与设备\n\n$1000–$1FFF：可选 4 KiB 扩展 RAM\n$0000–$0FFF：4 KiB RAM\n$E000–$EFFF：4 KiB RAM（可加载 BASIC）\n$D010–$D013 及硬件别名：MC6821 PIA（键盘与显示）\n$FF00–$FFFF：256 B Woz Monitor ROM\n\n当前模型驱动 NMOS 6502、PIA 与 40×24 字符显示。DRAM 刷新与显示忙时序按仓库已有近似建模；不宣称 Apple II、非官方 opcode 或所有板卡修订的兼容性。";
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("模拟器信息"))
@@ -2929,7 +2986,13 @@ fn picker_items(theme: &Theme) -> Vec<ListItem<'static>> {
     items
 }
 
-fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme: &Theme) {
+fn draw_overlay(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    overlay: &mut Overlay,
+    theme: &Theme,
+    expansion_ram: bool,
+) {
     let popup = if let Overlay::Menu { kind, .. } = overlay {
         menu_popup(frame.area(), *kind)
     } else {
@@ -3010,7 +3073,10 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
                             theme.muted(),
                         )),
                         Line::from(Span::styled(preset.startup, theme.status())),
-                        Line::from(Span::styled(preset.compatibility_note(), theme.status())),
+                        Line::from(Span::styled(
+                            preset.compatibility_note_for(expansion_ram),
+                            theme.status(),
+                        )),
                         Line::from(Span::styled(
                             format!("{} · {}", preset.source, preset.license_label()),
                             theme.muted(),
@@ -3280,8 +3346,76 @@ mod tests {
             rom: test_rom(),
             program: Some(ProgramImage::single(0, vec![0x4c, 0x00, 0x00]).unwrap()),
             rom_path: PathBuf::from(path),
+            expansion_ram: false,
             preset: None,
         }
+    }
+
+    #[test]
+    fn expansion_toggle_supports_keyboard_mouse_and_narrow_layout() {
+        for (width, height) in [(44, 30), (80, 30), (120, 40), (180, 50)] {
+            let mut app = App::new(Some(Apple1Launch {
+                expansion_ram: Some(false),
+                ..Apple1Launch::default()
+            }));
+            app.config.ui.mouse = true;
+            app.page = Page::Config;
+            app.terminal_size = (width, height);
+            app.form.focus = ConfigFocus::ProgramAddress;
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            assert_eq!(app.form.focus, ConfigFocus::ExpansionRam);
+            app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+            assert!(app.form.expansion_ram);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text = buffer_text(terminal.backend().buffer());
+            assert!(
+                text.replace(' ', "").contains("[x]扩展RAM$1000–$1FFF"),
+                "{text}"
+            );
+            let area = Rect::new(0, 0, width, height);
+            let rect = config_layout(page_area(area)).fields[3].1;
+            app.config_mouse(area, Position::new(rect.x, rect.y));
+            assert!(!app.form.expansion_ram);
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(app.form.expansion_ram);
+            app.form.preset = ProgramPreset::find("little-tower");
+            app.open_programs();
+            let rendered = terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text = buffer_text(rendered.buffer);
+            assert!(text.replace(' ', "").contains("扩展RAM已开启"), "{text}");
+        }
+    }
+
+    #[test]
+    fn expansion_survives_reset_and_reboot_uses_confirmed_resources() {
+        let mut app = App::new(None);
+        app.config_path = None;
+        app.terminal_size = (120, 40);
+        let mut resources = resources("/test/rom.bin");
+        resources.expansion_ram = true;
+        app.start_resources(resources, true);
+        assert!(app.config.apple1.expansion_ram);
+        app.session
+            .as_mut()
+            .unwrap()
+            .machine_mut()
+            .bus_mut()
+            .load_ram(0x1000, &[0xAB])
+            .unwrap();
+        app.reset();
+        assert_eq!(
+            app.session.as_ref().unwrap().machine().bus().ram_slice()[0x1000],
+            0xAB
+        );
+        app.form.expansion_ram = false;
+        app.reboot();
+        let bus = app.session.as_ref().unwrap().machine().bus();
+        assert!(
+            bus.expansion_ram(),
+            "draft changes must not change an existing session"
+        );
+        assert_eq!(bus.ram_slice()[0x1000], 0);
     }
 
     #[test]
@@ -3405,7 +3539,7 @@ mod tests {
         }));
         app.config_path = None;
         assert_eq!(app.form.preset, Some(preset));
-        let image = ProgramSource::Preset(preset).load().unwrap();
+        let image = ProgramSource::Preset(preset).load(false).unwrap();
         let mut resources = resources("/unused/rom.bin");
         resources.rom[..3].copy_from_slice(&[0x4C, 0x00, 0xFF]); // JMP $FF00
         resources.rom[0xFC..0xFE].copy_from_slice(&0xFF00u16.to_le_bytes());
@@ -3697,6 +3831,7 @@ mod tests {
         assert_eq!(app.form.program_address, "0xE000");
         assert_eq!(app.form.focus, ConfigFocus::ProgramAddress);
         for expected in [
+            ConfigFocus::ExpansionRam,
             ConfigFocus::Validate,
             ConfigFocus::Launch,
             ConfigFocus::Cancel,
@@ -4380,7 +4515,12 @@ mod tests {
         let resources = resources("/original/rom.bin");
         app.config.apple1.rom_path = Some(resources.rom_path.clone());
         let mut session = Session::new(
-            create_machine(&resources.rom, resources.program.as_ref()).unwrap(),
+            create_machine(
+                &resources.rom,
+                resources.program.as_ref(),
+                resources.expansion_ram,
+            )
+            .unwrap(),
             Some(budget),
             TraceOptions::new(false, true, 64).unwrap(),
         );
@@ -4966,6 +5106,7 @@ mod tests {
             create_machine(
                 &test_rom(),
                 Some(&ProgramImage::single(0, vec![0x4c, 0x00, 0x00]).unwrap()),
+                false,
             )
             .unwrap(),
             None,

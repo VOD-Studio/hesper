@@ -1,10 +1,11 @@
-//! Apple I machine Bus: two 4 KiB RAM banks, 256-byte ROM, and MC6821 PIA.
+//! Apple I bus: 8 KiB RAM, optional 4 KiB expansion, ROM, and MC6821 PIA.
 //!
 //! ## Address map
 //!
 //! | Range             | Device            |
 //! |-------------------|-------------------|
 //! | `$0000–$0FFF`     | 4 KiB RAM         |
+//! | `$1000–$1FFF`   | optional 4 KiB RAM |
 //! | `$Dxxx` with A4=1 | MC6821 PIA, register selected by A1/A0 |
 //! | `$E000–$EFFF`     | 4 KiB RAM         |
 //! | `$FF00–$FFFF`     | 256-byte Woz Monitor ROM |
@@ -29,7 +30,8 @@ use crate::pia::Pia6821;
 /// Apple I machine bus.
 #[derive(Debug)]
 pub struct Apple1Bus {
-    ram: [u8; Self::RAM_SIZE],
+    ram: Vec<u8>,
+    expansion_ram: bool,
     rom: [u8; Self::ROM_SIZE],
     pia: Pia6821,
     last_read: u8,
@@ -50,17 +52,24 @@ impl fmt::Display for RomSizeError {
 
 impl std::error::Error for RomSizeError {}
 
-/// Error returned when a host RAM load does not fit entirely inside
-/// one of the Apple I's 4 KiB RAM banks (`$0000–$0FFF`, `$E000–$EFFF`).
-/// A load cannot cross a bank boundary or an unmapped region.
+/// A host load does not fit within a contiguous installed RAM region.
+/// The optional expansion joins low RAM into $0000–$1FFF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RamLoadError {
     pub start: u16,
     pub len: usize,
+    pub expansion_ram: bool,
 }
 
 impl fmt::Display for RamLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.expansion_ram {
+            return write!(
+                f,
+                "cannot load {} bytes at ${:04X}: must fit within installed Apple I RAM ($0000–$1FFF or $E000–$EFFF)",
+                self.len, self.start
+            );
+        }
         write!(
             f,
             "cannot load {} bytes at ${:04X}: must fit within one Apple I RAM bank ($0000–$0FFF or $E000–$EFFF)",
@@ -73,6 +82,7 @@ impl std::error::Error for RamLoadError {}
 
 impl Apple1Bus {
     pub const RAM_BANK_SIZE: usize = 4 * 1024;
+    /// Default RAM capacity; expansion adds another RAM_BANK_SIZE bytes.
     pub const RAM_SIZE: usize = 2 * Self::RAM_BANK_SIZE;
     pub const HIGH_RAM_BASE: u16 = 0xE000;
     pub const ROM_SIZE: usize = 256;
@@ -84,6 +94,12 @@ impl Apple1Bus {
     /// RAM is zero‑filled.  The PIA is in its reset state (all registers zero,
     /// interrupts disabled).
     pub fn new(rom: &[u8]) -> Result<Self, RomSizeError> {
+        Self::with_expansion_ram(rom, false)
+    }
+
+    /// Create a bus with optional 4 KiB expansion RAM at $1000–$1FFF.
+    /// This is an address-map option, not an electrical expansion-card model.
+    pub fn with_expansion_ram(rom: &[u8], expansion_ram: bool) -> Result<Self, RomSizeError> {
         if rom.len() != Self::ROM_SIZE {
             return Err(RomSizeError {
                 expected: Self::ROM_SIZE,
@@ -96,7 +112,8 @@ impl Apple1Bus {
         // The board ties PA7 to +5V even before the keyboard presents a byte.
         pia.set_port_a_inputs(0x80);
         Ok(Self {
-            ram: [0u8; Self::RAM_SIZE],
+            ram: vec![0; Self::low_ram_size(expansion_ram) + Self::RAM_BANK_SIZE],
+            expansion_ram,
             rom: bytes,
             pia,
             last_read: 0,
@@ -104,39 +121,66 @@ impl Apple1Bus {
     }
 
     /// Host load into RAM (non‑wrapping, transactional).  Returns an error
-    /// if the start address is outside RAM or the region does not fit
-    /// entirely within one 4 KiB bank; nothing is copied on error.
-    /// Empty loads at a bank's exclusive end ($1000 or $F000) are allowed.
+    /// unless the entire region is installed contiguous RAM. Nothing is copied
+    /// on error. Empty loads at a region's exclusive end are allowed.
     pub fn load_ram(&mut self, start: u16, bytes: &[u8]) -> Result<(), RamLoadError> {
-        let range = Self::ram_range(start, bytes.len())?;
+        let range = Self::ram_range(start, bytes.len(), self.expansion_ram)?;
         self.ram[range].copy_from_slice(bytes);
         Ok(())
     }
 
     /// Validate a host load before creating a machine or changing memory.
     pub fn validate_ram_load(start: u16, len: usize) -> Result<(), RamLoadError> {
-        Self::ram_range(start, len).map(|_| ())
+        Self::validate_ram_load_with_expansion(start, len, false)
     }
 
-    fn ram_range(start: u16, len: usize) -> Result<Range<usize>, RamLoadError> {
-        let error = RamLoadError { start, len };
-        let (bank, offset) = match start {
-            0x0000..=0x1000 => (0, usize::from(start)),
-            0xE000..=0xF000 => (
-                Self::RAM_BANK_SIZE,
-                usize::from(start - Self::HIGH_RAM_BASE),
-            ),
-            _ => return Err(error),
+    /// Validate against the selected RAM mapping without mutating a machine.
+    pub fn validate_ram_load_with_expansion(
+        start: u16,
+        len: usize,
+        expansion_ram: bool,
+    ) -> Result<(), RamLoadError> {
+        Self::ram_range(start, len, expansion_ram).map(|_| ())
+    }
+
+    /// Whether RAM at $1000–$1FFF is installed.
+    pub fn expansion_ram(&self) -> bool {
+        self.expansion_ram
+    }
+
+    fn low_ram_size(expansion_ram: bool) -> usize {
+        Self::RAM_BANK_SIZE * if expansion_ram { 2 } else { 1 }
+    }
+
+    fn ram_range(
+        start: u16,
+        len: usize,
+        expansion_ram: bool,
+    ) -> Result<Range<usize>, RamLoadError> {
+        let error = RamLoadError {
+            start,
+            len,
+            expansion_ram,
         };
-        if len > Self::RAM_BANK_SIZE - offset {
+        let low_size = Self::low_ram_size(expansion_ram);
+        let address = usize::from(start);
+        let (begin, available) = if address <= low_size {
+            (address, low_size - address)
+        } else if (Self::HIGH_RAM_BASE..=0xF000).contains(&start) {
+            let offset = usize::from(start - Self::HIGH_RAM_BASE);
+            (low_size + offset, Self::RAM_BANK_SIZE - offset)
+        } else {
+            return Err(error);
+        };
+        if len > available {
             return Err(error);
         }
-        let begin = bank + offset;
         Ok(begin..begin + len)
     }
 
-    /// Side-effect-free host inspection of both packed RAM banks: the first
-    /// 4 KiB corresponds to $0000–$0FFF, the second to $E000–$EFFF.
+    /// Side-effect-free host inspection of packed low and high RAM: the first
+    /// 4 KiB (8 KiB with expansion) corresponds to low RAM, followed by
+    /// 4 KiB at $E000–$EFFF.
     /// Slice indices are not CPU addresses for the second bank.
     pub fn ram_slice(&self) -> &[u8] {
         &self.ram
@@ -158,12 +202,13 @@ impl Apple1Bus {
     }
 
     /// Decode an address to determine which device handles it.
-    fn decode(addr: u16) -> Device {
+    fn decode(&self, addr: u16) -> Device {
         match addr {
             0x0000..=0x0FFF => Device::Ram(usize::from(addr)),
-            0xE000..=0xEFFF => {
-                Device::Ram(Self::RAM_BANK_SIZE + usize::from(addr - Self::HIGH_RAM_BASE))
-            }
+            0x1000..=0x1FFF if self.expansion_ram => Device::Ram(usize::from(addr)),
+            0xE000..=0xEFFF => Device::Ram(
+                Self::low_ram_size(self.expansion_ram) + usize::from(addr - Self::HIGH_RAM_BASE),
+            ),
             _ if addr & 0xF010 == Self::PIA_BASE => Device::Pia,
             0xFF00..=0xFFFF => Device::Rom,
             _ => Device::Open,
@@ -181,7 +226,7 @@ enum Device {
 
 impl Bus for Apple1Bus {
     fn read(&mut self, addr: u16) -> u8 {
-        let value = match Self::decode(addr) {
+        let value = match self.decode(addr) {
             Device::Ram(offset) => self.ram[offset],
             Device::Rom => self.rom[usize::from(addr - Self::ROM_BASE)],
             Device::Pia => self.pia.read(addr),
@@ -193,7 +238,7 @@ impl Bus for Apple1Bus {
 
     fn write(&mut self, addr: u16, value: u8) {
         self.last_read = value;
-        match Self::decode(addr) {
+        match self.decode(addr) {
             Device::Ram(offset) => self.ram[offset] = value,
             Device::Rom => { /* ROM is read‑only */ }
             Device::Pia => self.pia.write(addr, value),
@@ -292,6 +337,52 @@ mod tests {
     }
 
     #[test]
+    fn expansion_maps_contiguous_low_ram_without_aliasing_high_ram() {
+        let mut bus = Apple1Bus::with_expansion_ram(&dummy_rom(), true).unwrap();
+        assert!(bus.expansion_ram());
+        bus.load_ram(0x0FFF, &[0x12, 0x34]).unwrap();
+        bus.write(0x1FFF, 0x56);
+        bus.write(0xE000, 0x78);
+        bus.write(0xEFFF, 0x9A);
+        for (address, value) in [
+            (0x0FFF, 0x12),
+            (0x1000, 0x34),
+            (0x1FFF, 0x56),
+            (0xE000, 0x78),
+            (0xEFFF, 0x9A),
+        ] {
+            assert_eq!(bus.read(address), value);
+        }
+        let before = bus.ram_slice().to_vec();
+        for (start, len) in [
+            (0x1FFF, 2),
+            (0x2000, 1),
+            (0x2001, 0),
+            (0xD010, 1),
+            (0xEFFF, 2),
+            (0xFFFF, 2),
+            (0, usize::MAX),
+        ] {
+            assert!(Apple1Bus::validate_ram_load_with_expansion(start, len, true).is_err());
+        }
+        assert!(bus.load_ram(0x1FFF, &[0xFF; 2]).is_err());
+        bus.load_ram(0x2000, &[]).unwrap();
+        bus.write(0x2000, 0xCC);
+        bus.write(0xFF00, 0xCC);
+        assert_eq!(bus.read(0xFF00), 0xD8);
+        assert_eq!(
+            bus.read(0x2000),
+            0xD8,
+            "unmapped addresses still read open bus"
+        );
+        assert_eq!(bus.ram_slice(), before);
+        let mut default_bus = Apple1Bus::new(&dummy_rom()).unwrap();
+        assert!(!default_bus.expansion_ram());
+        assert!(default_bus.load_ram(0x0FFF, &[0x12, 0x34]).is_err());
+        assert!(default_bus.load_ram(0x1000, &[0x34]).is_err());
+    }
+
+    #[test]
     fn load_ram_ok_and_error() {
         let mut bus = Apple1Bus::new(&dummy_rom()).unwrap();
         bus.load_ram(0x0FF0, &[0xAA; 16]).unwrap();
@@ -317,7 +408,8 @@ mod tests {
             err,
             RamLoadError {
                 start: 0x0FFF,
-                len: 2
+                len: 2,
+                expansion_ram: false,
             }
         );
         assert_eq!(
@@ -337,9 +429,23 @@ mod tests {
 
         for start in [0x1001u16, 0xFFFF] {
             let err = bus.load_ram(start, &[]).unwrap_err();
-            assert_eq!(err, RamLoadError { start, len: 0 });
+            assert_eq!(
+                err,
+                RamLoadError {
+                    start,
+                    len: 0,
+                    expansion_ram: false
+                }
+            );
             let err = bus.load_ram(start, &[0x99]).unwrap_err();
-            assert_eq!(err, RamLoadError { start, len: 1 });
+            assert_eq!(
+                err,
+                RamLoadError {
+                    start,
+                    len: 1,
+                    expansion_ram: false
+                }
+            );
         }
         assert_eq!(bus.ram_slice(), &[0u8; Apple1Bus::RAM_SIZE]);
     }
@@ -349,6 +455,7 @@ mod tests {
         let err = RamLoadError {
             start: 0x0FFE,
             len: 4,
+            expansion_ram: false,
         };
         assert_eq!(
             err.to_string(),
@@ -401,7 +508,11 @@ mod tests {
         ] {
             assert_eq!(
                 bus.load_ram(start, &vec![0xFF; len]),
-                Err(RamLoadError { start, len })
+                Err(RamLoadError {
+                    start,
+                    len,
+                    expansion_ram: false
+                })
             );
             assert_eq!(bus.ram_slice(), before);
         }

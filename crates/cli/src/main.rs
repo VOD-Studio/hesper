@@ -50,7 +50,9 @@ Options:
   --list-presets         List every bundled program: category, id, size, load
                         ranges, start command, source page and licence
   --program-address <N>  Load address: decimal, 0xHEX, or '$HEX' (default: 0)
-                        Entire file must fit in $0000–$0FFF or $E000–$EFFF
+                        Entire file must fit in installed contiguous RAM
+  --expansion-ram        Add 4 KiB RAM at $1000–$1FFF (default: off)
+  --no-expansion-ram     Disable expansion RAM, overriding saved TUI settings
   --max-cycles <N>       Maximum total CPU cycles before the emulator exits
   --trace                Enable instruction trace
   --bus-trace            Enable bus-level trace
@@ -143,6 +145,7 @@ fn parse_apple1(
         ..Apple1Launch::default()
     };
     let mut program_address_set = false;
+    let mut list_presets = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--rom" => {
@@ -162,36 +165,7 @@ fn parse_apple1(
                         .ok_or_else(|| format!("unknown preset: {id}; use --list-presets"))?,
                 );
             }
-            "--list-presets" => {
-                println!(
-                    "{} bundled Apple-1 programs from https://apple1software.com/ (downloaded 2026-09-14); use --preset <id>",
-                    APPLE1_PRESETS.len()
-                );
-                println!("Compatibility matrix: crates/cli/assets/README.md#compatibility-matrix");
-                for category in Category::ALL {
-                    println!("\n{}", category.label());
-                    for preset in ProgramPreset::in_category(category) {
-                        println!(
-                            "  {:<24} {} - {}, {} - {} bytes - {} - start: {}",
-                            preset.id,
-                            preset.name,
-                            preset.author,
-                            preset.year,
-                            preset.size(),
-                            preset.ranges(),
-                            preset.startup
-                        );
-                        println!(
-                            "  {:<30} {} - {}",
-                            "",
-                            preset.source,
-                            preset.license_label(),
-                        );
-                        println!("  {}", preset.compatibility_note());
-                    }
-                }
-                return Ok(None);
-            }
+            "--list-presets" => list_presets = true,
             "--program-address" => {
                 program_address_set = true;
                 launch.program_address = parse_program_address(
@@ -219,6 +193,8 @@ fn parse_apple1(
                     return Err("--trace-limit requires 1..4096".into());
                 }
             }
+            "--expansion-ram" => launch.expansion_ram = Some(true),
+            "--no-expansion-ram" => launch.expansion_ram = Some(false),
             "--trace" => launch.trace = true,
             "--bus-trace" => launch.bus_trace = true,
             "--help" | "-h" => {
@@ -227,6 +203,39 @@ fn parse_apple1(
             }
             _ => return Err(format!("unknown apple1 argument: {arg}; use 'apple1 --help'").into()),
         }
+    }
+    if list_presets {
+        println!(
+            "{} bundled Apple-1 programs from https://apple1software.com/ (downloaded 2026-09-14); use --preset <id>",
+            APPLE1_PRESETS.len()
+        );
+        println!("Compatibility matrix: crates/cli/assets/README.md#compatibility-matrix");
+        for category in Category::ALL {
+            println!("\n{}", category.label());
+            for preset in ProgramPreset::in_category(category) {
+                println!(
+                    "  {:<24} {} - {}, {} - {} bytes - {} - start: {}",
+                    preset.id,
+                    preset.name,
+                    preset.author,
+                    preset.year,
+                    preset.size(),
+                    preset.ranges(),
+                    preset.startup
+                );
+                println!(
+                    "  {:<30} {} - {}",
+                    "",
+                    preset.source,
+                    preset.license_label(),
+                );
+                println!(
+                    "  {}",
+                    preset.compatibility_note_for(launch.expansion_ram.unwrap_or(false))
+                );
+            }
+        }
+        return Ok(None);
     }
     if launch.preset.is_some() && (launch.program.is_some() || program_address_set) {
         return Err("--preset cannot be combined with --program or --program-address".into());
@@ -276,6 +285,7 @@ fn run_apple1_subcommand(args: impl Iterator<Item = String>) -> Result<(), Box<d
         launch.trace,
         launch.bus_trace,
         launch.trace_limit,
+        launch.expansion_ram.unwrap_or(false),
     )
 }
 

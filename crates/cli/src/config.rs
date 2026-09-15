@@ -64,6 +64,7 @@ impl Default for UiConfig {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Apple1Config {
     pub rom_path: Option<PathBuf>,
+    pub expansion_ram: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,11 +168,22 @@ mod tests {
     }
 
     #[test]
+    fn expansion_is_off_in_older_configs() {
+        assert!(
+            !toml::from_str::<AppConfig>("[apple1]\nrom_path = '/rom.bin'")
+                .unwrap()
+                .apple1
+                .expansion_ram
+        );
+    }
+
+    #[test]
     fn round_trip_keeps_unicode_and_space_paths() {
         let dir = std::env::temp_dir().join(format!("hesper-config-{}", std::process::id()));
         let path = dir.join("config.toml");
         let mut config = AppConfig::default();
         config.apple1.rom_path = Some(PathBuf::from("/tmp/含 空格/wozmon.bin"));
+        config.apple1.expansion_ram = true;
         save(&path, &config).unwrap();
         assert_eq!(load(&path).unwrap(), config);
         let _ = fs::remove_dir_all(dir);

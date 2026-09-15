@@ -9,13 +9,16 @@
 //! | Range           | Size   | Device                            |
 //! |-----------------|--------|-----------------------------------|
 //! | `$0000–$0FFF`   | 4 KiB  | RAM                               |
+//! | `$1000–$1FFF`   | 4 KiB  | optional expansion RAM            |
 //! | `$Dxxx`, A4=1   | 4 B + aliases | MC6821 PIA (keyboard + display) |
 //! | `$E000–$EFFF`   | 4 KiB  | RAM (e.g. Integer BASIC image)     |
 //! | `$FF00–$FFFF`   | 256 B  | Woz Monitor ROM                   |
 //! | everything else | —      | open bus                          |
 //!
 //! The first 4 KiB RAM bank is at `$0000`; the second is fixed at `$E000`
-//! for programs such as Integer BASIC. PIA remains at `$D010–$D013` and
+//! for programs such as Integer BASIC. `Apple1::with_expansion_ram` can add
+//! RAM at `$1000–$1FFF`; this models the address map, not card electronics.
+//! PIA remains at `$D010–$D013` and
 //! monitor ROM at `$FF00–$FFFF`, with the reset vector at `$FFFC/D`
 //! pointing to `$FF00`. This models both RAM banks as installed. The original
 //! Operation Manual schematics and printed pages have been page‑checked for

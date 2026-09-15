@@ -31,7 +31,8 @@ cargo run -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --help
 | `--program <path>` | 可选，启动时加载原始二进制程序，默认地址 `$0000` |
 | `--preset <id>` | 加载内置预置程序（42 个，见下节）并使用其固定地址；与 `--program`、`--program-address` 互斥 |
 | `--list-presets` | 列出全部内置程序的分类、id、大小、载入范围、启动命令、来源页与许可证，无需 ROM |
-| `--program-address <N>` | 指定程序加载地址；支持十进制、`0xE000` 或引号包裹的 `'$E000'`。整个文件必须落在 `$0000–$0FFF` 或 `$E000–$EFFF` 的同一块 RAM 内 |
+| `--expansion-ram` / `--no-expansion-ram` | 开启／关闭 `$1000–$1FFF` 的 4 KiB 扩展 RAM；默认关闭，TUI 可保存此配置 |
+| `--program-address <N>` | 指定程序加载地址；支持十进制、`0xE000` 或引号包裹的 `'$E000'`。整个文件必须落在连续已安装 RAM 内（默认 `$0000–$0FFF` 或 `$E000–$EFFF`） |
 | `--max-cycles <N>` | 真实 CPU 周期预算上限（不含刷新停钟的板级时间），用完即退出 |
 | `--trace` / `--bus-trace` | 指令／总线诊断，运行结束后写 stderr（不进入机器画面） |
 | `--trace-limit <N>` | 保留最近 N 条诊断记录，1..4096，默认 64；两种 trace 共用这个上限 |
@@ -75,10 +76,16 @@ cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset hamur
 # 进入 Woz Monitor 后：E2B3R，然后 RUN
 ```
 
-`little-tower` 的站点列表是 `$0300–$14CD`，需要当前固定映射之外的 `$1000–$1FFF` RAM：
-它仍出现在列表里，但加载会在写入前以 RAM 分组错误被拒绝，不裁剪镜像。
-`memory-test-1000-1fff` 的镜像能装入低 RAM，但它检测的 `$1000–$1FFF` 未映射，
-所以保留加载与运行，并提示“目标无 RAM，预期报错”；这不是诊断程序本身不兼容。
+`little-tower` 占用 `$0300–$14CD`，需在 TUI 启动配置中开启“扩展 RAM”，或添加 `--expansion-ram`：
+
+```sh
+cargo run --locked -p hesper -- apple1 --rom "$HESPER_APPLE1_ROM" --preset little-tower --expansion-ram
+# 进入 Monitor 后输入 0300R，再按 1 开始游戏
+```
+
+扩展 RAM 默认关闭；TUI 用 Tab／鼠标选中后按 Enter／空格切换，“校验并保存”或“启动”保存到配置文件的 `[apple1] expansion_ram`。CLI 显式的 `--expansion-ram`／`--no-expansion-ram` 覆盖保存的 TUI 偏好，脚本模式不读取个人配置。RESET 保留扩展 RAM；重新上电沿用已确认的 RAM 配置并恢复原程序。
+
+`memory-test-1000-1fff` 在扩展关闭时仍可运行并报告目标 RAM 缺失；开启后检测已安装的 RAM。
 全部 42 个预置的加载条件、局部证据与未验收功能见[兼容性矩阵](../../crates/cli/assets/README.md#compatibility-matrix)。
 
 TUI 启动中心按 `C` 打开配置页，按 `F3` 打开程序列表：列表按站点四个分类分组，↑↓ 移动、

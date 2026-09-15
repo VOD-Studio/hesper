@@ -13,8 +13,8 @@
 //! [`ProgramPreset::startup`]). Per-file SHA-256, the download date and the
 //! licence caveats are in `crates/cli/assets/README.md`.
 //!
-//! `little-tower` needs RAM at `$1000–$1FFF`, outside the fixed mapping.
-//! `memory-test-1000-1fff` fits in RAM but diagnoses that absent bank.
+//! `little-tower` needs RAM at `$1000–$1FFF`, enabled by the expansion RAM option.
+//! `memory-test-1000-1fff` fits in RAM but diagnoses that bank (absent by default).
 //! [`ProgramPreset::limitation`] distinguishes these from functional evidence.
 //!
 //! Programs marked in that README as BASIC programs are stored together with
@@ -63,7 +63,7 @@ impl Category {
     }
 }
 
-/// A known limitation of the current fixed RAM mapping, not a test verdict.
+/// A known limitation of the default RAM mapping, not a test verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresetLimitation {
     /// The image itself extends into unmapped RAM and cannot be loaded.
@@ -106,9 +106,19 @@ pub struct ProgramPreset {
 impl ProgramPreset {
     /// Shared CLI/TUI wording keeps loadability separate from functional proof.
     pub fn compatibility_note(&self) -> &'static str {
+        self.compatibility_note_for(false)
+    }
+
+    /// Compatibility hint for the RAM configuration selected in the TUI.
+    pub fn compatibility_note_for(&self, expansion_ram: bool) -> &'static str {
         match self.limitation {
-            Some(PresetLimitation::UnmappedLoad) => "不可加载：$1000–$1FFF 无 RAM",
-            Some(PresetLimitation::UnmappedTestRam) => "可加载：目标无 RAM，预期报错",
+            Some(PresetLimitation::UnmappedLoad | PresetLimitation::UnmappedTestRam)
+                if expansion_ram =>
+            {
+                "扩展 RAM 已开启；功能未完整验收"
+            }
+            Some(PresetLimitation::UnmappedLoad) => "需开启扩展 RAM：$1000–$1FFF",
+            Some(PresetLimitation::UnmappedTestRam) => "未开启扩展 RAM：诊断预期报错",
             None => "功能未完整验收；详见兼容性矩阵",
         }
     }
@@ -947,6 +957,8 @@ mod tests {
                 if Apple1Bus::validate_ram_load(block.address, block.bytes.len()).is_err() {
                     fits_a_bank = false;
                 }
+                Apple1Bus::validate_ram_load_with_expansion(block.address, block.bytes.len(), true)
+                    .unwrap();
                 let end = block.address + block.bytes.len() as u16;
                 if (block.address..end).contains(&preset.entry) {
                     entry_in_block = true;

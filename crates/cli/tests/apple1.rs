@@ -186,6 +186,19 @@ fn presets_can_be_listed_without_rom_and_conflicting_options_are_rejected() {
         .map(|preset| preset.id)
         .collect();
     assert_eq!(listed_ids, expected_ids);
+    for args in [
+        ["--list-presets", "--expansion-ram"],
+        ["--expansion-ram", "--list-presets"],
+    ] {
+        let output = run_apple1_cli(&args, b"");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("扩展 RAM 已开启"), "{stdout}");
+        assert!(
+            !stdout.contains("需开启扩展 RAM") && !stdout.contains("诊断预期报错"),
+            "{stdout}"
+        );
+    }
     assert_rejected(
         &run_apple1_cli(&["--preset"], b""),
         "--preset requires a preset id",
@@ -291,7 +304,7 @@ fn bundled_assembly_program_runs_from_its_published_entry() {
 #[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
 fn presets_longer_than_a_ram_bank_are_rejected_with_that_reason() {
     // `little-tower` runs from $0300 to $14CD in the published listing, so it
-    // needs the $1000-$1FFF expansion this machine does not model. The host
+    // needs the optional $1000-$1FFF expansion, disabled by default. The host
     // must say so through the bank error rather than boot a truncated image.
     let rom = RomFile::from_env("bundled-expansion");
     let output = run_apple1_cli(&["--rom", rom.path(), "--preset", "little-tower"], b"");
@@ -301,6 +314,47 @@ fn presets_longer_than_a_ram_bank_are_rejected_with_that_reason() {
         stderr.contains("must fit within one Apple I RAM bank"),
         "{stderr}"
     );
+}
+
+#[test]
+#[ignore = "requires HESPER_APPLE1_ROM; see crates/apple1/tests/data/README.md"]
+fn expansion_ram_allows_little_tower_to_reach_its_menu() {
+    let rom = RomFile::from_env("little-tower-expanded");
+    let output = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--preset",
+            "little-tower",
+            "--expansion-ram",
+            "--max-cycles",
+            "8000000",
+        ],
+        b"0300R\n",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("LITTLE TOWER") && stdout.contains("1] PLAY  2] HELP"),
+        "{stdout}"
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "[stopped]");
+    let output = run_apple1_cli(
+        &[
+            "--rom",
+            rom.path(),
+            "--preset",
+            "little-tower",
+            "--expansion-ram",
+            "--no-expansion-ram",
+        ],
+        b"",
+    );
+    assert_rejected(&output, "must fit within one Apple I RAM bank");
 }
 
 #[test]

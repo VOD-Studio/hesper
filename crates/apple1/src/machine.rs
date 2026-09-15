@@ -66,9 +66,14 @@ pub struct Apple1 {
 impl Apple1 {
     /// Create an Apple I machine with the given 256-byte Woz Monitor ROM.
     pub fn new(rom: &[u8]) -> Result<Self, RomSizeError> {
+        Self::with_expansion_ram(rom, false)
+    }
+
+    /// Create a machine with optional RAM at $1000–$1FFF.
+    pub fn with_expansion_ram(rom: &[u8], expansion_ram: bool) -> Result<Self, RomSizeError> {
         Ok(Self {
             cpu: Cpu::new(),
-            bus: Apple1Bus::new(rom)?,
+            bus: Apple1Bus::with_expansion_ram(rom, expansion_ram)?,
             display: Display::new(),
             keyboard: Keyboard::new(),
             timing: Timing::new(),

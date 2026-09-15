@@ -343,19 +343,27 @@ pub(crate) struct ProgramImage {
 impl ProgramImage {
     /// Validate every block before any of them is written: a rejected block
     /// must not leave half a program in RAM.
-    fn new(blocks: Vec<(u16, Vec<u8>)>) -> Result<Self, Box<dyn Error>> {
+    fn new(blocks: Vec<(u16, Vec<u8>)>, expansion_ram: bool) -> Result<Self, Box<dyn Error>> {
         for (address, bytes) in &blocks {
-            Apple1Bus::validate_ram_load(*address, bytes.len())?;
+            Apple1Bus::validate_ram_load_with_expansion(*address, bytes.len(), expansion_ram)?;
         }
         Ok(Self { blocks })
     }
 
     /// One block at one address: a file load, and the test images.
+    #[cfg(test)]
     pub(crate) fn single(address: u16, bytes: Vec<u8>) -> Result<Self, Box<dyn Error>> {
-        Self::new(vec![(address, bytes)])
+        Self::new(vec![(address, bytes)], false)
     }
 
     fn write_into(&self, bus: &mut Apple1Bus) -> Result<(), Box<dyn Error>> {
+        for (address, bytes) in &self.blocks {
+            Apple1Bus::validate_ram_load_with_expansion(
+                *address,
+                bytes.len(),
+                bus.expansion_ram(),
+            )?;
+        }
         for (address, bytes) in &self.blocks {
             bus.load_ram(*address, bytes)
                 .map_err(|error| format!("cannot load program: {error}"))?;
@@ -387,12 +395,12 @@ pub enum ProgramSource<'a> {
 }
 
 impl ProgramSource<'_> {
-    pub(crate) fn load(self) -> Result<ProgramImage, Box<dyn Error>> {
+    pub(crate) fn load(self, expansion_ram: bool) -> Result<ProgramImage, Box<dyn Error>> {
         match self {
             Self::File { path, address } => {
                 let bytes = fs::read(path)
                     .map_err(|e| format!("cannot read program file '{path}': {e}"))?;
-                ProgramImage::single(address, bytes)
+                ProgramImage::new(vec![(address, bytes)], expansion_ram)
                     .map_err(|e| format!("program '{path}': {e}").into())
             }
             Self::Preset(preset) => ProgramImage::new(
@@ -401,6 +409,7 @@ impl ProgramSource<'_> {
                     .iter()
                     .map(|block| (block.address, block.bytes.to_vec()))
                     .collect(),
+                expansion_ram,
             ),
         }
     }
@@ -414,6 +423,7 @@ pub fn run_apple1(
     trace: bool,
     bus_trace: bool,
     trace_limit: usize,
+    expansion_ram: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Checked here too, not only in the argument parser: a direct library
     // call must not be able to install an unbounded diagnostic queue.
@@ -424,11 +434,13 @@ pub fn run_apple1(
     // mutate; a bad path, wrong image, or oversized program fails here
     // with nothing partially applied and no cycle executed.
     let rom = load_rom(rom_path)?;
-    let program = program_source.map(ProgramSource::load).transpose()?;
+    let program = program_source
+        .map(|source| source.load(expansion_ram))
+        .transpose()?;
 
     // 2. Build the machine and the session. Nothing has executed yet: with
     // `--max-cycles 0` the run stops here having reported zero cycles.
-    let machine = create_machine(&rom, program.as_ref())?;
+    let machine = create_machine(&rom, program.as_ref(), expansion_ram)?;
     let mut session = Session::new(machine, max_cycles, trace_options);
 
     let outcome = if io::stdin().is_terminal() {
@@ -506,8 +518,9 @@ fn hex(bytes: &[u8]) -> String {
 pub(crate) fn create_machine(
     rom: &[u8; 256],
     program: Option<&ProgramImage>,
+    expansion_ram: bool,
 ) -> Result<Apple1, Box<dyn Error>> {
-    let mut machine = Apple1::new(rom)?;
+    let mut machine = Apple1::with_expansion_ram(rom, expansion_ram)?;
     if let Some(program) = program {
         program.write_into(machine.bus_mut())?;
     }
@@ -840,7 +853,8 @@ fn run_interactive(
                         announce(view, label, &mut status, &mut redraw, &mut stdout)?;
                     }
                     Action::Recreate => {
-                        session.machine = create_machine(rom, program)?;
+                        session.machine =
+                            create_machine(rom, program, session.machine.bus().expansion_ram())?;
                         announce(view, "[NEW MACHINE]", &mut status, &mut redraw, &mut stdout)?;
                         let stop = session.boot()?;
                         present(view, session, &mut redraw, &mut stdout)?;
@@ -955,6 +969,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expanded_program_is_checked_against_the_destination_before_any_write() {
+        let image =
+            ProgramImage::new(vec![(0x0300, vec![0xAB]), (0x1000, vec![0xCD])], true).unwrap();
+        let mut bus = Apple1Bus::new(&test_rom(0)).unwrap();
+        assert!(image.write_into(&mut bus).is_err());
+        assert_eq!(bus.ram_slice()[0x0300], 0);
+        let mut bus = Apple1Bus::with_expansion_ram(&test_rom(0), true).unwrap();
+        image.write_into(&mut bus).unwrap();
+        assert_eq!(bus.ram_slice()[0x0300], 0xAB);
+        assert_eq!(bus.ram_slice()[0x1000], 0xCD);
+    }
+
+    #[test]
     fn dumb_terminals_and_redirected_output_use_the_plain_stream() {
         for (is_terminal, term, expected) in [
             (true, Some("dumb"), View::Stream),
@@ -967,7 +994,7 @@ mod tests {
             assert_eq!(View::for_stdout(is_terminal, term), expected);
         }
         let session = Session::new(
-            create_machine(&test_rom(0), None).unwrap(),
+            create_machine(&test_rom(0), None, false).unwrap(),
             Some(0),
             TraceOptions::new(false, false, 64).unwrap(),
         );
@@ -1002,7 +1029,7 @@ mod tests {
     fn session_with(max_cycles: Option<u64>, trace: TraceOptions) -> Session {
         let rom = test_rom(0x0000);
         let image = ProgramImage::single(0, SPIN.to_vec()).unwrap();
-        let machine = create_machine(&rom, Some(&image)).unwrap();
+        let machine = create_machine(&rom, Some(&image), false).unwrap();
         Session::new(machine, max_cycles, trace)
     }
 
@@ -1069,7 +1096,7 @@ mod tests {
         let before = session.total_cpu_cycles;
         assert!(before >= BOOT_BATCH_CPU_CYCLES);
 
-        session.machine = create_machine(&rom, Some(&spin_image())).unwrap();
+        session.machine = create_machine(&rom, Some(&spin_image()), false).unwrap();
         assert_eq!(session.machine.cpu_cycles(), 0, "the machine is new");
         assert_eq!(session.machine.master_ticks(), 0, "the machine is new");
         assert_eq!(
@@ -1172,6 +1199,7 @@ mod tests {
             create_machine(
                 &test_rom(0x0000),
                 Some(&ProgramImage::single(0, program.clone()).unwrap()),
+                false,
             )
             .unwrap(),
             None,

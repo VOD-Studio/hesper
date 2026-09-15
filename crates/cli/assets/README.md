@@ -38,11 +38,11 @@ published, source page, load address, start command — lives in
   they cannot run without it. `programming/basic/*` above are the four BASIC
   variants the site offers on their own.
 - **`little-tower`** occupies `$0300–$14CD`, requiring RAM at `$1000–$1FFF`
-  outside this machine's fixed mapping. Loading fails before any block is
-  written; the CLI list and picker explain why. Do not truncate the image.
+  enabled by `--expansion-ram` or the TUI's 扩展 RAM checkbox. With the
+  option off (default), loading fails before any block is written.
 - **`memory-test-1000-1fff`** loads into mapped RAM but tests the absent
-  `$1000–$1FFF` bank. It remains runnable as a diagnostic, with an explicit
-  warning: a RAM error is expected, not evidence of a broken diagnostic.
+  `$1000–$1FFF` bank by default. With expansion enabled it tests installed RAM;
+  with expansion off, a RAM error is expected.
 - **`basic-huston-e000.bin`** is byte-identical to the image the user supplied
   on 2026-09-14 (`311c85f2…`). That image is the site's Huston variant and the
   one the site transfers with every BASIC program above, so there is a single
@@ -107,7 +107,7 @@ CLI/TUI 的 `limitation` 区分镜像越界与诊断目标缺失；没有已知�
 启动命令、块地址及来源页见上表，不在这里维护第二份启动元数据。
 
 - **固定配置**：NMOS 6502、RAM `$0000–$0FFF` / `$E000–$EFFF`、外部 WozMon、
-  PIA 键盘和字符显示。未建模 ACI、可变 RAM 跳线或 `$1000–$1FFF` RAM。
+  PIA 键盘和字符显示。可选 `--expansion-ram` 增加 `$1000–$1FFF` RAM，默认关闭；未建模 ACI、可变 RAM 跳线或具体扩展卡电气行为。
 - **B**：除固定配置外，预置自动载入 Huston BASIC，必须以 `E2B3R` 热启动后 `RUN`；
   `E000R` 冷启动会清除预先载入的 BASIC 程序。
 - **E1（历史局部证据）**：[验证记录](../../../docs/verification.md) 中
@@ -126,7 +126,7 @@ CLI/TUI 的 `limitation` 区分镜像越界与诊断目标缺失；没有已知�
 | `codebreaker` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 输入猜测、反馈及胜负判定 |
 | `dobble` | 可 | B | 未验证 | 启动、一轮交互及结果 |
 | `hamurabi` | 可 | B | E1：LIST 与 RUN 开场 | 年度输入、资源变化及结束 |
-| `little-tower` | 拒绝 | 镜像延伸至 `$14CD`；缺少 `$1000–$1FFF` RAM | E1：加载前明确拒绝 | 有相应 RAM 配置后的移动、双词命令及物品交互 |
+| `little-tower` | 条件可 | 需开启扩展 RAM（`--expansion-ram`） | E2：标题、开始游戏、`LOOK`、`S` 到湖岸；关闭扩展时拒绝加载 | 双词命令、物品交互与完整通关 |
 | `lunar-lander-text-only` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 推力输入、状态演进及着陆判定 |
 | `lunar-lander-ascii-graphics` | 可 | B | 未验证 | 图形输出、飞行交互及着陆判定 |
 | `mastermind` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 猜测反馈及胜负判定 |
@@ -155,7 +155,7 @@ CLI/TUI 的 `limitation` 区分镜像越界与诊断目标缺失；没有已知�
 | `stringout-meier` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 本版本字符串输出及终止边界 |
 | `memory-test-0009-027f` | 可 | 检测已映射的低 RAM，避开诊断占用区域 | E2：`PASS 01` 至 `PASS 06` | RESET 中止；不能替代物理 DRAM 故障认证 |
 | `memory-test-03a2-0fff` | 可 | 检测已映射的低 RAM，避开诊断代码 | E2：`PASS 01` | 长时间循环及 RESET 中止 |
-| `memory-test-1000-1fff` | 可 | 检测未映射 RAM；保留诊断用途，不当作可用 RAM | E2：`00 1000 00 10`，返回 Monitor（预期诊断） | 有相应 RAM 配置后的正常通过路径 |
+| `memory-test-1000-1fff` | 可 | 检测扩展 RAM；默认关闭时预期报错 | E2：关闭时 `00 1000 00 10`；开启时 `PASS 01`（8000000 周期） | 更多轮次的持续运行 |
 | `memory-test-e000-efff` | 可 | 检测已映射的高 RAM | E2：`PASS 01` | 长时间循环及 RESET 中止 |
 | `party` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 按来源说明验收登记及查询流程 |
 | `resistor-calculator` | 可 | B | E1：RUN 后标题与作者输出 | 已知输入对应的电阻计算结果 |
@@ -173,7 +173,7 @@ printf '0280R\n\n' | target/debug/hesper apple1 --rom .cache/apple1/wozmon.bin \
   --preset memory-test-e000-efff --max-cycles 8000000
 ```
 
-后者可将 id 换为另外两个已映射范围的诊断。第二个换行故意保持键盘输入待处理：
+后者可将 id 换为另外两个已映射范围的诊断；测试扩展 RAM 时改为 `memory-test-1000-1fff` 并添加 `--expansion-ram`。第二个换行故意保持键盘输入待处理：
 诊断不读键盘，这会让批处理宿主继续运行至周期上限，而不是在三个无输出帧后读到 EOF。
 单独输入启动行后没有输出，不能判定计算失败。
 
@@ -262,7 +262,8 @@ and listed here with the SHA-256 of its stored bytes.
   `bundled_assembly_program_runs_from_its_published_entry`
   (`15-puzzle` at `0300R`), and
   `presets_longer_than_a_ram_bank_are_rejected_with_that_reason`
-  (`little-tower`).
+  (`little-tower` with expansion disabled), plus
+  `expansion_ram_allows_little_tower_to_reach_its_menu` (expansion enabled).
 - To re-download and compare any program with the publisher:
 
   ```sh
