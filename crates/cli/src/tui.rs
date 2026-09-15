@@ -4755,7 +4755,10 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         assert!(buffer_text(terminal.backend().buffer()).contains("entry-017.bin"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.form.rom, "/files/entry-017.bin");
+        assert_eq!(
+            PathBuf::from(&app.form.rom),
+            PathBuf::from("/files/entry-017.bin")
+        );
         assert!(app.overlay.is_none());
     }
 

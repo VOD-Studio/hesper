@@ -1149,3 +1149,9 @@ CLI 构建／宿主库测试／demo、复用已验证 Wasm 产物、打包与 SH
 
 跨平台发布编译与测试以本次后续的 GitHub Actions `Release` 试跑为准。
 此处的编译／demo 证据不代替各平台真实终端的交互与视觉验收。
+
+首次远程试跑 [34948903006](https://github.com/VOD-Studio/hesper/actions/runs/34948903006)
+中，Linux／macOS 的四个 CLI 包、常规检查、全量 CPU 验证与四个 Wasm 包均通过。
+Windows x86_64／ARM64 均完成编译，但同一个文件浏览器测试因 `/` 与 `\` 的
+字符串断言差异失败（各 62 通过、1 失败），因此发布汇总正确跳过。随后将该断言
+改为 `PathBuf` 路径比较，仍检查选中的具体文件；没有改动文件浏览器行为。
