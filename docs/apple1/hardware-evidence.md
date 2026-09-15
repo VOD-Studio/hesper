@@ -1,6 +1,6 @@
 # Apple I 一手硬件依据核对
 
-一手资料核对始于 2026-09-11，范围为 Apple I 原始操作手册（1976）、三张原理图、MC6820 原厂数据表（1976）与 MC6821 原厂数据表（1985）的指定页。2026-09-14 补核 H18 的共享预置网络、同步重载与计数使能，并实现其数字时序；以下区分原件事实、原图推导、已验证行为和保留的模拟约定。
+一手资料核对始于 2026-09-11，范围为 Apple I 原始操作手册（1976）、三张原理图、MC6820 原厂数据表（1976）与 MC6821 原厂数据表（1985）的指定页。2026-09-14 补核 H18 的共享预置网络、同步重载与计数使能，并实现其数字时序；2026-09-15 按印刷页 7 的接线修复 H09 首次按键前的 PA7 电平。以下区分原件事实、原图推导、已验证行为和保留的模拟约定。
 
 ## 原件与页码索引
 
@@ -194,10 +194,10 @@ MC6820/MC6821 片选条件（P21 OCR）：CS0=1、CS1=1、CS2=0 三者同时满�
 
 | 维度 | 内容 |
 |------|------|
-| **一手证据** | 印刷页 2–3 Keyboard 节（leaf 3–4）：键盘连接器 B4 有七条 DATA 线（B6–B0），一条 STROBE 线。"Any ASCII encoded keyboard, with positive DATA outputs." "The strobe can be either positive or negative." 印刷页 7 Hardware Notes 标注键盘数据进入 PA0–PA6，CA1 为键盘选通输入。印刷页 8 SOFTWARE CONSIDERATIONS："KBD Data D010 — High order bit equals 1." 即 PA7 固定为 1（来自上拉或外部接线）。 |
-| **实现位置** | `keyboard.rs::Keyboard::type_char` → `(c & 0x7F).to_ascii_uppercase()`；`Keyboard::tick` → 将 `(七位字符 | 0x80)` 送 Port A，CA1 高电平维持一个 tick。 |
+| **一手证据** | 印刷页 2–3 Keyboard 节（leaf 3–4）：键盘连接器 B4 有七条 DATA 线（B6–B0），一条 STROBE 线。"Any ASCII encoded keyboard, with positive DATA outputs." "The strobe can be either positive or negative." 印刷页 7 Hardware Notes 的 KBD/DSP Interface 图明确画出 PA0–PA6 接键盘数据、PA7 接 +5V、CA1 接键盘选通。印刷页 8 SOFTWARE CONSIDERATIONS："KBD Data D010 — High order bit equals 1." |
+| **实现位置** | `bus.rs::Apple1Bus::new` 在构造机器总线时将 Port A 外部输入初始化为 `$80`，在首次按键前建立 PA7 固定高电平；`Keyboard::type_char` 规范化七位字符，`Keyboard::tick` 将 `(七位字符 | $80)` 送 Port A 并经 CA1 选通。 |
 | **来源状态** | **一手原文**：七位数据 + bit 7 固定为 1，选通极性可正可负。 |
-| **实现关系** | **模拟约定**：宿主 FIFO + 一个周期选通 近似于外接键盘编码器锁存行为；真实键盘协议不包含宿主端预输入的队列。 |
+| **实现关系** | **数字接线吻合（2026-09-15 修复）**：Port A 配置为输入时，首次按键前、物理 RESET 后与机器重建后，PA7 都为 1；RESET 保留已呈现的键盘数据。修复前首次按键前误读为 `$00`。PA7 固定接高不依赖 PIA 内部上拉模型；通用 PIA 默认输入不变。宿主 FIFO、初始低七位为零与字符时钟选通仍是模拟约定，非真实键盘上电状态认证。 |
 
 ### H10：键盘接口反馈与消费语义
 
@@ -323,7 +323,7 @@ MC6820/MC6821 片选条件（P21 OCR）：CS0=1、CS1=1、CS2=0 三者同时满�
 
 1. **PB7 极性（印刷页 7 vs 页 8）**：页 7 原理图连线 + monitor 机器码一致指示 PB7=1=忙；页 8 文字摘要相反（"1 equals ready, 0 equals busy"）。本核对以连线+机器码为准；页 8 文字记为原件内部冲突。实现侧以 `$FFEF` 处的真实 ROM 机器码（`2C 12 D0 / 30 FB`，即 `BIT`/`BMI`）复核了该极性。
 
-2. **PIA 端口的电气特性**：读回路径已按资料分别建模（H12：Port A 读引脚，Port B 输出位读锁存、输入位读引脚），Port A 输出位的引脚电平即 PIA 驱动的 ORA；仍未建模的是电气特性本身——PIA 之外对同一输出线的争用、A 侧内部上拉、B 侧输入浮空与驱动电平。
+2. **PIA 端口的电气特性与数字解析范围**：读回路径已按资料分别建模（H12：Port A 读引脚，Port B 输出位读锁存、输入位读引脚）。当前不区分外部驱动低与未驱动，也不解析多个驱动源的冲突；A 侧内部上拉、B 侧浮空及负载相关电平未建模。争用电流、电压与器件容差属于模拟电气范围，驱动／高阻语义则是尚未实现的数字模型扩展，两者不能混为一谈。H09 的 PA7 板级固定接高已修复，不属于这些保留边界；B3 仍按标称 3.5 µs 量化为 51 master tick，不宣称 74123 容差认证。
 
 3. **DRAM 单元衰减**：只建模 Φ2 门控，不建模刷新周期之外的电荷保持特性，也不建模真实上电随机态。
 

@@ -338,9 +338,8 @@ impl Pia6821 {
         (self.orb & self.ddrb) | (!self.ddrb & 0x7f)
     }
 
-    /// Whether Port A input pins are currently driven (bit 7 of all inputs).
-    /// On Apple I the keyboard sets bit 7; this returns true when keyboard
-    /// data has been set on the pins.
+    /// Whether the external PA7 input level is high. On Apple I the board
+    /// ties it to +5V, so it does not indicate whether a key has been presented.
     pub fn port_a_bit7(&self) -> bool {
         self.pins_a & 0x80 != 0
     }

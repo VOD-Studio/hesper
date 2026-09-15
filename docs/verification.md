@@ -905,3 +905,20 @@ PTY 判据只比较机器面板，不从侧栏周期数推断字符输出。临�
 README、架构、路线图、硬件依据与 Apple I 概览已同步。CPU 核心与其总线／指令语义未改，未重跑 SingleStep／Klaus／Visual6502 完整外部层；未运行远程 CI、跨平台或原生桌面终端视觉验收。C7／TTL 亚字符传播、物理 CLEAR 按钮脉宽、2519 行重放、2513／D1 像素链、DRAM 电荷保持及上电随机态仍未认证，M3 整体验收保持未勾选。临时探针与转录清理后不纳入仓库；没有新增依赖或程序资产。
 
 未提交、推送或发布。
+
+## 2026-09-15：PA7 板级固定高电平修复（H09）
+
+M76 印刷页 7 的 KBD/DSP Interface 图明确将 PA7 接到 +5V；它不是随首次键盘输入才出现的高位，也不依赖通用 PIA 的内部上拉模型。修复前原创 6502 程序选择 Port A 数据寄存器、执行 `LDA $D010` 并写入 RAM，首次按键前得到 `$00`，输入 A 后才得到 `$C1`。
+
+`Apple1Bus::new` 现在通过既有输入接口初始化 PA7；通用 `Pia6821::new`、DDR／端口读回逻辑、键盘选通和 B3 的 51 master tick 均未修改。键盘呈现字符时保留 PA7，物理 RESET 保留外部引脚电平，机器重建重新建立板级接线。同步键盘与引脚观察接口注释、架构、路线图和 H09 依据；区分固定数字接线、尚未实现的驱动／高阻解析与模拟电气边界，不据此勾选 M3 整体验收。
+
+验证：
+
+- 新增 `pa7_is_high_before_the_first_key_across_reset_and_recreation`，通过真实 CPU 总线读取覆盖首次按键前、未按键时再次 RESET、输入 A、按键后 RESET 和重建。先在旧实现运行：首个断言实际为 0、期望 128，失败；修复后 `cargo test --locked --offline -p hesper-apple1 --test machine` 的 25 项全部通过。
+- 临时 Rust 程序重跑原始 CPU→PIA→RAM 复现：首次按键前 `$80`、未按键 RESET 后 `$80`、输入 A 后 `$C1`、再次 RESET 后 `$C1`、重建后 `$80`；独立 PIA 默认输入仍为 `$00`。临时源码与可执行文件已删除。
+- `cargo fmt --all` 后执行 `make verify`（`CARGO_NET_OFFLINE=true`）：格式、全目标 check、debug／release 各 247 项测试、Clippy `-D warnings`、demo／trace／bus-trace 与 diff 检查全部通过；每种构建的 20 项真实 ROM 测试按约定 ignored。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试与 16 项 CLI 测试通过，使用既有缓存，未下载或修改 ROM。
+
+本轮未改 CPU 执行语义、B3 时序或终端界面；未运行完整外部 CPU corpus、远程 CI、真实 PTY 或实板电气对照。没有新增依赖。
+
+未提交、推送或发布。

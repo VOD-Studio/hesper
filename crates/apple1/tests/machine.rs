@@ -187,6 +187,52 @@ fn keyboard_no_key_leaves_irqa1_clear() {
 }
 
 #[test]
+fn pa7_is_high_before_the_first_key_across_reset_and_recreation() {
+    fn reader() -> Apple1 {
+        let mut machine = Apple1::new(&rom_with_reset_vector(0x0000)).unwrap();
+        machine
+            .bus_mut()
+            .load_ram(
+                0x0000,
+                &[
+                    0xA9, 0x04, // LDA #$04
+                    0x8D, 0x11, 0xD0, // STA $D011: select Port A data, all inputs
+                    0xAD, 0x10, 0xD0, // LDA $D010: read without waiting for a key
+                    0x4C, 0x05, 0x00, // JMP back to LDA
+                ],
+            )
+            .unwrap();
+        machine.reset().unwrap();
+        machine
+    }
+
+    fn next_read(machine: &mut Apple1) -> u8 {
+        for _ in 0..1000 {
+            if let Some(cycle) = machine.tick().unwrap().cpu
+                && cycle.bus.address == 0xD010
+            {
+                return cycle.bus.data;
+            }
+        }
+        panic!("the CPU did not read Port A within 1000 master ticks");
+    }
+
+    // PA7 is wired to +5V, independently of keyboard data or its strobe.
+    let mut machine = reader();
+    assert_eq!(next_read(&mut machine) & 0x80, 0x80, "before any key");
+    machine.reset().unwrap();
+    assert_eq!(next_read(&mut machine) & 0x80, 0x80, "RESET before any key");
+
+    machine.type_char(b'A');
+    assert_eq!(next_read(&mut machine), 0xC1);
+    machine.reset().unwrap();
+    assert_eq!(next_read(&mut machine), 0xC1, "RESET retains keyboard pins");
+
+    machine = reader();
+    assert_eq!(next_read(&mut machine) & 0x80, 0x80, "recreated machine");
+}
+
+#[test]
 fn keyboard_repeated_read_without_new_key_returns_same_data() {
     let mut machine = echo_machine();
     machine.reset().unwrap();

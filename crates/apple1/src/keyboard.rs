@@ -1,7 +1,7 @@
 //! Apple I keyboard input model.
 //!
 //! The keyboard connects to the PIA via Port A:
-//! - PA0–PA6: ASCII data (bit 7 = 1 always on Apple I).
+//! - PA0–PA6: ASCII data; the board separately ties PA7 to +5V.
 //! - CA1: keyboard strobe (asserted when key data is ready).
 //!
 //! A key stays at the head of the queue until the CPU really reads Port A's
@@ -62,7 +62,7 @@ impl Keyboard {
         }
         if let Some(&c) = self.pending.front() {
             self.presented = true;
-            // Apple I keyboard: bit 7 = 1 (always).
+            // Preserve the board's PA7 tie to +5V when presenting keyboard data.
             pia.set_port_a_inputs(c | 0x80);
             // Assert CA1 — if the PIA is configured for rising edge this
             // sets IRQA1.

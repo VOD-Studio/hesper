@@ -92,10 +92,13 @@ impl Apple1Bus {
         }
         let mut bytes = [0u8; Self::ROM_SIZE];
         bytes.copy_from_slice(rom);
+        let mut pia = Pia6821::new();
+        // The board ties PA7 to +5V even before the keyboard presents a byte.
+        pia.set_port_a_inputs(0x80);
         Ok(Self {
             ram: [0u8; Self::RAM_SIZE],
             rom: bytes,
-            pia: Pia6821::new(),
+            pia,
             last_read: 0,
         })
     }
