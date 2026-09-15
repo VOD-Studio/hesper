@@ -6,7 +6,7 @@
 
 Hesper 是一个使用 Rust 编写的经典计算机模拟器项目，包含机器无关、逐周期执行的 NMOS 6502 核心、Apple I 文本机器模型，以及中文 TUI 和可脚本化的 CLI。
 
-CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASIC 和部分预置程序，**M3 整体验收仍未完成**。主板刷新停钟、CB2 显示握手、两端口读回路径，以及含条件垂直重载和滚动帧长变化的循环存储时序已实现；[数字视频链](docs/apple1/video.md)现可输出逐点亮度和同步。剩余边界包括原板字模逐点认证、电气特性和真实上电状态。具体范围见 [`docs/roadmap.md`](docs/roadmap.md) 和 [`硬件依据与差异`](docs/apple1/hardware-evidence.md)。Apple II 与浏览器前端尚未开始。
+CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASIC 和部分预置程序，**M3 整体验收仍未完成**。主板刷新停钟、CB2 显示握手、两端口读回路径，以及含条件垂直重载和滚动帧长变化的循环存储时序已实现；[数字视频链](docs/apple1/video.md)现可输出逐点亮度和同步。剩余边界包括原板字模逐点认证、电气特性和真实上电状态。具体范围见 [`docs/roadmap.md`](docs/roadmap.md) 和 [`硬件依据与差异`](docs/apple1/hardware-evidence.md)。CPU 与 Apple I 已提供 [WASM / JS 绑定](docs/wasm.md)；Apple II 与完整浏览器前端尚未开始。
 
 无参数在 stdin/stdout 都是终端时进入中文 TUI 启动中心；重定向任一流时仍运行可脚本化的内置演示。Apple I 的 TUI 按键约定见 [`docs/apple1/examples.md`](docs/apple1/examples.md)：Ctrl-R 是物理 RESET，Ctrl-L 是键盘上的 CLEAR SCREEN 按钮，Ctrl-P 暂停/继续，Ctrl-N 重建机器，Ctrl-C/Ctrl-D 退出。
 
@@ -37,6 +37,18 @@ CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASI
 机器层包含 2519 行重放、固定 P-Lab 2513 替换字模、74166 像素移位、视频光标及数字复合同步；TUI 仍显示宿主字符格。运行 `cargo run -p hesper-apple1 --release --example video -- /tmp/hesper-video-capture` 可从真实采样导出 PGM 图像、CSV 与 SVG 波形（目录须不存在）。原板字模逐点认证、模拟电压、DRAM 电荷保持、上电状态和单稳态容差不在已验收范围内；详见[视频说明](docs/apple1/video.md)。磁带接口、扩展卡和完整机器存档尚未实现。
 
 ## 快速开始
+
+### WASM / JavaScript
+
+```sh
+make wasm-setup         # 安装 wasm32 目标及固定版本绑定工具（需要 Bun）
+make wasm-build         # 生成 target/wasm-packages/ 下的 web / nodejs 包
+make wasm-browser-test  # 原生对照、Bun / Node.js 和真实 Chrome 验证
+```
+
+两个独立包分别导出 `Cpu6502Ram` 和 `Apple1`，包含 `.wasm`、JS 与 TypeScript 类型声明。构建、接口和调用示例见 [WASM 文档](docs/wasm.md)。
+
+### 本机 CLI / TUI
 
 需要当前稳定版 Rust。仓库中的 `rust-toolchain.toml` 会安装最小工具链及 `rustfmt`、`clippy` 组件。
 

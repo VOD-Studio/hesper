@@ -1056,3 +1056,14 @@ WozMon 的 SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119d
   输出 `PASS 01` 后到达指定预算。额外换行沿用既有诊断的批处理策略，防止无输出阶段提前遇到 EOF。
 - 本次实现的是明确的 RAM 地址映射，没有增加具体扩展卡的电气／刷新电路模型；未改 CPU 周期或板级时钟。
   Little Tower 双词命令、物品交互和完整通关仍未验收；上述结果不扩展为全预置兼容性或远端 CI 通过声明。
+
+## 2026-09-15：CPU / Apple I 的 WASM、JS 与 TypeScript 绑定
+
+- 新增 `hesper-cpu6502-wasm`（`Cpu6502Ram`）与 `hesper-apple1-wasm`（`Apple1`），各自产出可独立加载的 web ES Module 与 nodejs 包。绑定共用内部 `hesper-wasm-support`；CPU crate 源码与周期引擎未改，`cargo tree -p hesper-cpu6502 --edges normal --locked` 仍无第三方运行时依赖。Apple I 原库只增加键盘队列长度的无副作用观察接口。
+- 绑定提供事务性程序加载、有界执行、RESET／引脚、屏幕和光标副本、主时钟计数及逐 tick 数字视频观察。JS 数值先校验再缩窄，累计时钟保留 `bigint`；输入／输出队列有界，运行错误保留已完成输出。完整调用约定见 [WASM 文档](wasm.md)。
+- 本地工具：Rust 1.98.1、wasm-bindgen 0.2.128、Bun 1.4.0、Node.js 24.11.1、Chrome 152.0.7977.83、TypeScript 7.0.2。
+- `make verify` 通过：格式、全目标 check、debug/release 工作区测试、Clippy `-D warnings`、CLI 演示及 diff 检查。日志为忽略文件 `.cache/wasm-verify.log`。
+- `make wasm-browser-test` 通过：release 构建两个包，同版本原生 Rust 参考执行，Bun **8/8**、Node.js **8/8**、真实独立无头 Chrome **8/8**，以及 TypeScript 调用示例的严格类型检查。日志为 `.cache/wasm-browser-test.log`，产物为 `target/wasm-packages/`。
+- CPU 对照比较 100 个真实总线周期及指令完成快照，覆盖写入、RMW、RDY 重读、SO、NMI 和物理 RESET 输入；Apple I 原创回显程序对照 1,000,000 个 master tick 后的屏幕、光标、输出、寄存器、累计时钟和帧数，并核对前 2048 tick 的数字视频采样摘要。不同批次划分产生相同结果。
+- 额外 JS 检查验证半周期、单步预算耗尽后的续跑、非法 opcode 的结构化错误、参数拒绝、内存／快照／实例隔离、RESET 与 CLEAR SCREEN 分离、输入队列累计上限、报错前字符输出可取回。常规测试用原创程序与合成复位向量 ROM，不下载或嵌入 Woz Monitor。Apple I 分发目录携带已有 P-Lab 字模的来源、CC BY 4.0 许可证和转换说明。
+- CI 已增加独立 WASM job，但本轮没有运行远程 CI。未改 CPU 语义／板级时序，未重跑完整外部 CPU conformance 或 ROM-gated 联调；绑定验收不代表 Apple I M3 或完整浏览器前端 M5 验收。本轮未提交或推送。

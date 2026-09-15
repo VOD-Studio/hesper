@@ -1,5 +1,8 @@
 [workspace]
-members = ["crates/cpu6502", "crates/cli", "crates/apple1"]
+members = [
+    "crates/cpu6502", "crates/cli", "crates/apple1",
+    "crates/cpu6502-wasm", "crates/apple1-wasm", "crates/wasm-support",
+]
 default-members = ["crates/cli"]
 resolver = "3"
 
@@ -7,6 +10,10 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 publish = false
+
+[workspace.dependencies]
+wasm-bindgen = "=0.2.128"
+js-sys = "=0.3.105"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

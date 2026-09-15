@@ -30,6 +30,8 @@ Dependency direction is:
 - `crates/cpu6502/tests/data/`: checked-in deterministic fixtures, manifests, provenance, licenses, and authoritative test commands.
 - `crates/cpu6502/examples/`: bounded SingleStep, Klaus functional/decimal, and interrupt verification runners.
 - `crates/cli/src/`: demo host library and binary presentation layer.
+- `crates/cpu6502-wasm/`, `crates/apple1-wasm/`: independent JS/Wasm hosts; shared JS conversion lives in internal `crates/wasm-support/`.
+- `tests/wasm/`: public JS binding checks shared by Bun, Node.js and a real browser; native reference observations come from `apple1-wasm/examples/reference.rs`.
 - `crates/cli/tests/`: library and real-binary CLI integration tests.
 - `tools/`: Bun data preparation and Visual6502 reference replay. Prepared data belongs only under ignored `.cache/cpu6502/`.
 - `docs/`: architecture contracts, opcode scope, source provenance, roadmap, and chronological verification evidence.
@@ -99,7 +101,7 @@ make tools-test                                  # bun test tools/ (Bun regressi
 - The CPU crate has no runtime dependencies. `serde`, `serde_json`, and `sha2` are test/example-only dependencies.
 - Bun is a host verification tool, not an application runtime. Full CI uses Bun 1.4.0; Klaus preparation also needs `make` and a C compiler.
 - No `package.json`, custom Cargo config, custom rustfmt/Clippy config, feature matrix, or declared MSRV exists. Do not invent one.
-- `wasm32-unknown-unknown` is optional locally and checks only the CPU library; install the target before running `make wasm`.
+- `wasm32-unknown-unknown` is optional locally. `make wasm` checks the CPU, Apple I and both binding libraries; `make wasm-setup` installs the target and pinned binding CLI. `make wasm-browser-test` builds the actual JS/Wasm packages and runs Bun/Node.js, TypeScript and Chrome checks. See `docs/wasm.md`.
 - Do not create future machine/browser/plugin scaffolding unless the task explicitly enters that roadmap milestone.
 
 ## Testing & QA

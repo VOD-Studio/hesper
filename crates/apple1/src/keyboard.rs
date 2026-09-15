@@ -91,6 +91,12 @@ impl Keyboard {
         !self.pending.is_empty()
     }
 
+    /// Host queue size, including the key presented but not yet acknowledged.
+    /// Hosts may use this observation to bound type-ahead without reading PIA.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
     /// Resynchronize with a PIA whose RESET pin has just been asserted
     /// (which cleared CRA and its edge-detect state).
     ///

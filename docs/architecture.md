@@ -9,7 +9,7 @@
 - **Ram**：独立的全零 64 KiB 数组 Bus；模拟访问以 `u16` 地址进行，宿主 `load` 检查整段范围，失败不写入。`as_slice` 仅用于这个 RAM 的无副作用宿主检查，不是通用设备读取接口。
 - **CLI／TUI**：`crates/cli/src/lib.rs` 包含演示字节和有限步数 runner；`main.rs` 负责命令分流、参数和退出码，`apple1.rs` 管理 Apple I 资源、会话预算、文本交互和诊断，`tui.rs` 提供启动中心与终端界面。`presets.rs` 保存内置程序元数据和多块加载信息。CPU／机器层不处理文件、宿主终端或墙钟节流。
 
-Apple I 已实现独立机器 Bus、内存映射、设备状态和板级时钟，复用 CPU；Apple II 与浏览器仍为规划。前端负责加载用户有权使用的资源、输入输出和调度。机器／CPU 不依赖浏览器；CPU 的 Wasm 目标编译检查不代表浏览器前端已实现。
+Apple I 已实现独立机器 Bus、内存映射、设备状态和板级时钟，复用 CPU。`cpu6502-wasm` 与 `apple1-wasm` 为独立 JS 宿主，分别导出 CPU + RAM 和完整 Apple I；内部 `wasm-support` 共用类型转换与参数校验，机器／CPU 不依赖浏览器。绑定有实际 JS 与浏览器加载验证，见 [WASM 文档](wasm.md)；Apple II 和完整交互式浏览器前端仍为规划，宿主负责资源加载、输入输出和调度。
 
 ## Apple I 机器层（M3）
 

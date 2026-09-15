@@ -9,8 +9,13 @@
 #   make fix       运行 cargo fmt --all 后，再对 workspace 全部 crate（含全部 target）
 #                  cargo fix --allow-dirty 自动修复
 #   make build     cargo build --workspace（debug）或 --release
-#   make wasm      仅 CPU 库 Wasm 编译检查；需要已安装 wasm32-unknown-unknown 目标
-#                  （未安装时跳过，不在 verify 中强制）
+#   make wasm      CPU / Apple I 库及 JS 绑定的 Wasm 编译检查
+#                  （需要已安装 wasm32 目标，不在 verify 中强制）
+#   make wasm-setup 安装目标和匹配版本的 wasm-bindgen 到 .cache/wasm-tools
+#   make wasm-build 生成两个库的 web / nodejs 包（需要 Bun）
+#   make wasm-test  构建包并运行实际 JS 绑定与原生 Rust 对照测试
+#   make wasm-browser-test  用独立无头 Chrome 加载 web 产物运行同组检查
+#   make wasm-typecheck  用固定版本 TypeScript 检查产物的调用类型（首次联网）
 #   make wozmon [ROM=<path>]      用 Bun 下载并校验 ROM（默认 .cache/apple1/wozmon.bin）
 #   make wozmon-verify ROM=<path>  校验用户自备 Woz Monitor ROM 的大小与哈希
 #   make wozmon-tests ROM=<path>   显式运行需要该 ROM 的 --ignored 集成测试
@@ -28,7 +33,8 @@
 
 .NOTPARALLEL:
 
-.PHONY: verify fmt fix check test test-release clippy demo diff build build-release wasm \
+.PHONY: verify fmt fix check test test-release clippy demo diff build build-release \
+        wasm wasm-setup wasm-build wasm-test wasm-browser-test wasm-typecheck \
         tools-test wozmon wozmon-verify wozmon-tests \
         data singlestep functional decimal interrupt visual6502 pins full
 
@@ -72,7 +78,24 @@ build-release:
 	cargo build --workspace --release
 
 wasm:
-	cargo check -p hesper-cpu6502 --target wasm32-unknown-unknown
+	cargo check -p hesper-cpu6502 -p hesper-apple1 -p hesper-cpu6502-wasm -p hesper-apple1-wasm --target wasm32-unknown-unknown --locked
+
+wasm-setup:
+	bun tools/build_wasm.ts setup
+
+wasm-build:
+	bun tools/build_wasm.ts
+
+wasm-test: wasm-build
+	cargo run -p hesper-apple1-wasm --example reference --release --locked > target/wasm-packages/reference.json
+	bun test tests/wasm/
+	node --test tests/wasm/bindings.test.mjs
+
+wasm-typecheck: wasm-build
+	bunx --package typescript@7.0.2 tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution bundler --lib ESNext,DOM tests/wasm/types.ts
+
+wasm-browser-test: wasm-test wasm-typecheck
+	bun tools/test_wasm_browser.ts
 
 # ---- 验证脚本自身的回归（Bun；不属于 cargo test --workspace） ----
 # 冷缓存时真实下载固定上游数据，因此不加入 verify。
