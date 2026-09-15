@@ -148,7 +148,7 @@ CPU 普通依赖树仅包含自身，没有第三方运行依赖。当前物理 
 
 重放工具错误路径实际执行：未知套件、零匹配／跨套件场景、重复参数、未指定单套件的记录、局部记录均退出 1。隔离临时目录内移除／损坏夹具，分别验证缺文件和哈希错误退出 1；故意改动首个总线地址并同步临时哈希后，准确报告 `reset-registers-stack-wrap cycle 0`、预期／实际元组及重放命令。没有改动固定预期来让检查通过；临时错误检查目录已自动清除。
 
-本轮完成的是**有界的独立参考基线**，不等于 CPU 物理 RESET 对照通过。M2.4、M2／M2.5 最终验收仍未完成；下一步须实现输入同步、内部锁存和提交时机，再对照全部 RESET 场景。未远程运行 CI，未提交、推送或发布；未启动 Apple I，也未选择项目许可证。
+本轮完成的是**有界的独立参考基线**，不等于 CPU 物理 RESET 对照通过。M2.4、M2／M2.5 最终验收仍未完成；下一步须实现输入同步、内部锁存和提交时机，再对照全部 RESET 场景。未远程运行 CI，本轮按功能点本地提交，未 push；未启动 Apple I，也未选择项目许可证。
 
 ## M2.4：栈地址锁存与 SP 提交
 
@@ -189,7 +189,7 @@ RDY 相位扫描确认：JSR 的目标低字节等待不会提前写入 SP；最
 | `cargo run -p hesper-cpu6502 --example interrupt --release -- --feedback-delay 4` | `$06F5`，1049 step／3013 周期；顺序计数 `[1,3,2]` |
 | `python3 tools/prepare_visual6502.py`、`node tools/verify_visual6502.cjs` | 固定 7 个源文件哈希通过；原模型精确重现 246 组 pins 和 419 组 reset；本次合计 215.11 秒 |
 
-CPU 已实现引脚的 246 组对照与 RESET 的 419 组参考重现仍是不同范围：前者在 Cargo 回归中执行 CPU，后者在 Node 中执行原模型，Cargo 仅检查 RESET 夹具完整性。默认零延迟 Klaus 中断本轮未重跑，不改变前节失败结论。M2.4／M2 整体验收仍未完成，下一步是实际 RESET 输入同步及中途地址／数据通路；未启动 Apple I。未远程运行 CI，未提交、推送或发布。
+CPU 已实现引脚的 246 组对照与 RESET 的 419 组参考重现仍是不同范围：前者在 Cargo 回归中执行 CPU，后者在 Node 中执行原模型，Cargo 仅检查 RESET 夹具完整性。默认零延迟 Klaus 中断本轮未重跑，不改变前节失败结论。M2.4／M2 整体验收仍未完成，下一步是实际 RESET 输入同步及中途地址／数据通路；未启动 Apple I。未远程运行 CI，本轮按功能点本地提交，未 push。
 
 ## 物理 RESET 实现与 M2 本地整体验收
 
@@ -231,7 +231,7 @@ RESET 执行器接入前，固定 `reset-registers-stack-wrap` 在 c2 的 SYNC �
 
 最后一行只证明原模型重放，实际 CPU 通过由 Cargo 引脚套件证明；两项都已执行。最终诊断事件修正后重新运行了格式／编译、debug/release、Clippy、Wasm 目标、三种 CLI 和上述全部 CPU 外部程序。
 
-M2.1～M2.5 的上述本地目标范围已完成，路线图据此勾选；不宣称穷举全部官方指令×引脚相位组合或所有 NMOS 修订。默认 0 延迟 Klaus 中断本轮未重跑，也未将已记录的上游 NMOS 陷阱改判为通过。Apple I／浏览器未启动；未远程运行 CI，未提交、推送或发布，未选择项目许可证。
+M2.1～M2.5 的上述本地目标范围已完成，路线图据此勾选；不宣称穷举全部官方指令×引脚相位组合或所有 NMOS 修订。默认 0 延迟 Klaus 中断本轮未重跑，也未将已记录的上游 NMOS 陷阱改判为通过。Apple I／浏览器未启动；未远程运行 CI，本轮按功能点本地提交，未 push，未选择项目许可证。
 
 ## M3.1：Apple I 机器总线与 PIA
 
@@ -293,7 +293,7 @@ M3.4 记录"Apple I 未启动意味着尚未通过 CLI 实时联调"——本轮
 | `cargo test --workspace --release` | **115** 个通过 |
 | 真实 PTY 会话：内存检查、写入+回读 | 通过（见上） |
 
-CPU 核心与 `hesper-apple1` 机器模型（`bus.rs`／`pia.rs`／`display.rs`／`keyboard.rs`／`machine.rs`）均未修改，改动仅限 `crates/cli/src/apple1.rs` 的宿主侧终端输入处理。CPU 完整外部体系（SingleStep 151 万、Klaus 三配置、246+419 pins）本轮未重跑，因为 CPU 未修改。未远程运行 CI，未提交、推送或发布。
+CPU 核心与 `hesper-apple1` 机器模型（`bus.rs`／`pia.rs`／`display.rs`／`keyboard.rs`／`machine.rs`）均未修改，改动仅限 `crates/cli/src/apple1.rs` 的宿主侧终端输入处理。CPU 完整外部体系（SingleStep 151 万、Klaus 三配置、246+419 pins）本轮未重跑，因为 CPU 未修改。未远程运行 CI，本轮按功能点本地提交，未 push。
 
 ## M3 继续实现：ROM 资源合规、屏幕模型、物理 RESET 与 CLI raw-mode 生命周期
 
@@ -406,7 +406,7 @@ Make 入口将 ROM 转为绝对路径，避免 Cargo 从 crate 目录运行测�
 不回溯改写。
 
 未修改 CPU 语义、固定夹具或期望数据；`cargo test -p hesper-cpu6502 --test pins` 相关的
-CPU 对照范围本轮未重跑，因为 CPU 未改动。未远程运行 CI，未提交、推送或发布。
+CPU 对照范围本轮未重跑，因为 CPU 未改动。未远程运行 CI，本轮按功能点本地提交，未 push。
 
 ## 三个数据准备脚本的 Bun 回归测试与 `make tools-test` 入口
 
@@ -904,7 +904,7 @@ PTY 判据只比较机器面板，不从侧栏周期数推断字符输出。临�
 
 README、架构、路线图、硬件依据与 Apple I 概览已同步。CPU 核心与其总线／指令语义未改，未重跑 SingleStep／Klaus／Visual6502 完整外部层；未运行远程 CI、跨平台或原生桌面终端视觉验收。C7／TTL 亚字符传播、物理 CLEAR 按钮脉宽、2519 行重放、2513／D1 像素链、DRAM 电荷保持及上电随机态仍未认证，M3 整体验收保持未勾选。临时探针与转录清理后不纳入仓库；没有新增依赖或程序资产。
 
-未提交、推送或发布。
+本轮按功能点本地提交，未 push。
 
 ## 2026-09-15：PA7 板级固定高电平修复（H09）
 
@@ -1005,5 +1005,13 @@ WozMon 的 SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119d
 - 新增单元测试 `config_mouse_hover_highlights_fields_and_buttons`，覆盖 ROM 字段、加载地址字段及三大按钮的悬停高亮属性。
 - `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings` 通过。
 - `make verify`：格式、全目标 check、debug／release 各 252 项测试及冒烟全部通过。
+
+本轮按功能点本地提交，未 push。
+
+## 2026-09-15：修正历史小节中不实的提交状态行
+
+六个小节末行仍写「未提交、推送或发布」，但对应改动均已进入本地 `master`：M2.4 物理 RESET 独立参考基线（`228431c`）、M2.4 栈地址锁存与 SP 提交、物理 RESET 实现与 M2 本地整体验收（`7ba7bc4`、`d6236e9`）、Apple I CLI Enter 键 CR/LF 处理（`92acd28`）、Visual6502 参考驱动改用 Bun（`3771fbd`）、H18 条件垂直重载与滚动帧长修复（`ef6b031`）。这些行写入时反映的是该轮提交前的真实状态，随后被同一次提交原样带入，未按约定改成提交后的实际状态。
+
+本次只把这六行文字改为「本轮按功能点本地提交，未 push。」：技术结论、验证范围、证据表格与未验收清单均未改动，未改源码、测试、工具、程序资产或依赖，也未重跑 Rust 检查、外部 CPU corpus、ROM-gated 测试或远程 CI。
 
 本轮按功能点本地提交，未 push。
