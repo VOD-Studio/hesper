@@ -1,0 +1,229 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Builds and verifies all artifacts without creating or changing a Release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate version and changelog
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          tag=$(python3 tools/release_notes.py "$RELEASE_TAG")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: target/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  checks:
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+
+  full-cpu:
+    needs: metadata
+    uses: ./.github/workflows/full-cpu.yml
+
+  cli:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      RUST_TARGET: ${{ matrix.target }}
+      RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable Rust target
+        run: rustup toolchain install stable --profile minimal --target "$RUST_TARGET"
+      - name: Build CLI and test host library on the target platform
+        run: |
+          cargo build --locked --release -p hesper --target "$RUST_TARGET"
+          cargo test --locked --release -p hesper --lib --target "$RUST_TARGET"
+      - name: Smoke test and package CLI
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+
+          tag, target = os.environ['RELEASE_TAG'], os.environ['RUST_TARGET']
+          windows = 'windows' in target
+          binary = 'hesper.exe' if windows else 'hesper'
+          source = Path('target') / target / 'release' / binary
+          demo = subprocess.check_output([str(source), 'demo'], text=True)
+          assert '54 instructions' in demo and '154 total cycles' in demo, demo
+          subprocess.run([str(source), 'demo', '--bus-trace', '--trace-limit', '4'], check=True)
+          name = f'hesper-{tag}-{target}'
+          stage = Path('stage') / name
+          stage.mkdir(parents=True)
+          shutil.copy2(source, stage / binary)
+          for file in ['README.md', 'CHANGELOG.md', 'crates/cli/assets/README.md', 'crates/apple1/tests/data/README.md']:
+              dest = stage / file
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(file, dest)
+          shutil.copytree('docs', stage / 'docs')
+          Path('dist').mkdir()
+          shutil.make_archive(str(Path('dist') / name), 'zip' if windows else 'gztar', 'stage', name)
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+
+  wasm:
+    needs: [metadata, checks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: wasm-packages
+          path: target/wasm-packages
+      - name: Package the tested Wasm libraries
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+
+          tag = os.environ['RELEASE_TAG']
+          Path('dist').mkdir()
+          for library in ['cpu6502', 'apple1']:
+              for host in ['web', 'nodejs']:
+                  source = Path('target/wasm-packages') / library / host
+                  for extension in ['.js', '.d.ts', '_bg.wasm']:
+                      assert (source / f'hesper_{library}{extension}').is_file()
+                  assert f'Version: {tag[1:]}.' in (source / 'README.md').read_text()
+                  name = f'hesper-{library}-{tag}-wasm32-unknown-unknown-{host}'
+                  stage = Path('stage') / name
+                  shutil.copytree(source, stage)
+                  (stage / 'docs').mkdir()
+                  shutil.copy2('docs/wasm.md', stage / 'docs/wasm.md')
+                  shutil.make_archive(str(Path('dist') / name), 'gztar', 'stage', name)
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-wasm
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    needs: [metadata, checks, full-cpu, cli, wasm]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-cli-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-wasm
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+          path: notes
+      - name: Verify complete asset set and generate SHA-256 checksums
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          tag = os.environ['RELEASE_TAG']
+          targets = ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu',
+                     'x86_64-apple-darwin', 'aarch64-apple-darwin',
+                     'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc']
+          expected = {f'hesper-{tag}-{t}.' + ('zip' if 'windows' in t else 'tar.gz') for t in targets}
+          expected |= {f'hesper-{lib}-{tag}-wasm32-unknown-unknown-{host}.tar.gz'
+                       for lib in ['cpu6502', 'apple1'] for host in ['web', 'nodejs']}
+          files = sorted(Path('dist').iterdir())
+          assert {p.name for p in files} == expected, [p.name for p in files]
+          checksums = ''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in files)
+          Path('dist/SHA256SUMS').write_text(checksums)
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-checksums
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      - name: Publish tag Release with its changelog and all artifacts
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          prerelease=false
+          if [[ "$RELEASE_TAG" == *-* ]]; then prerelease=true; fi
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
+            if [[ "$draft" != true ]]; then
+              echo 'Release is already published; refusing to replace its artifacts.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "Hesper $RELEASE_TAG" --notes-file notes/release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$prerelease" \
+            --title "Hesper $RELEASE_TAG" --notes-file notes/release-notes.md

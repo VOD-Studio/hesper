@@ -1,6 +1,11 @@
 name: Rust
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -11,6 +16,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: Release metadata regression tests
+        run: python3 -m unittest discover -s tests/release
       - name: Install stable Rust checks
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Toolchain versions
@@ -40,3 +47,10 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
       - run: make wasm-setup
       - run: make wasm-browser-test
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wasm-packages
+          path: target/wasm-packages/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true

@@ -1,7 +1,9 @@
 name: Full CPU conformance
 
-# Explicit opt-in: ordinary PRs use the small fixtures already in the repository.
-on: workflow_dispatch
+# Release gate or explicit opt-in; ordinary PRs use the checked-in small fixtures.
+on:
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -39,5 +41,5 @@ jobs:
         run: cargo run -p hesper-cpu6502 --example interrupt --release --locked --offline -- --feedback-delay 4
       - name: Reproduce revD pin and independent RESET reference observations
         run: bun tools/verify_visual6502.ts
-      - name: Compare CPU pins and check RESET reference integrity (no CPU RESET comparison)
+      - name: Compare CPU pins and physical RESET with reference observations
         run: cargo test -p hesper-cpu6502 --test pins --release --locked --offline

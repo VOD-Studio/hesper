@@ -38,7 +38,9 @@ impl TerminalGuard {
         for signal in [
             signal_hook::consts::SIGTERM,
             signal_hook::consts::SIGINT,
+            #[cfg(unix)]
             signal_hook::consts::SIGHUP,
+            #[cfg(unix)]
             signal_hook::consts::SIGQUIT,
         ] {
             guard

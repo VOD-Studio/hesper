@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **发布 CI**：推送版本 tag 后自动校验 workspace 版本与 changelog，运行常规／全量 CPU 验证，构建 Linux、macOS、Windows 的 x86_64／ARM64 CLI，并将 CPU／Apple I 的 web／nodejs Wasm 包、SHA-256 校验文件和对应 changelog 发布到 GitHub Release；支持只构建不发布的手动试跑。
+
+### 修复
+
+- **Windows CLI**：仅在 Unix 平台注册 `SIGHUP/SIGQUIT`，修复 Windows 缺少这些信号常量导致的编译失败。
+
 ## [0.2.0] - 2026-09-15
 
 首次带 tag 的仓库发布，汇总此前 `0.1.0` 开发阶段的现有能力；`0.1.0` 未创建正式 Release。

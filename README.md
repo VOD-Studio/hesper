@@ -206,9 +206,34 @@ cargo test -p hesper-cpu6502 --test pins --release
 
 当前版本为 **0.2.0**，变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布见 [GitHub Releases](https://github.com/VOD-Studio/hesper/releases)。
 
-所有 Rust crate 使用统一版本，由根 `Cargo.toml` 的 `workspace.package.version` 管理；一次发布对应一个 `vX.Y.Z` tag 和一份 changelog。当前通过 GitHub 发布源码，保留 `publish = false`，不发布到 crates.io；`examples/web` 是私有示例应用，随仓库发布。
+所有 Rust crate 使用统一版本，由根 `Cargo.toml` 的 `workspace.package.version` 管理；一次发布对应一个 `vX.Y.Z` tag 和一份 changelog。通过 GitHub Release 分发源码、CLI 和 Wasm，保留 `publish = false`，不发布到 crates.io；`examples/web` 是私有示例应用，随源码发布。
 
-用户可见变更先记入 changelog 的 `Unreleased`，注明受影响的组件和兼容性变化。发布时更新 workspace 版本、`Cargo.lock` 和此处版本，将条目移入带日期的版本小节；运行 `make verify`、`make full`、`make wasm-browser-test`，以及 Web 示例的 `bun run check` / `bun run build`。确认发布提交的 CI 通过后创建 tag，以该版本小节作为 GitHub Release 说明。详细验证结果继续记录在 `docs/verification.md`。
+用户可见变更先记入 changelog 的 `Unreleased`，注明受影响的组件和兼容性变化。发布时更新 workspace 版本、`Cargo.lock` 和此处版本，将条目移入 `## [X.Y.Z] - YYYY-MM-DD` 小节，并更新底部版本链接。运行 `make verify`、`make full`、`make wasm-browser-test`，以及 Web 示例的 `bun run check` / `bun run build`，提交并推送后创建版本 tag：
+
+```sh
+# 以未来的 0.2.1 为例；Cargo.toml 和 changelog 必须已更新到对应版本。
+git tag -a v0.2.1 -m 'Hesper v0.2.1'
+git push origin v0.2.1
+```
+
+[`Release` 工作流](.github/workflows/release.yml) 接收 `v*` tag：先检查 tag 与 workspace 版本一致，且 changelog 有且仅有一段非空、带日期的对应版本说明；再运行常规检查、全量 CPU 一致性及平台构建。全部通过后上传完整产物并发布 Release，说明取自对应 changelog 小节，不包含 `Unreleased` 或其他版本。`vX.Y.Z-rc.N` 等预发布 tag 会标记为 prerelease。发布说明提取工具使用 Python 3.11+ 标准库，回归命令是 `python3 -m unittest discover -s tests/release`，已纳入常规 CI。
+
+CLI 产物命名为 `hesper-vX.Y.Z-<Rust target>.<格式>`：
+
+| 系统 | Rust target | 格式 |
+| --- | --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
+| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | `.zip` |
+| Windows ARM64 | `aarch64-pc-windows-msvc` | `.zip` |
+
+Linux 在 Ubuntu 22.04 上构建，使用 glibc，不是 musl 静态包；macOS 和 Windows 包未做发行者签名／公证。各平台运行宿主库测试与 CLI demo，这不代替真实终端的完整交互验收。CLI 压缩包包含可执行文件、changelog、使用文档和内置资源来源说明。
+
+Wasm 产物为 `hesper-{cpu6502,apple1}-vX.Y.Z-wasm32-unknown-unknown-{web,nodejs}.tar.gz`，共 4 个包，包含实际验证过的 `.wasm`、JS、TypeScript 声明与说明文件。所有 10 个压缩包的哈希写入 `SHA256SUMS`，与产物一起上传。下载后可运行 `sha256sum -c SHA256SUMS` 校验。
+
+在 Actions 中手动运行 `Release`（或 `gh workflow run release.yml --ref master`）会验证并构建全部产物，只保存在 Actions artifacts，不创建或修改 Release。发布失败可重跑原 tag 的工作流；未发布的 draft 可补传产物，已经正式发布的 Release 不会被覆盖。不要移动已发布 tag；修复后使用新版本。此前 `v0.2.0` 是手动源码发布，本自动产物流程从后续版本开始生效。详细验证结果继续记录在 `docs/verification.md`。
 
 ## 文档
 

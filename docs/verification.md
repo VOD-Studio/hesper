@@ -1129,3 +1129,23 @@ TUI 保留旧配置的外部路径优先级，清空并保存后移除该覆盖�
 
 以上是本地执行证据，远程 CI 以发布提交对应的 GitHub Actions 记录为准。
 本轮未重跑跨平台真实终端视觉矩阵，也不扩大已有硬件或预置兼容性声明。
+
+## 2026-09-15：tag 驱动的 CLI / Wasm 发布 CI
+
+新增 `Release` 工作流：版本 tag 校验、复用常规与全量 CPU 检查、六个平台的原生
+CLI 构建／宿主库测试／demo、复用已验证 Wasm 产物、打包与 SHA-256 清单，最后
+从对应 changelog 小节创建 GitHub Release。手动 dispatch 只构建验证，不发布。
+
+本地验证：
+
+- `python3 -m unittest discover -s tests/release`：3 项测试通过，包含版本不匹配、
+  非法 tag、缺失／重复／空 changelog、非法日期、预发布版本及跨版本提取边界。
+- `actionlint 1.7.12`：全部 GitHub Actions 工作流通过语法与表达式检查。
+- Windows MSVC x86_64 的 `cargo check --locked -p hesper --target ...` 原先明确
+  失败于 `SIGHUP/SIGQUIT` 不存在；添加 Unix 条件后，x86_64 和 ARM64 均通过。
+- `make verify`：全套常规本地检查通过。
+- 直接执行工作流中的打包步骤：4 个真实 Wasm 包包含 JS、类型、Wasm 与说明；
+  macOS ARM64 CLI 包解压后保留执行权限，实际 demo 得到 154 个总周期。
+
+跨平台发布编译与测试以本次后续的 GitHub Actions `Release` 试跑为准。
+此处的编译／demo 证据不代替各平台真实终端的交互与视觉验收。
