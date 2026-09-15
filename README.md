@@ -6,7 +6,7 @@
 
 Hesper 是一个使用 Rust 编写的经典计算机模拟器项目，包含机器无关、逐周期执行的 NMOS 6502 核心、Apple I 文本机器模型，以及中文 TUI 和可脚本化的 CLI。
 
-CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASIC 和部分预置程序，**M3 整体验收仍未完成**。主板刷新停钟、CB2 显示握手、两端口读回路径，以及含条件垂直重载和滚动帧长变化的循环存储时序已实现；[数字视频链](docs/apple1/video.md)现可输出逐点亮度和同步。剩余边界包括原板字模逐点认证、电气特性和真实上电状态。具体范围见 [`docs/roadmap.md`](docs/roadmap.md) 和 [`硬件依据与差异`](docs/apple1/hardware-evidence.md)。CPU 与 Apple I 已提供 [WASM / JS 绑定](docs/wasm.md)；Apple II 与完整浏览器前端尚未开始。
+CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASIC 和部分预置程序，**M3 整体验收仍未完成**。主板刷新停钟、CB2 显示握手、两端口读回路径，以及含条件垂直重载和滚动帧长变化的循环存储时序已实现；[数字视频链](docs/apple1/video.md)现可输出逐点亮度和同步。剩余边界包括原板字模逐点认证、电气特性和真实上电状态。具体范围见 [`docs/roadmap.md`](docs/roadmap.md) 和 [`硬件依据与差异`](docs/apple1/hardware-evidence.md)。CPU 与 Apple I 已提供 [WASM / JS 绑定](docs/wasm.md)，并提供 [React Web 工作台](examples/web/README.md)。Apple II 尚未开始，浏览器前端整体验收仍未完成。
 
 无参数在 stdin/stdout 都是终端时进入中文 TUI 启动中心；重定向任一流时仍运行可脚本化的内置演示。Apple I 的 TUI 按键约定见 [`docs/apple1/examples.md`](docs/apple1/examples.md)：Ctrl-R 是物理 RESET，Ctrl-L 是键盘上的 CLEAR SCREEN 按钮，Ctrl-P 暂停/继续，Ctrl-N 重建机器，Ctrl-C/Ctrl-D 退出。
 
@@ -47,6 +47,18 @@ make wasm-browser-test  # 原生对照、Bun / Node.js 和真实 Chrome 验证
 ```
 
 两个独立包分别导出 `Cpu6502Ram` 和 `Apple1`，包含 `.wasm`、JS 与 TypeScript 类型声明。构建、接口和调用示例见 [WASM 文档](docs/wasm.md)。
+
+### Web 工作台
+
+完成上述 Wasm 工具安装后：
+
+```sh
+cd examples/web
+bun install --frozen-lockfile
+bun run dev
+```
+
+React 19.3 + shadcn/ui，提供 Apple-1 40×24 屏幕、内置 Woz Monitor、42 个预置及本地程序装载，以及独立 CPU 6502 单步、寄存器、内存和总线记录。通过 Worker 运行真实 Wasm；使用说明与验证边界见 [examples/web](examples/web/README.md)。
 
 ### 本机 CLI / TUI
 
