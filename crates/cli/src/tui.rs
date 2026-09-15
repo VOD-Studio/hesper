@@ -331,7 +331,7 @@ impl App {
                 program,
                 program_address: format!("0x{:04X}", launch.program_address),
                 preset: launch.preset,
-                focus: ConfigFocus::Rom,
+                focus: ConfigFocus::Program,
                 edit: None,
                 status: None,
             },
@@ -1100,7 +1100,7 @@ impl App {
                 };
             }
             KeyCode::Enter => match self.form.focus {
-                ConfigFocus::Program if self.form.preset.is_some() => self.open_programs(),
+                ConfigFocus::Program => self.open_programs(),
                 ConfigFocus::ProgramAddress if self.form.preset.is_some() => {
                     self.form.status =
                         Some("预置程序使用固定加载地址；按 F3 可切换为本地文件".into());
@@ -1691,7 +1691,7 @@ fn footer(app: &App, width: u16, theme: &Theme) -> Line<'static> {
                     vec![
                         (
                             "Enter",
-                            if app.form.focus == ConfigFocus::Program && app.form.preset.is_some() {
+                            if app.form.focus == ConfigFocus::Program {
                                 "选择"
                             } else if app.form.focus == ConfigFocus::ProgramAddress
                                 && app.form.preset.is_some()
@@ -2247,7 +2247,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         |preset| format!("0x{:04X}", preset.load),
     );
     let program_hint = app.form.preset.map_or_else(
-        || "F3 选择预置 · F4 浏览本地文件".into(),
+        || "Enter 选择预置 · F4 浏览本地文件".into(),
         |preset| format!("预置 {} B · {}", preset.size(), preset.startup),
     );
     let card = centered(
@@ -2319,7 +2319,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             block = block.border_style(style).title_style(style).title(
                 Line::from(if edit.is_some() {
                     " 编辑中 "
-                } else if app.form.preset.is_some() && focus == ConfigFocus::Program {
+                } else if focus == ConfigFocus::Program {
                     " Enter 选择 "
                 } else if app.form.preset.is_some() && focus == ConfigFocus::ProgramAddress {
                     " 固定地址 "
@@ -2360,7 +2360,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .unwrap_or(if app.form.edit.is_some() {
             "Enter 确认修改，Esc 放弃本次编辑。"
         } else {
-            "F3 选择预置程序；Enter 编辑字段；F4 浏览路径。"
+            "Enter 选择程序；其他字段 Enter 编辑；F4 浏览路径。"
         });
     frame.render_widget(
         Paragraph::new(status)
@@ -2482,7 +2482,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n鼠标：点击顶栏展开下拉菜单，移动选择，点击菜单项执行；再次点击标题或点击外部收起。显示设置可开关鼠标菜单，旧配置若已关闭，可用 F10 进入设置开启。\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页：方向键或 Tab/Shift+Tab 选择，Enter 进入编辑，再按 Enter 确认，Esc 取消编辑。编辑时可粘贴单行文本，左右键/Home/End 移动光标，Ctrl+U 清空；路径可按 F4 浏览。配置页 F3 选择预置程序；BASIC (Huston) 自动加载到 $E000，启动后输入 E000R。机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
+    let text = "Apple-1 运行页\nF1 帮助 · F2 会话菜单 · F3 显示/隐藏侧栏 · F10 顶栏菜单\nCtrl+P 暂停/继续 · Ctrl+R 物理 RESET · Ctrl+L CLEAR SCREEN · Ctrl+N 重新上电\nCtrl+C / Ctrl+D 退出 · Enter 发送 CR · Backspace 发送 _ · Esc 发送机器取消输入\n\n鼠标：点击顶栏展开下拉菜单，移动选择，点击菜单项执行；再次点击标题或点击外部收起。显示设置可开关鼠标菜单，旧配置若已关闭，可用 F10 进入设置开启。\n\n菜单、表单和确认弹窗会阻止机器自由运行；它们获得焦点时按键不会漏给机器。配置页默认聚焦「程序」字段，直接按 Enter 即打开预置程序选择框；方向键或 Tab/Shift+Tab 选择其他字段，Enter 进入编辑，再按 Enter 确认，Esc 取消编辑。编辑时可粘贴单行文本，左右键/Home/End 移动光标，Ctrl+U 清空；路径可按 F4 浏览。F3 在任何字段都能打开预置程序选择框；BASIC (Huston) 自动加载到 $E000，启动后输入 E000R。机器屏幕页的粘贴会将 CR/LF 规范为单个 CR。";
     frame.render_widget(
         Paragraph::new(text)
             .block(theme.block("帮助"))
@@ -3159,9 +3159,22 @@ mod tests {
         app.page = Page::Config;
         app.terminal_size = (120, 40);
         app.form.rom = "/rom.bin".into();
+        assert_eq!(
+            app.form.focus,
+            ConfigFocus::Program,
+            "the program row is the default focus"
+        );
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.handle_event(Event::Paste("ignored".into()));
         assert_eq!(app.form.rom, "/rom.bin", "selection must not edit a field");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(app.overlay, Some(Overlay::Programs { .. })),
+            "Enter on the program row opens the picker directly"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.page, Page::Config, "Escape returns to the form");
+        app.form.focus = ConfigFocus::Rom;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -3169,6 +3182,9 @@ mod tests {
         assert_eq!(app.form.rom, "/rom.bin");
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.form.focus, ConfigFocus::Program);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // The picker's second row is the local-file path editor.
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_event(Event::Paste("/program.bin".into()));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -3184,6 +3200,7 @@ mod tests {
         app.page = Page::Config;
         app.terminal_size = (120, 40);
         app.form.rom = "原始.bin".into();
+        app.form.focus = ConfigFocus::Rom;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         app.handle_event(Event::Paste("甲乙.bin".into()));
@@ -3218,6 +3235,7 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
             terminal.draw(|frame| app.draw(frame)).unwrap();
             assert!(!terminal.backend().cursor_visible());
+            app.form.focus = ConfigFocus::Rom;
             app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             for (width, height) in [(180, 50), (80, 30), (44, 30), (120, 40)] {
                 terminal.backend_mut().resize(width, height);
@@ -3265,6 +3283,7 @@ mod tests {
         app.page = Page::Config;
         app.terminal_size = (120, 40);
         app.form.rom = "/original.bin".into();
+        app.form.focus = ConfigFocus::Rom;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
         assert!(matches!(
@@ -3307,6 +3326,7 @@ mod tests {
         app.form.rom = "/rom.bin".into();
         app.form.program = "/program.bin".into();
         assert_eq!(app.form.program_address, "0xE000");
+        app.form.focus = ConfigFocus::Rom;
         for expected in [ConfigFocus::Program, ConfigFocus::ProgramAddress] {
             app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
             assert_eq!(app.form.focus, expected);
@@ -3759,6 +3779,8 @@ mod tests {
         assert_eq!(app.form.rom, format!("/rom/{path}"));
         assert!(app.form.program.is_empty());
         app.form.focus = ConfigFocus::Program;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_event(Event::Paste("程序 file.bin".into()));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

@@ -854,3 +854,19 @@ CPU 核心（`hesper-cpu6502`）本轮未修改，因此未重跑 SingleStep 151
 - `make verify`：格式、全目标检查、debug／release 各 240 项测试、Clippy `-D warnings`、demo／trace／bus-trace 和 diff 检查全部通过。每种构建的 20 项真实 ROM 测试按约定 ignored。
 
 本轮未改 CPU／机器时序，未运行完整外部 CPU corpus、ROM-gated 测试、远程 CI 或跨平台／真实终端验收。本轮本地提交，未 push。
+
+## 2026-09-14：配置页默认聚焦程序字段并按 Enter 打开选择框
+
+仅改宿主 TUI（`crates/cli/src/tui.rs`）：`ConfigForm` 初始焦点由 `Rom` 改为 `Program`；`config_key` 中 Enter 对 `ConfigFocus::Program` 的处理去掉 `preset.is_some()` 守卫，无论是否已选预置都直接 `open_programs()` 打开「选择程序」弹层（即用户截图中的选择框）。相应文案同步：02 字段右侧徽标恒为 `Enter 选择`、字段提示改为 `Enter 选择预置 · F4 浏览本地文件`、默认状态行改为 `Enter 选择程序；其他字段 Enter 编辑；F4 浏览路径。`、页脚 Enter 提示在程序行恒为「选择」、帮助页补充「配置页默认聚焦程序字段，直接按 Enter 即打开预置程序选择框」。其余字段行为不变：ROM／加载地址 Enter 仍进入编辑，F3 仍为全局快捷键，弹层内 Esc 返回表单。
+
+受影响测试按新契约更新而非删除：`config_fields_require_enter_and_escape_cancels_only_the_edit` 断言默认焦点为程序行、裸 Enter 打开弹层、Esc 回到表单，本地路径编辑经弹层「本地二进制文件…」行进入；`path_paste_targets_only_the_focused_field_and_preserves_literal_text` 同样改走弹层；ROM 编辑相关用例显式设置 `ConfigFocus::Rom`。
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `cargo test -p hesper --lib tui` | 36 项通过（18 项非 tui 过滤） |
+| `cargo test --workspace` / `--release` | 各 240 项通过、20 项真实 ROM 测试按约定 ignored |
+| `make verify` | 格式、全目标 check、debug／release 测试、Clippy `-D warnings`、demo 与 diff 检查全部通过。转录：`.cache/tui-config-enter-qa/verify.log` |
+| `make wozmon-tests ROM=.cache/apple1/wozmon.bin` | 4 项机器测试与 16 项 CLI 测试通过 |
+| macOS 真实 PTY（120×40，`cargo run … apple1 --rom …` → F10 → Apple-1 配置） | 6 项断言全部通过：表单首帧 02 行带 `Enter 选择` 徽标且无编辑器打开；裸 Enter 立即出现「选择程序」弹层（含分类与 15 Puzzle）；Esc 返回表单；Shift+Tab 到 ROM 行后 Enter 进入 `编辑中` 而非弹层。脚本与转录：`.cache/tui-config-enter-qa/pty_enter.py`、`pty_enter.log`。断言限定在弹层／表单可见文本，未做全屏子串匹配 |
+
+本轮未改 CPU、Apple I 机器行为、配置 schema 或程序资产，未添加依赖；PTY 验收覆盖配置页 Enter 路径，不代表完整 P01–P16、Linux/Windows 或原生桌面终端视觉验收。本轮本地提交，未 push。
