@@ -111,6 +111,14 @@ impl CenterAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CenterHover {
+    Machine(usize),
+    Action,
+    Config,
+    Info,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuKind {
     Emulator,
     Session,
@@ -273,6 +281,8 @@ struct App {
     config_path: Option<PathBuf>,
     config_warning: Option<String>,
     selected_machine: usize,
+    center_hover: Option<CenterHover>,
+    hovered_menu: Option<MenuKind>,
     form: ConfigForm,
     session: Option<Session>,
     resources: Option<Resources>,
@@ -326,6 +336,8 @@ impl App {
             config_path,
             config_warning,
             selected_machine,
+            center_hover: None,
+            hovered_menu: None,
             form: ConfigForm {
                 rom,
                 program,
@@ -626,6 +638,8 @@ impl App {
         if page == self.page {
             return;
         }
+        self.center_hover = None;
+        self.hovered_menu = None;
         if matches!(page, Page::Info | Page::Help | Page::Settings) {
             if let Some(index) = self
                 .page_history
@@ -813,6 +827,11 @@ impl App {
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if !self.config.ui.mouse || !self.normal_size() {
+            if self.center_hover.is_some() || self.hovered_menu.is_some() {
+                self.center_hover = None;
+                self.hovered_menu = None;
+                self.dirty = true;
+            }
             return;
         }
         let clicked = mouse.kind == MouseEventKind::Down(MouseButton::Left);
@@ -823,14 +842,30 @@ impl App {
             Some(Overlay::Menu { kind, selected }) => Some((kind, selected)),
             None => None,
             // Confirmations, errors and file browsers retain exclusive focus.
-            Some(_) => return,
+            Some(_) => {
+                if self.center_hover.is_some() || self.hovered_menu.is_some() {
+                    self.center_hover = None;
+                    self.hovered_menu = None;
+                    self.dirty = true;
+                }
+                return;
+            }
         };
         let area = Rect::new(0, 0, self.terminal_size.0, self.terminal_size.1);
         let position = Position::new(mouse.column, mouse.row);
-        if let Some((kind, _, _)) = menu_tabs(area)
+        let hovered_tab = menu_tabs(area)
             .into_iter()
             .find(|(_, _, tab)| tab.contains(position))
-        {
+            .map(|(kind, _, _)| kind);
+        if self.hovered_menu != hovered_tab {
+            self.hovered_menu = hovered_tab;
+            self.dirty = true;
+        }
+        if let Some(kind) = hovered_tab {
+            if self.center_hover.is_some() {
+                self.center_hover = None;
+                self.dirty = true;
+            }
             if clicked || menu.is_some_and(|(active, _)| active != kind) {
                 self.overlay = if clicked && menu.is_some_and(|(active, _)| active == kind) {
                     None
@@ -842,6 +877,10 @@ impl App {
             return;
         }
         if let Some((kind, selected)) = menu {
+            if self.center_hover.is_some() {
+                self.center_hover = None;
+                self.dirty = true;
+            }
             let popup = menu_popup(area, kind);
             // Match the dropdown's border and horizontal content padding.
             let items = popup.inner(Margin::new(2, 1));
@@ -861,6 +900,21 @@ impl App {
             } else if clicked && !popup.contains(position) {
                 self.overlay = None;
                 self.dirty = true;
+            }
+            return;
+        }
+        if self.page == Page::Center {
+            self.update_center_hover(area, position);
+            if clicked {
+                self.center_mouse(area, position);
+            }
+        } else {
+            if self.center_hover.is_some() {
+                self.center_hover = None;
+                self.dirty = true;
+            }
+            if clicked && self.page == Page::Config {
+                self.config_mouse(area, position);
             }
         }
     }
@@ -933,6 +987,27 @@ impl App {
         }
     }
 
+    fn activate_center(&mut self) {
+        match self.center_action() {
+            CenterAction::Resume => self.open_page(Page::Apple1),
+            CenterAction::Configure => {
+                self.form.status = if self.form.rom.is_empty() {
+                    None
+                } else {
+                    self.validate_resources().err()
+                };
+                self.open_page(Page::Config);
+            }
+            CenterAction::Launch => {
+                // A resource can disappear between preview and launch.
+                // Keep any resulting validation error on a visible form.
+                self.open_page(Page::Config);
+                self.start_configured(true);
+            }
+            CenterAction::Demo => self.run_demo(),
+        }
+    }
+
     fn center_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up => {
@@ -941,30 +1016,73 @@ impl App {
             KeyCode::Down => {
                 self.selected_machine = (self.selected_machine + 1).min(1);
             }
-            KeyCode::Enter => match self.center_action() {
-                CenterAction::Resume => self.open_page(Page::Apple1),
-                CenterAction::Configure => {
-                    self.form.status = if self.form.rom.is_empty() {
-                        None
-                    } else {
-                        self.validate_resources().err()
-                    };
-                    self.open_page(Page::Config);
-                }
-                CenterAction::Launch => {
-                    // A resource can disappear between preview and launch.
-                    // Keep any resulting validation error on a visible form.
-                    self.open_page(Page::Config);
-                    self.start_configured(true);
-                }
-                CenterAction::Demo => self.run_demo(),
-            },
+            KeyCode::Enter => self.activate_center(),
             KeyCode::Char('c' | 'C') if self.selected_machine == 0 => self.open_page(Page::Config),
             KeyCode::Char('i' | 'I') if self.selected_machine == 0 => self.open_page(Page::Info),
             KeyCode::F(1) => self.open_help(),
             _ => {}
         }
         self.dirty = true;
+    }
+
+    fn update_center_hover(&mut self, area: Rect, position: Position) {
+        let action = self.center_action();
+        let layout = center_layout(page_area(area), action.label().width() as u16);
+        let new_hover = if layout.list_items.contains(position) {
+            let row = position.y.saturating_sub(layout.list_items.y);
+            let item = usize::from(row / 3);
+            if item < 2 {
+                Some(CenterHover::Machine(item))
+            } else {
+                None
+            }
+        } else if layout.action_button.contains(position) {
+            Some(CenterHover::Action)
+        } else if self.selected_machine == 0
+            && self.config_warning.is_none()
+            && layout.config_button.contains(position)
+        {
+            Some(CenterHover::Config)
+        } else if self.selected_machine == 0
+            && self.config_warning.is_none()
+            && layout.info_button.contains(position)
+        {
+            Some(CenterHover::Info)
+        } else {
+            None
+        };
+        if self.center_hover != new_hover {
+            self.center_hover = new_hover;
+            self.dirty = true;
+        }
+    }
+
+    fn center_mouse(&mut self, area: Rect, position: Position) {
+        let action = self.center_action();
+        let layout = center_layout(page_area(area), action.label().width() as u16);
+        if layout.list_items.contains(position) {
+            let row = position.y.saturating_sub(layout.list_items.y);
+            let item = usize::from(row / 3);
+            if item < 2 {
+                self.selected_machine = item;
+                self.dirty = true;
+            }
+        } else if layout.action_button.contains(position) {
+            self.activate_center();
+            self.dirty = true;
+        } else if self.selected_machine == 0
+            && self.config_warning.is_none()
+            && layout.config_button.contains(position)
+        {
+            self.open_page(Page::Config);
+            self.dirty = true;
+        } else if self.selected_machine == 0
+            && self.config_warning.is_none()
+            && layout.info_button.contains(position)
+        {
+            self.open_page(Page::Info);
+            self.dirty = true;
+        }
     }
 
     fn apple_key(&mut self, key: KeyEvent) {
@@ -1099,25 +1217,59 @@ impl App {
                     _ => self.form.focus.adjacent(false),
                 };
             }
-            KeyCode::Enter => match self.form.focus {
-                ConfigFocus::Program => self.open_programs(),
-                ConfigFocus::ProgramAddress if self.form.preset.is_some() => {
-                    self.form.status =
-                        Some("预置程序使用固定加载地址；按 F3 可切换为本地文件".into());
-                }
-                ConfigFocus::Validate => {
-                    let _ = self.validate_and_save();
-                }
-                ConfigFocus::Launch => self.start_configured(true),
-                ConfigFocus::Cancel => self.return_to_center(),
-                _ => {
-                    if let Some(text) = self.form.focused_text().cloned() {
-                        self.form.edit = Some(ConfigEdit::new(text));
-                        self.form.status = None;
-                    }
-                }
-            },
+            KeyCode::Enter => self.activate_config_focus(self.form.focus),
             _ => {}
+        }
+    }
+
+    fn activate_config_focus(&mut self, focus: ConfigFocus) {
+        if self.form.focus != focus {
+            if focus == ConfigFocus::Cancel {
+                self.form.edit = None;
+            } else if let Some(edit) = self.form.edit.take()
+                && let Some(field) = self.form.focused_text()
+            {
+                *field = edit.text;
+            }
+            self.form.focus = focus;
+            self.form.status = None;
+        }
+        match focus {
+            ConfigFocus::Program => self.open_programs(),
+            ConfigFocus::ProgramAddress if self.form.preset.is_some() => {
+                self.form.status = Some("预置程序使用固定加载地址；按 F3 可切换为本地文件".into());
+            }
+            ConfigFocus::Validate => {
+                let _ = self.validate_and_save();
+            }
+            ConfigFocus::Launch => self.start_configured(true),
+            ConfigFocus::Cancel => self.return_to_center(),
+            _ => {
+                if self.form.edit.is_none()
+                    && let Some(text) = self.form.focused_text().cloned()
+                {
+                    self.form.edit = Some(ConfigEdit::new(text));
+                    self.form.status = None;
+                }
+            }
+        }
+    }
+
+    fn config_mouse(&mut self, area: Rect, position: Position) {
+        let layout = config_layout(page_area(area));
+        for (focus, rect) in layout.buttons {
+            if rect.contains(position) {
+                self.activate_config_focus(focus);
+                self.dirty = true;
+                return;
+            }
+        }
+        for (focus, rect) in layout.fields {
+            if rect.contains(position) {
+                self.activate_config_focus(focus);
+                self.dirty = true;
+                return;
+            }
         }
     }
 
@@ -1444,7 +1596,7 @@ impl App {
             Some(Overlay::Menu { kind, .. }) => Some(kind),
             _ => None,
         };
-        draw_menu_bar(frame, area, active_menu, &theme);
+        draw_menu_bar(frame, area, active_menu, self.hovered_menu, &theme);
         match self.page {
             Page::Center => draw_center(frame, rows[2], self, &theme),
             Page::Apple1 => draw_apple1(frame, rows[2], self, &theme),
@@ -1866,6 +2018,23 @@ impl Theme {
                 .add_modifier(Modifier::BOLD)
         }
     }
+    fn hover(&self) -> Style {
+        if self.mono {
+            Style::default().add_modifier(Modifier::UNDERLINED)
+        } else {
+            self.text().fg(self.foreground).bg(self.panel)
+        }
+    }
+    fn primary_hover(&self) -> Style {
+        if self.mono {
+            self.primary().add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(self.background)
+                .bg(self.foreground)
+                .add_modifier(Modifier::BOLD)
+        }
+    }
     fn status(&self) -> Style {
         if self.mono {
             Style::default().add_modifier(Modifier::BOLD)
@@ -1947,20 +2116,50 @@ fn menu_popup(area: Rect, kind: MenuKind) -> Rect {
     )
 }
 
-fn draw_menu_bar(frame: &mut Frame<'_>, area: Rect, active: Option<MenuKind>, theme: &Theme) {
+fn draw_menu_bar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    active: Option<MenuKind>,
+    hovered: Option<MenuKind>,
+    theme: &Theme,
+) {
     for (kind, label, tab) in menu_tabs(area) {
-        frame.render_widget(
-            Paragraph::new(label).style(if active == Some(kind) {
-                theme.selected()
-            } else {
-                theme.muted()
-            }),
-            tab,
-        );
+        let style = if active == Some(kind) {
+            theme.selected()
+        } else if hovered == Some(kind) {
+            theme.hover()
+        } else {
+            theme.muted()
+        };
+        frame.render_widget(Paragraph::new(label).style(style), tab);
     }
 }
 
-fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
+fn page_area(area: Rect) -> Rect {
+    Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(26),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(area)[2]
+}
+
+struct CenterLayout {
+    list_header: Rect,
+    list_items: Rect,
+    card: Rect,
+    inner: Rect,
+    details: Rect,
+    action: Rect,
+    hint: Rect,
+    action_button: Rect,
+    config_button: Rect,
+    info_button: Rect,
+}
+
+fn center_layout(area: Rect, action_width: u16) -> CenterLayout {
     let width = area.width.saturating_sub(4).min(104);
     let wide = width >= 76;
     let height = area.height.min(if wide { 20 } else { 24 });
@@ -1985,37 +2184,11 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     }
     .split(content);
     let columns = [regions[0], regions[2]];
-    let machines = [
-        ("Apple-1", "40×24 字符终端"),
-        ("6502 内置演示", "计数程序与执行结果"),
-    ];
-    let items = machines.iter().enumerate().map(|(index, (name, caption))| {
-        let selected = index == app.selected_machine;
-        let marker = if selected { "> " } else { "  " };
-        ListItem::new(vec![
-            Line::from(format!("{marker}{name}")),
-            Line::from(Span::styled(format!("  {caption}"), theme.muted())),
-            Line::default(),
-        ])
-        .style(if selected {
-            theme.selected()
-        } else {
-            theme.text()
-        })
-    });
     let list_rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(columns[0]);
-    frame.render_widget(
-        Paragraph::new("选择模拟器").style(theme.muted()),
-        list_rows[0],
-    );
-    frame.render_widget(List::new(items), list_rows[1]);
-
-    let action = app.center_action();
-    let block = theme.block("").padding(Padding::new(2, 2, 1, 1));
-    let inner = block.inner(columns[1]);
-    frame.render_widget(block, columns[1]);
-    // Keep the primary action visible even with long resource paths, warnings,
-    // or the vertically stacked layout at the minimum terminal size.
+    let inner = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::new(2, 2, 1, 1))
+        .inner(columns[1]);
     let rows = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(1),
@@ -2023,12 +2196,76 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         Constraint::Length(1),
     ])
     .split(inner);
+    let config_width = "C 配置".width() as u16;
+    let info_offset = "C 配置    ".width() as u16;
+    let info_width = "I 模拟器信息".width() as u16;
+    CenterLayout {
+        list_header: list_rows[0],
+        list_items: list_rows[1],
+        card: columns[1],
+        inner,
+        details: rows[0],
+        action: rows[2],
+        hint: rows[3],
+        action_button: Rect::new(rows[2].x, rows[2].y, action_width.min(rows[2].width), 1),
+        config_button: Rect::new(rows[3].x, rows[3].y, config_width.min(rows[3].width), 1),
+        info_button: Rect::new(
+            rows[3].x.saturating_add(info_offset),
+            rows[3].y,
+            info_width.min(rows[3].width.saturating_sub(info_offset)),
+            1,
+        ),
+    }
+}
+
+fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
+    let action = app.center_action();
+    let layout = center_layout(area, action.label().width() as u16);
+    let machines = [
+        ("Apple-1", "40×24 字符终端"),
+        ("6502 内置演示", "计数程序与执行结果"),
+    ];
+    let items = machines.iter().enumerate().map(|(index, (name, caption))| {
+        let selected = index == app.selected_machine;
+        let hovered = app.center_hover == Some(CenterHover::Machine(index));
+        let marker = if selected { "> " } else { "  " };
+        ListItem::new(vec![
+            Line::from(format!("{marker}{name}")),
+            Line::from(Span::styled(
+                format!("  {caption}"),
+                if selected {
+                    theme.text().fg(theme.accent)
+                } else if hovered {
+                    theme.text()
+                } else {
+                    theme.muted()
+                },
+            )),
+            Line::default(),
+        ])
+        .style(if selected {
+            theme.selected()
+        } else if hovered {
+            theme.hover()
+        } else {
+            theme.text()
+        })
+    });
+    frame.render_widget(
+        Paragraph::new("选择模拟器").style(theme.muted()),
+        layout.list_header,
+    );
+    frame.render_widget(List::new(items), layout.list_items);
+    frame.render_widget(
+        theme.block("").padding(Padding::new(2, 2, 1, 1)),
+        layout.card,
+    );
     let parameter = |label: &'static str, value: String| {
         Line::from(vec![
             Span::styled(label, theme.muted()),
             Span::raw(truncate_path(
                 &value,
-                usize::from(inner.width.saturating_sub(6)),
+                usize::from(layout.inner.width.saturating_sub(6)),
             )),
         ])
     };
@@ -2095,20 +2332,50 @@ fn draw_center(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             Line::from(Span::styled("Apple-1 会话会继续保留。", theme.muted())),
         ]
     };
-    frame.render_widget(Paragraph::new(details), rows[0]);
+    frame.render_widget(Paragraph::new(details), layout.details);
+    let action_style = if app.center_hover == Some(CenterHover::Action) {
+        theme.primary_hover()
+    } else {
+        theme.primary()
+    };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(action.label(), theme.primary()))),
-        rows[2],
+        Paragraph::new(Line::from(Span::styled(action.label(), action_style))),
+        layout.action,
     );
-    let hint = app
-        .config_warning
-        .as_deref()
-        .unwrap_or(if app.selected_machine == 0 {
-            "C 配置    I 模拟器信息"
-        } else {
-            "运行后可按 R 重跑，Esc 返回。"
-        });
-    frame.render_widget(Paragraph::new(hint).style(theme.muted()), rows[3]);
+    let hint_line = if app.selected_machine == 0 && app.config_warning.is_none() {
+        let config_hover = app.center_hover == Some(CenterHover::Config);
+        let info_hover = app.center_hover == Some(CenterHover::Info);
+        Line::from(vec![
+            Span::styled(
+                "C 配置",
+                if config_hover {
+                    theme.selected()
+                } else {
+                    theme.muted()
+                },
+            ),
+            Span::raw("    "),
+            Span::styled(
+                "I 模拟器信息",
+                if info_hover {
+                    theme.selected()
+                } else {
+                    theme.muted()
+                },
+            ),
+        ])
+    } else {
+        let hint = app
+            .config_warning
+            .as_deref()
+            .unwrap_or(if app.selected_machine == 0 {
+                "C 配置    I 模拟器信息"
+            } else {
+                "运行后可按 R 重跑，Esc 返回。"
+            });
+        Line::from(Span::styled(hint, theme.muted()))
+    };
+    frame.render_widget(Paragraph::new(hint_line), layout.hint);
 }
 
 fn draw_apple1(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
@@ -2239,7 +2506,63 @@ fn edit_view(edit: &ConfigEdit, width: u16) -> (&str, u16) {
     (&edit.text[start..], cells as u16)
 }
 
+struct ConfigLayout {
+    card: Rect,
+    rows: [Rect; 7],
+    fields: [(ConfigFocus, Rect); 3],
+    buttons: [(ConfigFocus, Rect); 3],
+}
+
+fn config_layout(area: Rect) -> ConfigLayout {
+    let card = centered(
+        Rect::new(0, 0, area.width.saturating_sub(4).min(96), 26),
+        area,
+    );
+    let inner = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::new(2, 2, 1, 1))
+        .inner(card);
+    let rows: [Rect; 7] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(4),
+        Constraint::Length(4),
+        Constraint::Length(4),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(2),
+    ])
+    .split(inner)
+    .to_vec()
+    .try_into()
+    .expect("split produces 7 rows");
+    let fields = [
+        (ConfigFocus::Rom, rows[1]),
+        (ConfigFocus::Program, rows[2]),
+        (ConfigFocus::ProgramAddress, rows[3]),
+    ];
+    let button_cols = Layout::horizontal([
+        Constraint::Length(14),
+        Constraint::Length(2),
+        Constraint::Length(10),
+        Constraint::Length(2),
+        Constraint::Length(8),
+    ])
+    .split(rows[5]);
+    let buttons = [
+        (ConfigFocus::Validate, button_cols[0]),
+        (ConfigFocus::Launch, button_cols[2]),
+        (ConfigFocus::Cancel, button_cols[4]),
+    ];
+    ConfigLayout {
+        card,
+        rows,
+        fields,
+        buttons,
+    }
+}
+
 fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
+    let layout = config_layout(area);
     let program = app
         .form
         .preset
@@ -2252,29 +2575,14 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         || "Enter 选择预置 · F4 浏览本地文件".into(),
         |preset| format!("预置 {} B · {}", preset.size(), preset.startup),
     );
-    let card = centered(
-        Rect::new(0, 0, area.width.saturating_sub(4).min(96), 26),
-        area,
-    );
     let block = theme.block(" 启动配置 ").padding(Padding::new(2, 2, 1, 1));
-    let inner = block.inner(card);
-    frame.render_widget(block, card);
-    let rows = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Length(4),
-        Constraint::Length(4),
-        Constraint::Length(4),
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Length(2),
-    ])
-    .split(inner);
+    frame.render_widget(block, layout.card);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Apple-1", theme.title()),
             Span::styled("  /  启动资源", theme.muted()),
         ])),
-        rows[0],
+        layout.rows[0],
     );
     for (index, (focus, label, value, placeholder, hint)) in [
         (
@@ -2306,8 +2614,8 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     .into_iter()
     .enumerate()
     {
-        let field_rows =
-            Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).split(rows[index + 1]);
+        let field_rows = Layout::vertical([Constraint::Length(3), Constraint::Length(1)])
+            .split(layout.rows[index + 1]);
         let selected = app.form.focus == focus;
         let edit = app.form.edit.as_ref().filter(|_| selected);
         let active = selected && app.overlay.is_none();
@@ -2372,23 +2680,12 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
                 theme.muted()
             })
             .wrap(Wrap { trim: false }),
-        rows[4],
+        layout.rows[4],
     );
-    let buttons = Layout::horizontal([
-        Constraint::Length(14),
-        Constraint::Length(2),
-        Constraint::Length(10),
-        Constraint::Length(2),
-        Constraint::Length(8),
-    ])
-    .split(rows[5]);
-    for (index, (focus, label)) in [
-        (ConfigFocus::Validate, "校验并保存"),
-        (ConfigFocus::Launch, "启动"),
-        (ConfigFocus::Cancel, "取消"),
-    ]
-    .into_iter()
-    .enumerate()
+    for ((focus, rect), label) in layout
+        .buttons
+        .into_iter()
+        .zip(["校验并保存", "启动", "取消"])
     {
         let selected = app.form.focus == focus && app.overlay.is_none();
         let style = if selected {
@@ -2407,7 +2704,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
                     theme.muted()
                 }))
                 .style(style),
-            buttons[index * 2],
+            rect,
         );
     }
     let path = app
@@ -2417,10 +2714,10 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from("配置文件"),
-            Line::from(truncate_path(&path, usize::from(rows[6].width))),
+            Line::from(truncate_path(&path, usize::from(layout.rows[6].width))),
         ])
         .style(theme.muted()),
-        rows[6],
+        layout.rows[6],
     );
 }
 
@@ -3562,6 +3859,325 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         mouse(&mut app, click, 3, 1);
         assert!(matches!(app.overlay, Some(Overlay::Menu { .. })));
+    }
+
+    #[test]
+    fn center_mouse_input_supports_machine_selection_and_actions() {
+        let click = MouseEventKind::Down(MouseButton::Left);
+        for (width, height) in [(44, 30), (80, 30), (120, 40)] {
+            let mut app = app_with_session(100_000);
+            app.return_to_center();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+
+            let area = Rect::new(0, 0, width, height);
+            let page = page_area(area);
+            let action = app.center_action();
+            let layout = center_layout(page, action.label().width() as u16);
+
+            // Hover alone does not select machine.
+            assert_eq!(app.selected_machine, 0);
+            mouse(
+                &mut app,
+                MouseEventKind::Moved,
+                layout.list_items.x + 2,
+                layout.list_items.y + 4,
+            );
+            assert_eq!(app.selected_machine, 0);
+
+            // Click second machine (6502 demo).
+            mouse(
+                &mut app,
+                click,
+                layout.list_items.x + 2,
+                layout.list_items.y + 4,
+            );
+            assert_eq!(app.selected_machine, 1);
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+
+            // Click action button for demo -> runs demo.
+            let demo_layout = center_layout(page, app.center_action().label().width() as u16);
+            mouse(
+                &mut app,
+                click,
+                demo_layout.action_button.x + 1,
+                demo_layout.action_button.y,
+            );
+            assert_eq!(app.page, Page::Demo);
+
+            // Return to center and select Apple-1.
+            app.return_to_center();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            mouse(
+                &mut app,
+                click,
+                layout.list_items.x + 2,
+                layout.list_items.y + 1,
+            );
+            assert_eq!(app.selected_machine, 0);
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+
+            // Click "C 配置" -> opens Config page.
+            mouse(
+                &mut app,
+                click,
+                layout.config_button.x + 1,
+                layout.config_button.y,
+            );
+            assert_eq!(app.page, Page::Config);
+
+            // Return to center and click "I 模拟器信息" -> opens Info page.
+            app.return_to_center();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            mouse(
+                &mut app,
+                click,
+                layout.info_button.x + 1,
+                layout.info_button.y,
+            );
+            assert_eq!(app.page, Page::Info);
+
+            // Return to center and click action button (Resume) -> opens Apple1 page.
+            app.return_to_center();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let resume_layout = center_layout(page, app.center_action().label().width() as u16);
+            mouse(
+                &mut app,
+                click,
+                resume_layout.action_button.x + 1,
+                resume_layout.action_button.y,
+            );
+            assert_eq!(app.page, Page::Apple1);
+
+            // Mouse disabled in config -> clicks ignored.
+            app.return_to_center();
+            app.config.ui.mouse = false;
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            mouse(
+                &mut app,
+                click,
+                layout.list_items.x + 2,
+                layout.list_items.y + 4,
+            );
+            assert_eq!(app.selected_machine, 0);
+        }
+    }
+
+    #[test]
+    fn center_mouse_hover_highlights_machines_actions_and_shortcuts() {
+        let mut app = app_with_session(100_000);
+        app.return_to_center();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        let area = Rect::new(0, 0, 120, 40);
+        let page = page_area(area);
+        let action = app.center_action();
+        let layout = center_layout(page, action.label().width() as u16);
+
+        // Initially no hover.
+        assert_eq!(app.center_hover, None);
+
+        // Hover machine 1 (6502 demo).
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.list_items.x + 2,
+            layout.list_items.y + 4,
+        );
+        assert_eq!(app.center_hover, Some(CenterHover::Machine(1)));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        let theme = Theme::from_config(&app.config);
+        // The hovered machine item has panel background.
+        assert_eq!(
+            frame.buffer[(layout.list_items.x + 2, layout.list_items.y + 4)].bg,
+            theme.panel
+        );
+
+        // Hover action button.
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.action_button.x + 1,
+            layout.action_button.y,
+        );
+        assert_eq!(app.center_hover, Some(CenterHover::Action));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(
+            frame.buffer[(layout.action_button.x + 1, layout.action_button.y)].bg,
+            theme.foreground
+        );
+
+        // Hover C 配置.
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.config_button.x + 1,
+            layout.config_button.y,
+        );
+        assert_eq!(app.center_hover, Some(CenterHover::Config));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(
+            frame.buffer[(layout.config_button.x + 1, layout.config_button.y)].bg,
+            theme.selection_bg
+        );
+
+        // Hover I 模拟器信息.
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.info_button.x + 1,
+            layout.info_button.y,
+        );
+        assert_eq!(app.center_hover, Some(CenterHover::Info));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(
+            frame.buffer[(layout.info_button.x + 1, layout.info_button.y)].bg,
+            theme.selection_bg
+        );
+
+        // Move outside interactive areas -> hover cleared.
+        mouse(&mut app, MouseEventKind::Moved, 0, 0);
+        assert_eq!(app.center_hover, None);
+
+        // When mouse is disabled, movement does not set hover.
+        app.config.ui.mouse = false;
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.action_button.x + 1,
+            layout.action_button.y,
+        );
+        assert_eq!(app.center_hover, None);
+    }
+
+    #[test]
+    fn menu_bar_mouse_hover_highlights_tabs() {
+        let mut app = app_with_session(100_000);
+        app.return_to_center();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let theme = Theme::from_config(&app.config);
+
+        // Initially no tab is hovered.
+        assert_eq!(app.hovered_menu, None);
+
+        // Hover over tab "模拟器" (x=4, y=1).
+        mouse(&mut app, MouseEventKind::Moved, 4, 1);
+        assert_eq!(app.hovered_menu, Some(MenuKind::Emulator));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(frame.buffer[(4, 1)].bg, theme.panel);
+
+        // Hover over tab "会话" (x=12, y=1).
+        mouse(&mut app, MouseEventKind::Moved, 12, 1);
+        assert_eq!(app.hovered_menu, Some(MenuKind::Session));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(frame.buffer[(12, 1)].bg, theme.panel);
+        assert_eq!(frame.buffer[(4, 1)].bg, theme.background);
+
+        // Move mouse away to empty space (x=50, y=1).
+        mouse(&mut app, MouseEventKind::Moved, 50, 1);
+        assert_eq!(app.hovered_menu, None);
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(frame.buffer[(12, 1)].bg, theme.background);
+
+        // With mouse disabled in config, movement does not set hovered_menu.
+        app.config.ui.mouse = false;
+        mouse(&mut app, MouseEventKind::Moved, 4, 1);
+        assert_eq!(app.hovered_menu, None);
+    }
+
+    #[test]
+    fn config_mouse_input_supports_field_selection_and_buttons() {
+        let click = MouseEventKind::Down(MouseButton::Left);
+        for (width, height) in [(44, 30), (80, 30), (120, 40)] {
+            let mut app = app_with_session(100_000);
+            app.open_page(Page::Config);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+
+            let area = Rect::new(0, 0, width, height);
+            let layout = config_layout(page_area(area));
+
+            // Click ROM field -> focus ROM and enter edit mode.
+            mouse(
+                &mut app,
+                click,
+                layout.fields[0].1.x + 4,
+                layout.fields[0].1.y + 1,
+            );
+            assert_eq!(app.form.focus, ConfigFocus::Rom);
+            assert!(app.form.edit.is_some());
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+
+            // Click Program Address field -> focus Address, commits ROM, enters edit mode.
+            app.form.preset = None;
+            mouse(
+                &mut app,
+                click,
+                layout.fields[2].1.x + 4,
+                layout.fields[2].1.y + 1,
+            );
+            assert_eq!(app.form.focus, ConfigFocus::ProgramAddress);
+            assert!(app.form.edit.is_some());
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+
+            // Click Program field -> focus Program, opens program picker.
+            mouse(
+                &mut app,
+                click,
+                layout.fields[1].1.x + 4,
+                layout.fields[1].1.y + 1,
+            );
+            assert_eq!(app.form.focus, ConfigFocus::Program);
+            assert!(matches!(app.overlay, Some(Overlay::Programs { .. })));
+            app.overlay = None;
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+
+            // Click Cancel button -> returns to Center page.
+            mouse(
+                &mut app,
+                click,
+                layout.buttons[2].1.x + 2,
+                layout.buttons[2].1.y + 1,
+            );
+            assert_eq!(app.page, Page::Center);
+
+            // Re-open Config and click Launch button -> runs launch validation.
+            app.open_page(Page::Config);
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            mouse(
+                &mut app,
+                click,
+                layout.buttons[1].1.x + 2,
+                layout.buttons[1].1.y + 1,
+            );
+            assert_eq!(app.form.focus, ConfigFocus::Launch);
+            assert!(matches!(app.overlay, Some(Overlay::ReplaceConfirm { .. })));
+            app.overlay = None;
+            // Click Validate button -> validates and saves.
+            app.form.status = None;
+            mouse(
+                &mut app,
+                click,
+                layout.buttons[0].1.x + 2,
+                layout.buttons[0].1.y + 1,
+            );
+            assert_eq!(app.form.focus, ConfigFocus::Validate);
+            assert!(app.form.status.is_some());
+
+            // Re-open Config with mouse disabled -> clicks ignored.
+            app.open_page(Page::Config);
+            app.config.ui.mouse = false;
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            mouse(
+                &mut app,
+                click,
+                layout.buttons[2].1.x + 2,
+                layout.buttons[2].1.y + 1,
+            );
+            assert_eq!(app.page, Page::Config);
+        }
     }
 
     #[test]

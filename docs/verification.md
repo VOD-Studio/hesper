@@ -977,5 +977,18 @@ WozMon 的 SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119d
 完整外部 CPU corpus、远程 CI、跨平台或实板对照；M3 整体验收状态不变。
 文档的 76 个本地链接目标、两个新增锚点、矩阵列数、代码围栏与末尾换行检查通过。
 临时 CLI 转录、PTY 脚本与网格快照已清理，不纳入仓库。
+本轮按功能点本地提交，未 push。
+
+## 2026-09-15：TUI 启动选择中心与配置页鼠标交互及菜单栏悬停支持
+
+仅改宿主 TUI（`crates/cli/src/tui.rs`）：
+1. 启动选择中心（`Page::Center`）：提取 `center_layout` 几何共享给绘制与命中判定；支持鼠标点击选择模拟器、触发主动作或跳转配置／信息；支持鼠标悬停高亮模拟器条目（`theme.hover()`）、主动作按钮（`theme.primary_hover()`）及底部快捷项徽章。
+2. 启动配置页（`Page::Config`）：提取 `config_layout` 几何；支持鼠标点击字段聚焦进入编辑模式、点击程序字段打开选择器、点击底部按钮（校验并保存／启动／取消）；取消时放弃在途编辑，其余操作自动提交在途编辑。
+3. 顶部菜单栏：支持鼠标悬停标签（`theme.hover()`）反馈，展开时保持 `theme.selected()`，受 `mouse` 配置与窗口尺寸约束。
+
+验证：
+- 新增单元测试 `center_mouse_input_supports_machine_selection_and_actions`、`config_mouse_input_supports_field_selection_and_buttons`、`center_mouse_hover_highlights_machines_actions_and_shortcuts`、`menu_bar_mouse_hover_highlights_tabs`。
+- `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+- `make verify`：格式、全目标 check、debug／release 各 251 项测试及冒烟全部通过。
 
 本轮按功能点本地提交，未 push。
