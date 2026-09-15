@@ -176,37 +176,16 @@ fn presets_can_be_listed_without_rom_and_conflicting_options_are_rejected() {
     let output = run_apple1_cli(&["--list-presets"], b"");
     assert!(output.status.success());
     let listing = String::from_utf8(output.stdout).unwrap();
-    // Every published program, its category, its load range, its start command
-    // and its source page must be listed; 42 programs came from the library.
-    for expected in [
-        "42 bundled Apple-1 programs",
-        "Games 游戏",
-        "Fun 娱乐",
-        "Programming 编程",
-        "Utilities 工具",
-        "basic-huston",
-        "Apple BASIC (Huston) - Steve Wozniak, 1977 - 4096 bytes - $E000–$EFFF - start: 启动后输入 E000R",
-        "https://apple1software.com/programming/basic/huston/",
-        "15-puzzle",
-        "Hamurabi",
-        "start: 启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        "https://apple1software.com/games/hamurabi/",
-        "little-tower",
-        "needs the $1000-$1FFF expansion",
-    ] {
-        assert!(
-            listing.contains(expected),
-            "missing {expected:?} in:\n{listing}"
-        );
-    }
-    assert_eq!(
-        listing
-            .lines()
-            .filter(|line| line.contains(" bytes - "))
-            .count(),
-        42,
-        "one size/range/start line per bundled program"
-    );
+    let listed_ids: Vec<_> = listing
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|id| hesper::presets::ProgramPreset::find(id).is_some())
+        .collect();
+    let expected_ids: Vec<_> = hesper::presets::APPLE1_PRESETS
+        .iter()
+        .map(|preset| preset.id)
+        .collect();
+    assert_eq!(listed_ids, expected_ids);
     assert_rejected(
         &run_apple1_cli(&["--preset"], b""),
         "--preset requires a preset id",

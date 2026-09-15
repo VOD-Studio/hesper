@@ -13,9 +13,9 @@
 //! [`ProgramPreset::startup`]). Per-file SHA-256, the download date and the
 //! licence caveats are in `crates/cli/assets/README.md`.
 //!
-//! One entry, `little-tower`, is longer than the 4 KiB bank it starts in and
-//! therefore cannot run on a two-bank Apple-1; it is kept for completeness and
-//! marked with [`ProgramPreset::needs_expansion`].
+//! `little-tower` needs RAM at `$1000–$1FFF`, outside the fixed mapping.
+//! `memory-test-1000-1fff` fits in RAM but diagnoses that absent bank.
+//! [`ProgramPreset::limitation`] distinguishes these from functional evidence.
 //!
 //! Programs marked in that README as BASIC programs are stored together with
 //! the 4096-byte Huston BASIC image at `$E000`, because the site ships BASIC
@@ -32,7 +32,7 @@ use std::fmt::Write as _;
 /// separate blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProgramBlock {
-    /// First address of the block, always inside one 4 KiB RAM bank.
+    /// First address of the block; the loader validates the complete range.
     pub address: u16,
     /// Bytes written there, unchanged from the published listing.
     pub bytes: &'static [u8],
@@ -63,6 +63,15 @@ impl Category {
     }
 }
 
+/// A known limitation of the current fixed RAM mapping, not a test verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetLimitation {
+    /// The image itself extends into unmapped RAM and cannot be loaded.
+    UnmappedLoad,
+    /// The diagnostic loads, but its target RAM is absent, so it reports an error.
+    UnmappedTestRam,
+}
+
 /// A bundled program: where it came from, how it loads, how it starts.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProgramPreset {
@@ -87,17 +96,23 @@ pub struct ProgramPreset {
     /// One-line start instruction, shown in the launch form, the picker and
     /// the running session's notice.
     pub startup: &'static str,
-    /// True when the published listing runs past the end of the 4 KiB bank it
-    /// starts in, so it needs the `$1000–$1FFF` memory expansion this machine
-    /// does not model. Such a preset is still listed — it is part of the
-    /// library — but loading it fails with the bank error, and the picker says
-    /// why. Only `little-tower` (`$0300–$14CD`) is affected.
-    pub needs_expansion: bool,
+    /// Known load or runtime limitation. `None` does not mean fully verified;
+    /// per-program evidence is in the bundled assets' compatibility matrix.
+    pub limitation: Option<PresetLimitation>,
     /// Every RAM block to write, in address order.
     pub blocks: &'static [ProgramBlock],
 }
 
 impl ProgramPreset {
+    /// Shared CLI/TUI wording keeps loadability separate from functional proof.
+    pub fn compatibility_note(&self) -> &'static str {
+        match self.limitation {
+            Some(PresetLimitation::UnmappedLoad) => "不可加载：$1000–$1FFF 无 RAM",
+            Some(PresetLimitation::UnmappedTestRam) => "可加载：目标无 RAM，预期报错",
+            None => "功能未完整验收；详见兼容性矩阵",
+        }
+    }
+
     /// Total bytes written, across all blocks.
     pub fn size(&self) -> usize {
         self.blocks.iter().map(|block| block.bytes.len()).sum()
@@ -164,7 +179,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "games/15-puzzle-0300.bin")],
     },
     // 2048 - Denis Paryshev, 2018 - no licence declared on the page
@@ -180,7 +195,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0x0280,
         startup: "启动后输入 0280R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0280, "games/2048-0280.bin")],
     },
     // Blackjack - unknown, 1976 - no licence declared on the page
@@ -196,7 +211,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0800,
         entry: 0xE2B3,
         startup: "启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             // The site transfers Huston BASIC (4 KiB @ $E000) with these
             // BASIC programs; `load` above is the program block, not this one.
@@ -218,7 +233,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0800,
         entry: 0x0800,
         startup: "启动后输入 0800R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0800, "games/codebreaker-0800.bin")],
     },
     // Dobble - Claudio Parmigiani, 2024 - no licence declared on the page
@@ -234,7 +249,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0xE2B3,
         startup: "启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             // The site transfers Huston BASIC (4 KiB @ $E000) with these
             // BASIC programs; `load` above is the program block, not this one.
@@ -256,7 +271,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0xE2B3,
         startup: "启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             // The site transfers Huston BASIC (4 KiB @ $E000) with these
             // BASIC programs; `load` above is the program block, not this one.
@@ -278,7 +293,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: true,
+        limitation: Some(PresetLimitation::UnmappedLoad),
         blocks: &[block!(0x0300, "games/little-tower-0300.bin")],
     },
     // Lunar Lander (Text Only) - Mark Garetz, 1976 - no licence declared on the page
@@ -294,7 +309,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "games/lunar-lander-text-only-0300.bin")],
     },
     // Lunar Lander (ASCII Graphics) - Corey Cohen, 2012 - no licence declared on the page
@@ -310,7 +325,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0xE2B3,
         startup: "启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             // The site transfers Huston BASIC (4 KiB @ $E000) with these
             // BASIC programs; `load` above is the program block, not this one.
@@ -332,7 +347,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "games/mastermind-0300.bin")],
     },
     // Microchess - Peter R. Jennings, 1976 - Custom License
@@ -348,7 +363,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "games/microchess-0300.bin")],
     },
     // Mini-Startrek - Robert J. Bishop, 1977 - no licence declared on the page
@@ -364,7 +379,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0xE2B3,
         startup: "启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             // The site transfers Huston BASIC (4 KiB @ $E000) with these
             // BASIC programs; `load` above is the program block, not this one.
@@ -386,7 +401,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "games/peg-solitaire-0300.bin")],
     },
     // Shut the Box - Jeff Jetton, 2020 - MIT License
@@ -402,7 +417,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "games/shut-the-box-0300.bin")],
     },
     // Worple! - Jeff Jetton, 2022 - MIT License
@@ -418,7 +433,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "games/worple-0300.bin")],
     },
     // Apple 30th Anniversary - David Schmenk, 2006 - no licence declared on the page
@@ -434,7 +449,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0x0280,
         startup: "启动后输入 0280R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0280, "fun/30th-0280.bin")],
     },
     // 99 Bottles of Beer - Barry M., 2010 - no licence declared on the page
@@ -450,7 +465,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0BEE,
         entry: 0x0BEE,
         startup: "启动后输入 0BEER",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0BEE, "fun/beer-0bee.bin")],
     },
     // Cat - Denis Paryshev, 2022 - no licence declared on the page
@@ -466,7 +481,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0x0280,
         startup: "启动后输入 0280R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0280, "fun/cat-0280.bin")],
     },
     // Cellular - Ken Wesson, 2007 - no licence declared on the page
@@ -482,7 +497,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "fun/cellular-0300.bin")],
     },
     // Mandelbrot 65 - Frederic Stark, 2024 - MIT License
@@ -498,7 +513,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0x0280,
         startup: "启动后输入 0280R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0280, "fun/mandelbrot-65-0280.bin")],
     },
     // Pasart - Ken Wesson, 2007 - no licence declared on the page
@@ -514,7 +529,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "fun/pasart-0300.bin")],
     },
     // Twinkle Twinkle Little Star - Corey Cohen, 2012 - no licence declared on the page
@@ -530,7 +545,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0800,
         entry: 0xE2B3,
         startup: "启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             // The site transfers Huston BASIC (4 KiB @ $E000) with these
             // BASIC programs; `load` above is the program block, not this one.
@@ -552,7 +567,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0xE000,
         entry: 0xE000,
         startup: "启动后输入 E000R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0xE000, "programming/a1assembler-e000.bin")],
     },
     // ASCII HEX (Keyboard) - Arthur L. Schawlow, 1978 - no licence declared on the page
@@ -568,7 +583,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0700,
         entry: 0x0700,
         startup: "启动后输入 0700R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0700, "programming/ascii-hex-keyboard-0700.bin")],
     },
     // ASCII HEX (Printing) - Arthur L. Schawlow, 1978 - no licence declared on the page
@@ -584,7 +599,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0750,
         entry: 0x0750,
         startup: "启动后输入 0750R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0750, "programming/ascii-hex-printing-0750.bin")],
     },
     // Apple BASIC (C) - Steve Wozniak, 1976 - no licence declared on the page
@@ -600,7 +615,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0xE000,
         entry: 0xE000,
         startup: "启动后输入 E000R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0xE000, "programming/basic-c-e000.bin")],
     },
     // Apple BASIC (D) - Steve Wozniak, 1976 - no licence declared on the page
@@ -616,7 +631,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0xE000,
         entry: 0xE000,
         startup: "启动后输入 E000R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0xE000, "programming/basic-d-e000.bin")],
     },
     // Apple BASIC (Huston) - Steve Wozniak, 1977 - no licence declared on the page
@@ -632,7 +647,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0xE000,
         entry: 0xE000,
         startup: "启动后输入 E000R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0xE000, "programming/basic-huston-e000.bin")],
     },
     // Apple BASIC (Pagetable) - Steve Wozniak, 1976 - no licence declared on the page
@@ -648,7 +663,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0xE000,
         entry: 0xE000,
         startup: "启动后输入 E000R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0xE000, "programming/basic-pagetable-e000.bin")],
     },
     // Dis-Assembler - Steve Wozniak, Allen Baum, 1976 - no licence declared on the page
@@ -664,7 +679,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0800,
         entry: 0x0800,
         startup: "启动后输入 0800R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0800, "programming/dis-assembler-0800.bin")],
     },
     // Hellorld! - Bobby Nijssen, 2024 - no licence declared on the page
@@ -680,7 +695,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0300, "programming/hellorld-0300.bin")],
     },
     // Stringout (Espinosa) - Chris Espinosa, 1976 - no licence declared on the page
@@ -696,7 +711,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0400,
         entry: 0x0400,
         startup: "启动后输入 0400R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0400, "programming/stringout-espinosa-0400.bin")],
     },
     // Stringout (Meier) - Chris Espinosa, M. Meier, 1976 - no licence declared on the page
@@ -712,7 +727,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0400,
         entry: 0x0400,
         startup: "启动后输入 0400R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0400, "programming/stringout-meier-0400.bin")],
     },
     // Memory Test (0009-027F △) - Mike Willegal, 2021 - no licence declared on the page
@@ -728,7 +743,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0x0280,
         startup: "启动后输入 0280R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             block!(0x0000, "utilities/memory-test-0009-027f-0000.bin"),
             block!(0x0280, "utilities/memory-test-0009-027f-0280.bin"),
@@ -747,7 +762,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0x0280,
         startup: "启动后输入 0280R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             block!(0x0000, "utilities/memory-test-03a2-0fff-0000.bin"),
             block!(0x0280, "utilities/memory-test-03a2-0fff-0280.bin"),
@@ -766,7 +781,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0x0280,
         startup: "启动后输入 0280R",
-        needs_expansion: false,
+        limitation: Some(PresetLimitation::UnmappedTestRam),
         blocks: &[
             block!(0x0000, "utilities/memory-test-1000-1fff-0000.bin"),
             block!(0x0280, "utilities/memory-test-1000-1fff-0280.bin"),
@@ -785,7 +800,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0280,
         entry: 0x0280,
         startup: "启动后输入 0280R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             block!(0x0000, "utilities/memory-test-e000-efff-0000.bin"),
             block!(0x0280, "utilities/memory-test-e000-efff-0280.bin"),
@@ -804,7 +819,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0xE000,
         entry: 0xE000,
         startup: "启动后输入 E000R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0xE000, "utilities/party-e000.bin")],
     },
     // Resistor Calculator - Paolo Di Leo, 2007 - no licence declared on the page
@@ -820,7 +835,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0800,
         entry: 0xE2B3,
         startup: "启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             // The site transfers Huston BASIC (4 KiB @ $E000) with these
             // BASIC programs; `load` above is the program block, not this one.
@@ -842,7 +857,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0800,
         entry: 0xE2B3,
         startup: "启动后输入 E2B3R 进入 BASIC，再输入 RUN",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             // The site transfers Huston BASIC (4 KiB @ $E000) with these
             // BASIC programs; `load` above is the program block, not this one.
@@ -864,7 +879,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0000,
         entry: 0x0000,
         startup: "启动后输入 0000R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[block!(0x0000, "utilities/test-program-0000.bin")],
     },
     // TypeWriter - Landon J. Smith, 2025 - no licence declared on the page
@@ -880,7 +895,7 @@ pub const APPLE1_PRESETS: &[ProgramPreset] = &[
         load: 0x0300,
         entry: 0x0300,
         startup: "启动后输入 0300R",
-        needs_expansion: false,
+        limitation: None,
         blocks: &[
             block!(0x0300, "utilities/typewriter-0300.bin"),
             block!(0x0400, "utilities/typewriter-0400.bin"),
@@ -949,8 +964,9 @@ mod tests {
             });
             assert!(load_in_block, "{}: load address is not written", preset.id);
             assert_eq!(
-                preset.needs_expansion, !fits_a_bank,
-                "{}: needs_expansion must match what the banks accept",
+                matches!(preset.limitation, Some(PresetLimitation::UnmappedLoad)),
+                !fits_a_bank,
+                "{}: load limitation must match what the banks accept",
                 preset.id
             );
         }

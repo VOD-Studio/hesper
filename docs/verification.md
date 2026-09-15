@@ -921,4 +921,61 @@ M76 印刷页 7 的 KBD/DSP Interface 图明确将 PA7 接到 +5V；它不是随
 
 本轮未改 CPU 执行语义、B3 时序或终端界面；未运行完整外部 CPU corpus、远程 CI、真实 PTY 或实板电气对照。没有新增依赖。
 
-未提交、推送或发布。
+本轮按功能点本地提交，未 push。
+
+<a id="preset-compatibility-2026-09-15"></a>
+
+## 2026-09-15：预置兼容性分级与逐项矩阵
+
+补齐[全部 42 项的兼容性矩阵](../crates/cli/assets/README.md#compatibility-matrix)：
+加载范围、运行条件／已知限制、可引用的局部证据、尚未验收的功能各自独立记录。
+未运行的程序明确写未验证；历史 LIST、标题与开场证据不升级为游戏或工具功能通过。
+旧节中的 `needs_expansion` 是当时实现，当前以 `ProgramPreset::limitation` 取代：
+`UnmappedLoad` 表示镜像越界，`UnmappedTestRam` 表示能加载但诊断目标 RAM 缺失，
+无已知限制也不表示完整验收。CLI 列表与 TUI 详情使用同一说明，不以说明字段替代加载器的真实范围校验。
+
+定向运行使用当前 debug 二进制和既有 `.cache/apple1/wozmon.bin`，执行前核对 256 字节
+WozMon 的 SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119de8cb5c25`；
+未下载、修改或内置 ROM。每项上限 8000000 CPU 周期：
+
+| 预置 | 实际输入 | 实际输出与停止原因 |
+|---|---|---|
+| `memory-test-1000-1fff` | `0280R\n` | `00 1000 00 10` 后返回 Monitor；stderr `[stopped]` |
+| `memory-test-0009-027f` | `0280R\n\n` | `PASS 01` 至 `PASS 06`；stderr `[max cycles reached: 8000000]` |
+| `memory-test-03a2-0fff` | `0280R\n\n` | `PASS 01`；同上 |
+| `memory-test-e000-efff` | `0280R\n\n` | `PASS 01`；同上 |
+
+`00 1000 00 10` 按[程序说明](https://apple1software.com/utilities/memory-test/1000-1fff/)解读为：
+全零测试在 `$1000` 期望 `$00`，实际读到 `$10`。这是对缺失目标 RAM 的预期诊断，不是
+“预置能加载，所以 RAM 可用”。四项进程退出码都是 0，因此验收断言检查具体输出与停止原因。
+最初对已映射范围只输入启动行时，批处理宿主在三个静默帧后读到 EOF，没有等到完整测试；
+追加一个诊断不消费的换行，保持 I/O 待处理，使其运行至显式周期上限。未为此修改批处理策略。
+矩阵附有可重放命令。
+
+界面与回归验证：
+
+- `--list-presets` 实际输出覆盖全部 42 个 id：1 项不可加载、1 项可加载但预期诊断报错、
+  40 项提示功能未完整验收；矩阵 42 行无遗漏／重复，顺序与资源清单一致。
+- 真实 macOS PTY，120×40 与 44×30：从运行中会话进入配置页和程序选择器，依次选择
+  15 Puzzle、Little Tower、Memory Test (1000-1FFF)。三个兼容性提示与启动命令在两种宽度下
+  均完整可见；确认内存诊断预置后能替换原会话并实际加载。此处只证明 TUI 选择及加载，
+  上述诊断执行结果来自真实 CLI 字符流，不冒充 TUI 中执行完成。
+- 两种尺寸均正常退出码 0，ICANON／ECHO 恢复、离开备用屏并关闭 bracketed paste；
+  ANSI 网格解析无未知 CSI。没有用侧栏数值或退出码替代业务判据。
+- 定向测试：`cargo test --locked --offline -p hesper --lib presets` 的 3 项、
+  `presets_can_be_listed_without_rom_and_conflicting_options_are_rejected` 的 1 项通过。
+  移除清单测试对显示文案的固定断言，保留全部 id 可发现、顺序一致与参数冲突的行为断言。
+- `cargo fmt --all` 后执行 `make verify`（`CARGO_NET_OFFLINE=true`）：
+  格式、全目标 check、debug／release 各 247 项测试、Clippy `-D warnings`、
+  demo／trace／bus-trace 与 diff 检查全部通过；每种构建的 20 项真实 ROM 测试按约定 ignored。
+- `make wozmon-tests ROM=.cache/apple1/wozmon.bin`：4 项机器测试与 16 项 CLI 测试通过，
+  包括 `little-tower` 继续被拒绝，以及 Huston BASIC 算术／循环、15 Puzzle 标题和
+  Resistor Calculator 热启动的既有局部场景。
+
+源码、测试和界面验证后同步 README、路线图及示例边界说明；未改 CPU、RAM 映射、
+加载策略、PIA 或预置镜像，没有新增依赖或永久测试文件。未运行其余预置的完整功能场景、
+完整外部 CPU corpus、远程 CI、跨平台或实板对照；M3 整体验收状态不变。
+文档的 76 个本地链接目标、两个新增锚点、矩阵列数、代码围栏与末尾换行检查通过。
+临时 CLI 转录、PTY 脚本与网格快照已清理，不纳入仓库。
+
+本轮按功能点本地提交，未 push。

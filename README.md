@@ -74,7 +74,7 @@ cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset basic-hust
 cargo run -p hesper -- apple1 --rom .cache/apple1/wozmon.bin --preset hamurabi
 ```
 
-预置程序随可执行文件内置，无需保留原始下载文件；Woz Monitor ROM 仍由用户提供。**收录 42 个预置不代表全部兼容**：`little-tower` 需要未建模的 `$1000–$1FFF` 扩展 RAM，当前会明确拒绝加载；其余预置通过内存范围校验，但没有逐个程序的完整功能验收。
+预置程序随可执行文件内置，无需保留原始下载文件；Woz Monitor ROM 仍由用户提供。**收录 42 个预置不代表全部兼容**：[逐项兼容性矩阵](crates/cli/assets/README.md#compatibility-matrix) 区分加载条件、局部运行证据和未验收功能。`little-tower` 缺少 `$1000–$1FFF` RAM，明确拒绝加载；`memory-test-1000-1fff` 能加载，但检测目标 RAM 未建模，预期报告诊断错误。其余预置通过加载范围校验，不据此宣称功能兼容。
 
 镜像来源、逐文件 SHA-256、启动命令与许可证说明见 [`预置资源说明`](crates/cli/assets/README.md)。其中 8 个来源页面声明了许可证，34 个未声明；公开下载、记录来源和哈希不等于再分发授权已明确。
 

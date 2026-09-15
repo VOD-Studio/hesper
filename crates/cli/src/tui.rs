@@ -2638,8 +2638,8 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
             frame.render_widget(block.style(theme.panel()), popup);
             // The detail pane is what tells the user how to start the machine
             // after the pick, so it gets its own fixed rows: identity, load
-            // range, start command, source.
-            let rows = Layout::vertical([Constraint::Min(3), Constraint::Length(4)]).split(inner);
+            // range, start command, compatibility, source.
+            let rows = Layout::vertical([Constraint::Min(3), Constraint::Length(5)]).split(inner);
             frame.render_stateful_widget(
                 List::new(picker_items(theme))
                     .style(theme.panel())
@@ -2669,18 +2669,11 @@ fn draw_overlay(frame: &mut Frame<'_>, area: Rect, overlay: &mut Overlay, theme:
                             theme.text(),
                         )),
                         Line::from(Span::styled(
-                            if preset.needs_expansion {
-                                format!(
-                                    "{} B · {} · 需要 $1000–$1FFF 扩展内存（本机未建模）",
-                                    preset.size(),
-                                    preset.ranges()
-                                )
-                            } else {
-                                format!("{} B · {}", preset.size(), preset.ranges())
-                            },
+                            format!("{} B · {}", preset.size(), preset.ranges()),
                             theme.muted(),
                         )),
                         Line::from(Span::styled(preset.startup, theme.status())),
+                        Line::from(Span::styled(preset.compatibility_note(), theme.status())),
                         Line::from(Span::styled(
                             format!("{} · {}", preset.source, preset.license_label()),
                             theme.muted(),

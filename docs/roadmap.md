@@ -178,7 +178,7 @@ H04 的地址译码缺口、H14 的 Apple I 显示握手缺口和 H12 的读回�
 
 ### 2026-09-14：程序预置与兼容性边界
 
-CLI／TUI 已收录 apple1software.com 的 42 个程序预置，支持多块加载、分类选择、固定地址和启动命令提示；八个 BASIC 程序会一并载入 Huston BASIC。收录与内存范围校验不等于完整兼容性验收：已有 BASIC 算术／行号循环、部分汇编程序与游戏的实际运行证据，但没有逐项程序的完整功能矩阵。`little-tower` 需要未建模的 `$1000–$1FFF` 扩展 RAM，加载会明确失败。
+CLI／TUI 已收录 apple1software.com 的 42 个程序预置，支持多块加载、分类选择、固定地址和启动命令提示；八个 BASIC 程序会一并载入 Huston BASIC。2026-09-15 补齐 [42 项兼容性矩阵](../crates/cli/assets/README.md#compatibility-matrix)，逐项区分加载条件、已有局部执行证据和未验收功能；矩阵齐全不等于全部程序功能已验收。`little-tower` 缺少 `$1000–$1FFF` RAM，加载继续明确失败；`memory-test-1000-1fff` 能加载并诊断目标 RAM 缺失，CLI／TUI 明示预期报错，不禁止其诊断用途。其余三个内存诊断范围在固定预算内至少完成 `PASS 01`。这些定向结果不扩展为完整预置兼容性或 M3 硬件认证。
 
 来源页面中 8 个声明许可证、34 个未声明，来源和哈希不构成额外授权。资源清单与限制见 [`预置说明`](../crates/cli/assets/README.md)，实测范围见 [验证记录](verification.md)。这些宿主能力不改变 M3 硬件验收状态。
 

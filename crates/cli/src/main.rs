@@ -167,6 +167,7 @@ fn parse_apple1(
                     "{} bundled Apple-1 programs from https://apple1software.com/ (downloaded 2026-09-14); use --preset <id>",
                     APPLE1_PRESETS.len()
                 );
+                println!("Compatibility matrix: crates/cli/assets/README.md#compatibility-matrix");
                 for category in Category::ALL {
                     println!("\n{}", category.label());
                     for preset in ProgramPreset::in_category(category) {
@@ -181,16 +182,12 @@ fn parse_apple1(
                             preset.startup
                         );
                         println!(
-                            "  {:<30} {} - {}{}",
+                            "  {:<30} {} - {}",
                             "",
                             preset.source,
                             preset.license_label(),
-                            if preset.needs_expansion {
-                                " - needs the $1000-$1FFF expansion this machine does not model"
-                            } else {
-                                ""
-                            }
                         );
+                        println!("  {}", preset.compatibility_note());
                     }
                 }
                 return Ok(None);

@@ -37,10 +37,12 @@ published, source page, load address, start command — lives in
   Huston BASIC image at `$E000`, because the site ships BASIC with them and
   they cannot run without it. `programming/basic/*` above are the four BASIC
   variants the site offers on their own.
-- **`little-tower`** runs from `$0300` to `$14CD` in the published listing, so
-  it needs the `$1000–$1FFF` expansion this machine does not model: the preset
-  is listed (it is part of the library) but loading it fails with the RAM bank
-  error, and the picker says why.
+- **`little-tower`** occupies `$0300–$14CD`, requiring RAM at `$1000–$1FFF`
+  outside this machine's fixed mapping. Loading fails before any block is
+  written; the CLI list and picker explain why. Do not truncate the image.
+- **`memory-test-1000-1fff`** loads into mapped RAM but tests the absent
+  `$1000–$1FFF` bank. It remains runnable as a diagnostic, with an explicit
+  warning: a RAM error is expected, not evidence of a broken diagnostic.
 - **`basic-huston-e000.bin`** is byte-identical to the image the user supplied
   on 2026-09-14 (`311c85f2…`). That image is the site's Huston variant and the
   one the site transfers with every BASIC program above, so there is a single
@@ -96,6 +98,90 @@ at `$E000` (not repeated here).
 | `stopwatch` | Utilities 工具 | Stopwatch (BASIC) | Larry Nelson, Bob Huelsdonk, Val Golding, 1978 | $004A–$00FF, $0800–$0FFF | `E2B3R 然后 RUN` | — | <https://apple1software.com/utilities/stopwatch/> |
 | `test-program` | Utilities 工具 | Test Program | Steve Wozniak, 1976 | $0000–$000A | `0000R` | — | <https://apple1software.com/utilities/test-program/> |
 | `typewriter` | Utilities 工具 | TypeWriter | Landon J. Smith, 2025 | $0300–$03AA, $0400–$0419, $0440–$0459 | `0300R` | — | <https://apple1software.com/utilities/typewriter/> |
+
+## Compatibility matrix
+
+截至 2026-09-15，以下 **42 行**分别记录加载条件、已有执行证据和未验收范围。
+**“可加载”只表示全部镜像块通过当前 RAM 范围校验，不表示能启动或功能兼容。**
+CLI/TUI 的 `limitation` 区分镜像越界与诊断目标缺失；没有已知限制也不代表完整验收。
+启动命令、块地址及来源页见上表，不在这里维护第二份启动元数据。
+
+- **固定配置**：NMOS 6502、RAM `$0000–$0FFF` / `$E000–$EFFF`、外部 WozMon、
+  PIA 键盘和字符显示。未建模 ACI、可变 RAM 跳线或 `$1000–$1FFF` RAM。
+- **B**：除固定配置外，预置自动载入 Huston BASIC，必须以 `E2B3R` 热启动后 `RUN`；
+  `E000R` 冷启动会清除预先载入的 BASIC 程序。
+- **E1（历史局部证据）**：[验证记录](../../../docs/verification.md) 中
+  “2026-09-14：内置 apple1software.com 全部程序”及“Apple I 现状复核与文档同步”。
+  LIST、标题、开场和一个算例各自只证明实际观察到的行为。
+- **E2（本轮定向证据）**：[预置兼容性分级验收](../../../docs/verification.md#preset-compatibility-2026-09-15)。
+  四个内存诊断预置用真实 CLI、固定 WozMon、800 万 CPU 周期上限运行。
+- **未验证**：没有可引用的该预置执行结果；最后一列是待验收场景，不是兼容性承诺。
+  不把其他版本、其他程序或网站自带模拟器的结果移植为本机通过。
+
+| Preset id | 加载 | 条件／已知限制 | 已有执行证据 | 尚未验收的核心场景 |
+|---|---|---|---|---|
+| `15-puzzle` | 可 | 固定配置 | E1：标题与 `INSTRUCTIONS (Y/N)?` | 移动规则、打乱及完成判定 |
+| `2048` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 启动、移动合并、得分和结束判定 |
+| `blackjack` | 可 | B | E1：LIST 输出程序 | 发牌、玩家决策及结算 |
+| `codebreaker` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 输入猜测、反馈及胜负判定 |
+| `dobble` | 可 | B | 未验证 | 启动、一轮交互及结果 |
+| `hamurabi` | 可 | B | E1：LIST 与 RUN 开场 | 年度输入、资源变化及结束 |
+| `little-tower` | 拒绝 | 镜像延伸至 `$14CD`；缺少 `$1000–$1FFF` RAM | E1：加载前明确拒绝 | 有相应 RAM 配置后的移动、双词命令及物品交互 |
+| `lunar-lander-text-only` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 推力输入、状态演进及着陆判定 |
+| `lunar-lander-ascii-graphics` | 可 | B | 未验证 | 图形输出、飞行交互及着陆判定 |
+| `mastermind` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 猜测反馈及胜负判定 |
+| `microchess` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 棋盘、合法走子及机器应手 |
+| `mini-startrek` | 可 | B | 未验证 | 导航、战斗与回合状态 |
+| `peg-solitaire` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 合法跳子、棋盘更新及结束 |
+| `shut-the-box` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 一轮操作、计分及结束 |
+| `worple` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 单词输入、提示及胜负判定 |
+| `30th` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 演示输出的完整性与持续运行 |
+| `beer` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 歌词计数递减、边界和结束 |
+| `cat` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 完整画面及重复输出 |
+| `cellular` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 多代演化与画面滚动 |
+| `mandelbrot-65` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 完整计算、画面与结束条件 |
+| `pasart` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 完整输出及持续运行 |
+| `twinkle` | 可 | B；输出及外设需求未核清 | 未验证 | 按来源说明核清输出形式后验收 |
+| `a1assembler` | 可 | 固定配置；占用高地址 RAM | 未验证 | 汇编短程序、核对机器码并执行 |
+| `ascii-hex-keyboard` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 输入字符与转换结果 |
+| `ascii-hex-printing` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 打印转换结果及字符边界 |
+| `basic-c` | 可 | 固定配置；该版本占用高地址 RAM | 未验证 | 该内置镜像的算术、行号程序及错误处理 |
+| `basic-d` | 可 | 固定配置；该版本占用高地址 RAM | 未验证 | 该版本的算术、行号程序及错误处理 |
+| `basic-huston` | 可 | 固定配置；该版本占用高地址 RAM | E1：算术、行号循环、PTY 独立结果行 | 其余语义和边界；ACI 保存／读取不支持 |
+| `basic-pagetable` | 可 | 固定配置；该版本占用高地址 RAM | 未验证 | 该版本的算术、行号程序及错误处理 |
+| `dis-assembler` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 已知字节的反汇编及地址推进 |
+| `hellorld` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 完整文本及结束行为 |
+| `stringout-espinosa` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 字符串输出及终止边界 |
+| `stringout-meier` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 本版本字符串输出及终止边界 |
+| `memory-test-0009-027f` | 可 | 检测已映射的低 RAM，避开诊断占用区域 | E2：`PASS 01` 至 `PASS 06` | RESET 中止；不能替代物理 DRAM 故障认证 |
+| `memory-test-03a2-0fff` | 可 | 检测已映射的低 RAM，避开诊断代码 | E2：`PASS 01` | 长时间循环及 RESET 中止 |
+| `memory-test-1000-1fff` | 可 | 检测未映射 RAM；保留诊断用途，不当作可用 RAM | E2：`00 1000 00 10`，返回 Monitor（预期诊断） | 有相应 RAM 配置后的正常通过路径 |
+| `memory-test-e000-efff` | 可 | 检测已映射的高 RAM | E2：`PASS 01` | 长时间循环及 RESET 中止 |
+| `party` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 按来源说明验收登记及查询流程 |
+| `resistor-calculator` | 可 | B | E1：RUN 后标题与作者输出 | 已知输入对应的电阻计算结果 |
+| `stopwatch` | 可 | B；计时精度未验证 | 未验证 | 启停、显示及模拟时间基准对照 |
+| `test-program` | 可 | 固定配置；运行依赖未逐项核清 | 未验证 | 按来源说明核对完整字符序列 |
+| `typewriter` | 可 | 固定配置；三块镜像 | 未验证 | 输入回显、控制操作及多行显示 |
+
+### Reproducing the RAM diagnostics
+
+```sh
+cargo build --locked --offline -p hesper
+printf '0280R\n' | target/debug/hesper apple1 --rom .cache/apple1/wozmon.bin \
+  --preset memory-test-1000-1fff --max-cycles 8000000
+printf '0280R\n\n' | target/debug/hesper apple1 --rom .cache/apple1/wozmon.bin \
+  --preset memory-test-e000-efff --max-cycles 8000000
+```
+
+后者可将 id 换为另外两个已映射范围的诊断。第二个换行故意保持键盘输入待处理：
+诊断不读键盘，这会让批处理宿主继续运行至周期上限，而不是在三个无输出帧后读到 EOF。
+单独输入启动行后没有输出，不能判定计算失败。
+
+诊断结果格式来自[程序说明](https://apple1software.com/utilities/memory-test/1000-1fff/)：
+`00 1000 00 10` 表示测试 00 在 `$1000` 期望 `$00`、实际读到 `$10`。
+三个已映射范围须观察 `PASS 01`；未映射范围须观察具体诊断及返回 Monitor。
+**不要只断言退出码 0**：正常 EOF、周期上限和程序自行报告 RAM 错误都可能以 0 退出。
+这些是字符流场景，不是所有预置的 TUI 画面或完整硬件认证。
 
 ## Files
 
@@ -163,12 +249,12 @@ and listed here with the SHA-256 of its stored bytes.
 
 ## Verification
 
-- `cargo test -p hesper --lib presets` — 42 entries, unique ids, every block
-  inside one RAM bank, every start address inside a block the preset writes,
-  and `needs_expansion` matching what the banks actually accept.
+- `cargo test -p hesper --lib presets` — 42 entries, unique ids, each image
+  either fitting mapped RAM or carrying `UnmappedLoad`, and every start
+  address inside a block the preset writes. These are static checks, not
+  program execution; `UnmappedTestRam` must remain loadable.
 - `cargo test -p hesper --test apple1 presets_can_be_listed_without_rom_and_conflicting_options_are_rejected`
-  — `--list-presets` names all 42 programs with category, size, ranges, start
-  command and source page.
+  — all preset ids are discoverable without ROM; conflicting load options fail.
 - ROM-gated (run with `make wozmon-tests`):
   `bundled_basic_runs_calculations_and_a_numbered_loop` (`basic-huston`),
   `bundled_basic_program_runs_after_the_published_warm_entry`
