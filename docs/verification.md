@@ -992,3 +992,18 @@ WozMon 的 SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119d
 - `make verify`：格式、全目标 check、debug／release 各 251 项测试及冒烟全部通过。
 
 本轮按功能点本地提交，未 push。
+
+## 2026-09-15：TUI 启动配置页鼠标悬停高亮支持
+
+仅改宿主 TUI（`crates/cli/src/tui.rs`）：
+1. 启动配置页（`Page::Config`）：复用既有 `ConfigFocus` 与 `config_layout`，在 `App` 中跟踪 `config_hover: Option<ConfigFocus>`；鼠标移动实时更新悬停元素。
+2. 字段悬停：未激活字段悬停时光标边框与标题提亮为强调色（`theme.title()`），输入内容呈现暗色面板背景微高亮（`theme.hover()`），下方提示文字提亮为普通文本色（`theme.text()`）。
+3. 按钮悬停：底部三大按钮（校验并保存／启动／取消）悬停时光标边框提亮为 `theme.title()`，按钮背景亮起为高对比反白（`theme.primary_hover()`）。
+4. 状态隔离：离开字段或按钮、切换页面或弹层展开时自动清理悬停状态；受 `mouse` 开关与窗口尺寸约束。
+
+验证：
+- 新增单元测试 `config_mouse_hover_highlights_fields_and_buttons`，覆盖 ROM 字段、加载地址字段及三大按钮的悬停高亮属性。
+- `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+- `make verify`：格式、全目标 check、debug／release 各 252 项测试及冒烟全部通过。
+
+本轮按功能点本地提交，未 push。

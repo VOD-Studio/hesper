@@ -283,6 +283,7 @@ struct App {
     selected_machine: usize,
     center_hover: Option<CenterHover>,
     hovered_menu: Option<MenuKind>,
+    config_hover: Option<ConfigFocus>,
     form: ConfigForm,
     session: Option<Session>,
     resources: Option<Resources>,
@@ -338,6 +339,7 @@ impl App {
             selected_machine,
             center_hover: None,
             hovered_menu: None,
+            config_hover: None,
             form: ConfigForm {
                 rom,
                 program,
@@ -640,6 +642,7 @@ impl App {
         }
         self.center_hover = None;
         self.hovered_menu = None;
+        self.config_hover = None;
         if matches!(page, Page::Info | Page::Help | Page::Settings) {
             if let Some(index) = self
                 .page_history
@@ -827,9 +830,13 @@ impl App {
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if !self.config.ui.mouse || !self.normal_size() {
-            if self.center_hover.is_some() || self.hovered_menu.is_some() {
+            if self.center_hover.is_some()
+                || self.hovered_menu.is_some()
+                || self.config_hover.is_some()
+            {
                 self.center_hover = None;
                 self.hovered_menu = None;
+                self.config_hover = None;
                 self.dirty = true;
             }
             return;
@@ -843,9 +850,13 @@ impl App {
             None => None,
             // Confirmations, errors and file browsers retain exclusive focus.
             Some(_) => {
-                if self.center_hover.is_some() || self.hovered_menu.is_some() {
+                if self.center_hover.is_some()
+                    || self.hovered_menu.is_some()
+                    || self.config_hover.is_some()
+                {
                     self.center_hover = None;
                     self.hovered_menu = None;
+                    self.config_hover = None;
                     self.dirty = true;
                 }
                 return;
@@ -862,8 +873,9 @@ impl App {
             self.dirty = true;
         }
         if let Some(kind) = hovered_tab {
-            if self.center_hover.is_some() {
+            if self.center_hover.is_some() || self.config_hover.is_some() {
                 self.center_hover = None;
+                self.config_hover = None;
                 self.dirty = true;
             }
             if clicked || menu.is_some_and(|(active, _)| active != kind) {
@@ -877,8 +889,9 @@ impl App {
             return;
         }
         if let Some((kind, selected)) = menu {
-            if self.center_hover.is_some() {
+            if self.center_hover.is_some() || self.config_hover.is_some() {
                 self.center_hover = None;
+                self.config_hover = None;
                 self.dirty = true;
             }
             let popup = menu_popup(area, kind);
@@ -908,14 +921,15 @@ impl App {
             if clicked {
                 self.center_mouse(area, position);
             }
-        } else {
-            if self.center_hover.is_some() {
-                self.center_hover = None;
-                self.dirty = true;
-            }
-            if clicked && self.page == Page::Config {
+        } else if self.page == Page::Config {
+            self.update_config_hover(area, position);
+            if clicked {
                 self.config_mouse(area, position);
             }
+        } else if self.center_hover.is_some() || self.config_hover.is_some() {
+            self.center_hover = None;
+            self.config_hover = None;
+            self.dirty = true;
         }
     }
 
@@ -1252,6 +1266,20 @@ impl App {
                     self.form.status = None;
                 }
             }
+        }
+    }
+
+    fn update_config_hover(&mut self, area: Rect, position: Position) {
+        let layout = config_layout(page_area(area));
+        let new_hover = layout
+            .buttons
+            .into_iter()
+            .chain(layout.fields)
+            .find(|(_, rect)| rect.contains(position))
+            .map(|(focus, _)| focus);
+        if self.config_hover != new_hover {
+            self.config_hover = new_hover;
+            self.dirty = true;
         }
     }
 
@@ -2619,6 +2647,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         let selected = app.form.focus == focus;
         let edit = app.form.edit.as_ref().filter(|_| selected);
         let active = selected && app.overlay.is_none();
+        let hovered = app.config_hover == Some(focus) && app.overlay.is_none() && !active;
         let mut block = theme.block(format!(" {label} "));
         if active {
             let style = if edit.is_some() {
@@ -2638,6 +2667,8 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
                 })
                 .right_aligned(),
             );
+        } else if hovered {
+            block = block.border_style(theme.title()).title_style(theme.title());
         }
         let input = block.inner(field_rows[0]).inner(Margin::new(1, 0));
         frame.render_widget(block, field_rows[0]);
@@ -2653,13 +2684,18 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             } else {
                 (truncate_path(value, usize::from(input.width)), theme.text())
             };
-            frame.render_widget(
-                Paragraph::new(text).style(if active { theme.selected() } else { style }),
-                input,
-            );
+            let text_style = if active {
+                theme.selected()
+            } else if hovered {
+                theme.hover()
+            } else {
+                style
+            };
+            frame.render_widget(Paragraph::new(text).style(text_style), input);
         }
+        let hint_style = if hovered { theme.text() } else { theme.muted() };
         frame.render_widget(
-            Paragraph::new(format!(" {hint}")).style(theme.muted()),
+            Paragraph::new(format!(" {hint}")).style(hint_style),
             field_rows[1],
         );
     }
@@ -2688,9 +2724,17 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .zip(["校验并保存", "启动", "取消"])
     {
         let selected = app.form.focus == focus && app.overlay.is_none();
+        let hovered = app.config_hover == Some(focus) && app.overlay.is_none() && !selected;
         let style = if selected {
             theme.primary()
+        } else if hovered {
+            theme.primary_hover()
         } else if focus == ConfigFocus::Launch {
+            theme.title()
+        } else {
+            theme.muted()
+        };
+        let border_style = if selected || hovered {
             theme.title()
         } else {
             theme.muted()
@@ -2698,11 +2742,7 @@ fn draw_config(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         frame.render_widget(
             Paragraph::new(label)
                 .centered()
-                .block(theme.block("").border_style(if selected {
-                    theme.title()
-                } else {
-                    theme.muted()
-                }))
+                .block(theme.block("").border_style(border_style))
                 .style(style),
             rect,
         );
@@ -4178,6 +4218,107 @@ mod tests {
             );
             assert_eq!(app.page, Page::Config);
         }
+    }
+
+    #[test]
+    fn config_mouse_hover_highlights_fields_and_buttons() {
+        let mut app = app_with_session(100_000);
+        app.open_page(Page::Config);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let theme = Theme::from_config(&app.config);
+
+        let area = Rect::new(0, 0, 120, 40);
+        let layout = config_layout(page_area(area));
+
+        // Initially no hover.
+        assert_eq!(app.config_hover, None);
+
+        // Hover over ROM field (not currently active, since default focus is Program).
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.fields[0].1.x + 4,
+            layout.fields[0].1.y + 1,
+        );
+        assert_eq!(app.config_hover, Some(ConfigFocus::Rom));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        // Hovered field's border uses theme.title().fg (accent blue).
+        assert_eq!(
+            frame.buffer[(layout.fields[0].1.x, layout.fields[0].1.y)].fg,
+            theme.accent
+        );
+
+        // Hover over Program Address field.
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.fields[2].1.x + 4,
+            layout.fields[2].1.y + 1,
+        );
+        assert_eq!(app.config_hover, Some(ConfigFocus::ProgramAddress));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(
+            frame.buffer[(layout.fields[2].1.x, layout.fields[2].1.y)].fg,
+            theme.accent
+        );
+
+        // Hover over Launch button.
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.buttons[1].1.x + 2,
+            layout.buttons[1].1.y + 1,
+        );
+        assert_eq!(app.config_hover, Some(ConfigFocus::Launch));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        // Hovered button has theme.primary_hover().bg (foreground / bright white).
+        assert_eq!(
+            frame.buffer[(layout.buttons[1].1.x + 2, layout.buttons[1].1.y + 1)].bg,
+            theme.foreground
+        );
+
+        // Hover over Cancel button.
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.buttons[2].1.x + 2,
+            layout.buttons[2].1.y + 1,
+        );
+        assert_eq!(app.config_hover, Some(ConfigFocus::Cancel));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(
+            frame.buffer[(layout.buttons[2].1.x + 2, layout.buttons[2].1.y + 1)].bg,
+            theme.foreground
+        );
+
+        // Hover over Validate button.
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.buttons[0].1.x + 2,
+            layout.buttons[0].1.y + 1,
+        );
+        assert_eq!(app.config_hover, Some(ConfigFocus::Validate));
+        let frame = terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(
+            frame.buffer[(layout.buttons[0].1.x + 2, layout.buttons[0].1.y + 1)].bg,
+            theme.foreground
+        );
+
+        // Move away to empty area -> hover cleared.
+        mouse(&mut app, MouseEventKind::Moved, 0, 0);
+        assert_eq!(app.config_hover, None);
+
+        // With mouse disabled in config, movement does not set config_hover.
+        app.config.ui.mouse = false;
+        mouse(
+            &mut app,
+            MouseEventKind::Moved,
+            layout.buttons[1].1.x + 2,
+            layout.buttons[1].1.y + 1,
+        );
+        assert_eq!(app.config_hover, None);
     }
 
     #[test]
