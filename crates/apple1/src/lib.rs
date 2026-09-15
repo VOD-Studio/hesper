@@ -66,7 +66,7 @@
 //! the video board's carousel reaches the cursor's slot, so a display write
 //! costs about a frame of board time.
 //!
-//! Every fourth of those 65 clocks suppresses the CPU's Φ2 output: the CPU
+//! Four of those 65 clocks suppress the CPU's Φ2 output: the CPU
 //! holds Φ2, the PIA sees no enable, and no bus access happens, while the
 //! board clock, the video counters, and the B3 one-shot keep running.
 //! `tick().cpu` is therefore `None` on those clocks.

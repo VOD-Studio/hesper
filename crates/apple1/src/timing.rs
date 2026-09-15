@@ -14,10 +14,10 @@
 //!
 //! ## Horizontal timing (D6 + D7)
 //!
-//! D6 is a 74LS196 decade counter; D7 is a 74LS197 binary counter.
-//! They cascade: D6 terminal count (9) → D7 clock. D11's terminal count
-//! (13) clocks D6. The horizontal sequence runs from count 95 (D6=5,
-//! D7=9) to 159 (D6=9, D7=15), giving 65 character-clock slots.
+//! D6 is a 74160 decade counter; D7 is a 74161 binary counter.
+//! They share the character clock, with D6 terminal count (9) enabling
+//! D7. The horizontal sequence runs from count 95 (D6=5, D7=9) to
+//! 159 (D6=9, D7=15), giving 65 character-clock slots.
 //!
 //! H6 = D7 Q2 (bit 2 of D7); H10 = D6 terminal count.
 //! `H6 && H10` gates the refresh window, which falls at counts where
@@ -32,13 +32,21 @@
 //! refresh. This module models Φ2 suppression as a digital gate: the CPU
 //! does not advance its Φ2 half-cycle, and no bus access occurs.
 //!
+//! ## Vertical timing (D8 + D9, D15)
+//!
+//! D8/D9 form an eight-bit synchronous counter. LAST H increments it
+//! while D15 Q1 enables counting; D15's preset-A sequence inserts six
+//! held scan lines into a normal 256-count frame. During VBL, /WC1
+//! instead loads BF or 00 according to D6 Q3. Loading takes priority
+//! over both LAST H and D15 inhibition, so feedback changes frame length.
+//!
 //! ## Integration
 //!
-//! Each master tick, `Timing::tick()` returns a [`TimingEvent`]. The
-//! machine drives the CPU only on `phi1_edge` and (non-refresh)
-//! `phi2_edge`; it advances the keyboard, display, and PIA on
-//! `char_edge`. Refresh-only ticks advance board time and continue
-//! video/B3 timing without CPU cycles.
+//! Each master tick, `Timing::tick(write_control)` returns a [`TimingEvent`].
+//! The machine drives the CPU on `phi1_edge` and non-refresh `phi2_edge`.
+//! Character edges remain at phase 13; MEMΦ rises at phase 3, four
+//! ticks after the preceding character edge. Refresh-only ticks advance
+//! board time and video/B3 timing without CPU cycles.
 
 /// Crystal frequency in Hz.
 pub const CRYSTAL_HZ: u64 = 14_318_180;
@@ -70,14 +78,14 @@ pub const SCAN_LINES_PER_ROW: u8 = 8;
 /// Visible character rows.
 pub const ROWS: u8 = 24;
 
-/// Vertical scan lines in a normal frame (NTSC).
+/// Scan lines per normal frame: 256 counter values plus six inhibited lines.
 pub const SCAN_LINES_PER_FRAME: u16 = 262;
 
 /// Scan lines occupied by the visible rows.
 pub const VISIBLE_SCAN_LINES: u16 = ROWS as u16 * SCAN_LINES_PER_ROW as u16;
 
-/// Carousel slots stepped during vertical blanking: 1024 installed slots
-/// minus the 960 visible ones.  These are the slots erased each frame.
+/// Carousel slots stepped during normal vertical blanking: eight pulses
+/// on each of eight scan lines, making 64 spare slots beyond the visible 960.
 pub const BLANK_SLOTS: u16 = 64;
 
 /// Carousel slots in the visible window.
@@ -88,29 +96,31 @@ pub const VISIBLE_SLOTS: u16 = ROWS as u16 * BURST_SLOTS as u16;
 pub struct TimingEvent {
     /// Rising edge of Φ1 — call `Cpu::half_cycle` once.
     pub phi1_edge: bool,
-    /// Rising edge of Φ2 — call `Cpu::half_cycle` once.  False during
-    /// refresh (the CPU stays at Φ1; no bus access, no PIA E edge).
+    /// Ungated Φ2 rising edge. Call `Cpu::half_cycle` only if `refresh`
+    /// is false; refresh clocks produce no CPU bus access or PIA E edge.
     pub phi2_edge: bool,
     /// The current character clock is a refresh cycle (Φ2 suppressed).
     pub refresh: bool,
-    /// Rising edge of the character clock (master tick 0).  Display,
-    /// keyboard, and B3 timing advance on this edge.
+    /// Character-clock rising edge at phase 13, sampling the counters.
     pub char_edge: bool,
-    /// MEMΦ: the carousel advances one character slot.  One pulse per
-    /// displayed column during a row's first scan line, and one per
-    /// blanking line while the spare slots are stepped and erased.
+    /// MEMΦ rising edge at phase 3: 40 pulses on scan 7 of visible rows,
+    /// or eight pulses on scan 7 during vertical blanking.
     pub mem_clock: bool,
-    /// Carousel offset of the slot this MEMΦ edge exposes, counted from
-    /// the display origin: `row * 40 + column` for visible rows, and
-    /// `960 + n` for the spare slots stepped through during blanking.
+    /// Raster offset exposed by this MEMΦ edge: `row * 40 + column`
+    /// in the visible window, or `960 + n` in vertical blanking.
+    /// This is not the continuous carousel index: a vertical reload
+    /// can repeat raster offsets without rewinding the carousel.
     /// Only meaningful while `mem_clock` is set.
     pub burst: u16,
-    /// LINEΦ: the 2519 line buffer takes a fresh copy of the row.
-    pub line_load: bool,
     /// The current vertical scan line is inside the vertical blanking
     /// interval.
     pub vbi: bool,
-    /// A full video frame just completed (vertical terminal count).
+    /// Horizontal terminal-count level, H == 159.
+    pub last_h: bool,
+    /// Value synchronously loaded into D8/D9 on this character edge.
+    /// A load of zero is not a completed frame.
+    pub vertical_reload: Option<u8>,
+    /// Natural FF→00 terminal increment, not a synchronous load to zero.
     pub frame_completed: bool,
 }
 
@@ -123,10 +133,10 @@ pub struct Timing {
     char_phase: u8,
     /// 0..64 — slot index within the horizontal period.
     slot: u8,
-    /// 0..261 — scan line within the frame.  The character row and the
-    /// scan line within it are derived from this rather than counted
-    /// separately, so the vertical counters can never drift apart.
-    vline: u16,
+    /// D8/D9 eight-bit vertical counter; inhibited lines repeat a value.
+    vertical: u8,
+    /// D15 four-bit counter, preset to A outside its count window.
+    inhibit: u8,
     /// Completed video frame counter.
     frames: u64,
 }
@@ -140,7 +150,8 @@ impl Timing {
             master_ticks: 0,
             char_phase: 0,
             slot: 0,
-            vline: 0,
+            vertical: 0,
+            inhibit: 0x0a,
             frames: 0,
         }
     }
@@ -157,87 +168,73 @@ impl Timing {
 
     /// Whether the vertical counters are inside the blanking interval.
     pub fn in_vbi(&self) -> bool {
-        self.vline >= VISIBLE_SCAN_LINES
+        self.vertical >= VISIBLE_SCAN_LINES as u8
     }
 
     /// Advance exactly one master tick and return the events it produced.
     ///
     /// Events are determined from the state *before* the tick (the "old
     /// state" rule).  State is committed after computing events.
-    pub fn tick(&mut self) -> TimingEvent {
+    /// `write_control` means the display's active-low /WC1 is asserted.
+    /// It is sampled on character edges and loads D8/D9 only during VBL.
+    pub fn tick(&mut self, write_control: bool) -> TimingEvent {
         let old_phase = self.char_phase;
         let old_slot = self.slot;
-        let old_vline = self.vline;
+        let vertical = self.vertical;
 
-        // --- Derive events from old state ---
-
-        // Φ1 edge: start of character clock (phase 0 → enters Φ1).
         let phi1_edge = old_phase == 0;
-
-        // Φ2 edge: mid-point of character clock (phase 7 → enters Φ2).
         let phi2_edge = old_phase == MASTER_TICKS_PER_CHAR / 2;
-
-        // Is the current slot a refresh slot?  Derived from the count
-        // at old_slot, since the video counters are stable during a
-        // character clock and advance on its trailing edge.
-        let count = old_slot as u16 + 95;
-        let d6 = (count % 10) as u8;
-        let d7 = (count / 10) as u8;
-        let h6 = d7 & 0x04 != 0;
-        let h10 = d6 == 9;
-        let refresh = h6 && h10;
-
-        // Character-clock edge: phase rolls over to 0.
         let char_edge = old_phase == MASTER_TICKS_PER_CHAR - 1;
 
-        // Vertical blanking: the 24 visible rows are scanned first.
-        let vbi = old_vline >= VISIBLE_SCAN_LINES;
-        let row = (old_vline / SCAN_LINES_PER_ROW as u16).min(ROWS as u16) as u8;
-        let scan = (old_vline % SCAN_LINES_PER_ROW as u16) as u8;
+        let count = old_slot + 95;
+        let d6 = count % 10;
+        let d7 = count / 10;
+        let h6 = d7 & 0x04 != 0;
+        let refresh = h6 && d6 == 9;
+        let last_h = count == 159;
+        let vbi = self.in_vbi();
 
-        // MEMΦ: the carousel is clocked once per displayed column while a
-        // row's first scan line runs, and once per blanking line while the
-        // spare slots are stepped through.
-        let blanking_step = vbi && old_slot == 0 && old_vline < VISIBLE_SCAN_LINES + BLANK_SLOTS;
-        let mem_clock =
-            char_edge && ((!vbi && scan == 0 && old_slot < BURST_SLOTS) || blanking_step);
-        let burst = if blanking_step {
-            VISIBLE_SLOTS + (old_vline - VISIBLE_SCAN_LINES)
+        // C10 pin 10 selects BF rather than 00 on the shared preset bus.
+        let preset_high = vbi && d6 & 0x08 == 0;
+        let mem_clock = old_phase == 3 && h6 && vertical & 7 == 7 && !preset_high;
+        let burst = if !mem_clock {
+            0
+        } else if vbi {
+            VISIBLE_SLOTS
+                + ((vertical as u16 - VISIBLE_SCAN_LINES) / SCAN_LINES_PER_ROW as u16) * 8
+                + (d7 as u16 - 12) * 2
+                + (d6 as u16 - 8)
         } else {
-            row as u16 * BURST_SLOTS as u16 + old_slot as u16
+            (vertical / SCAN_LINES_PER_ROW) as u16 * BURST_SLOTS as u16 + (count - 120) as u16
         };
-
-        // LINEΦ: the line buffer takes the row on the first slot of the
-        // row's first scan line.
-        let line_load = mem_clock && old_slot == 0 && scan == 0 && !vbi;
-
-        // --- Commit new state ---
 
         self.master_ticks += 1;
-
-        // Advance character phase.
-        self.char_phase = if old_phase + 1 >= MASTER_TICKS_PER_CHAR {
-            0
-        } else {
-            old_phase + 1
-        };
+        self.char_phase = if char_edge { 0 } else { old_phase + 1 };
 
         let mut frame_completed = false;
+        let mut vertical_reload = None;
         if char_edge {
-            // Advance the horizontal slot; its terminal count steps the
-            // vertical scan line.
-            if old_slot + 1 >= LINE_SLOTS {
-                self.slot = 0;
-                if old_vline + 1 >= SCAN_LINES_PER_FRAME {
-                    self.vline = 0;
+            // Both 74161s sample /LOAD before their count enables.
+            if write_control && vbi {
+                let preset = if preset_high { 0xbf } else { 0 };
+                self.vertical = preset;
+                vertical_reload = Some(preset);
+            } else if last_h && self.inhibit & 0x02 != 0 {
+                self.vertical = vertical.wrapping_add(1);
+                if vertical == u8::MAX {
                     self.frames += 1;
                     frame_completed = true;
-                } else {
-                    self.vline = old_vline + 1;
                 }
-            } else {
-                self.slot = old_slot + 1;
             }
+
+            // D15 samples the same old vertical state as D8/D9.
+            let inhibit_load_n = vbi && vertical & 0x20 != 0 && vertical & 0x18 == 0;
+            if !inhibit_load_n {
+                self.inhibit = 0x0a;
+            } else if last_h {
+                self.inhibit = self.inhibit.wrapping_add(1) & 0x0f;
+            }
+            self.slot = if last_h { 0 } else { old_slot + 1 };
         }
 
         TimingEvent {
@@ -247,14 +244,15 @@ impl Timing {
             char_edge,
             mem_clock,
             burst,
-            line_load,
             vbi,
+            last_h,
+            vertical_reload,
             frame_completed,
         }
     }
 
-    /// Reset board timing for a machine recreate (Ctrl-N).  Zeroes all
-    /// counters; does not model physical-RESET board behaviour.
+    /// Reset board timing for a machine recreate (Ctrl-N). Restores the
+    /// deterministic preset state, not physical-RESET board behaviour.
     pub fn reset(&mut self) {
         *self = Self::new();
     }
@@ -278,11 +276,8 @@ mod tests {
         let mut total_ticks = 0u64;
 
         for _ in 0..HORIZ_MASTER_TICKS {
-            let ev = t.tick();
+            let ev = t.tick(false);
             total_ticks += 1;
-            if ev.phi1_edge {
-                // Φ1 always fires.
-            }
             if ev.phi2_edge && !ev.refresh {
                 cpu_cycles += 1;
             }
@@ -302,7 +297,7 @@ mod tests {
         let mut refresh_at = Vec::new();
 
         for _ in 0..HORIZ_MASTER_TICKS {
-            let ev = t.tick();
+            let ev = t.tick(false);
             if ev.phi2_edge && ev.refresh {
                 // The slot index before the tick that produced this edge.
                 // At phi2_edge (phase 7), the slot hasn't advanced yet.
@@ -319,7 +314,7 @@ mod tests {
         let mut edges = Vec::new();
 
         for _ in 0..(MASTER_TICKS_PER_CHAR as u64 * 3) {
-            let ev = t.tick();
+            let ev = t.tick(false);
             if ev.phi1_edge {
                 edges.push('1');
             }
@@ -338,7 +333,7 @@ mod tests {
         let mut char_edges = Vec::new();
 
         for _ in 0..(MASTER_TICKS_PER_CHAR as u64 * 2) {
-            let ev = t.tick();
+            let ev = t.tick(false);
             if ev.char_edge {
                 char_edges.push(t.master_ticks());
             }
@@ -353,7 +348,7 @@ mod tests {
     fn reset_zeroes_all_counters() {
         let mut t = Timing::new();
         for _ in 0..500 {
-            t.tick();
+            t.tick(false);
         }
         assert!(t.master_ticks() > 0);
         t.reset();
@@ -362,39 +357,109 @@ mod tests {
     }
 
     #[test]
-    fn no_cpu_bus_access_on_refresh_slot() {
-        let mut t = Timing::new();
-        // Advance to just before slot 34 (the first refresh slot).
-        // Slot 34, phase 7 is the refresh Φ2 edge.
-        // 34 slots × 14 ticks + 7 = 34*14+7 = 483 ticks.
-        let ticks_to_first_refresh_phi2 = 34 * MASTER_TICKS_PER_CHAR as u64 + 7;
-        for _ in 0..ticks_to_first_refresh_phi2 {
-            t.tick();
-        }
-
-        // Now one more tick: should be phi2_edge on refresh slot.
-        let ev = t.tick();
-        assert!(ev.phi2_edge, "must be Φ2 edge");
-        assert!(ev.refresh, "must be a refresh slot");
-        // CPU should NOT get a cycle here.
-        assert!(
-            ev.refresh && ev.phi2_edge,
-            "Φ2 edge during refresh: CPU cycle must be suppressed"
-        );
-    }
-
-    #[test]
     fn phi1_still_fires_during_refresh() {
         let mut t = Timing::new();
         // Go to slot 34, phase 0 (Φ1 edge of the refresh character clock).
         let ticks = 34 * MASTER_TICKS_PER_CHAR as u64;
         for _ in 0..ticks {
-            t.tick();
+            t.tick(false);
         }
-        let ev = t.tick();
+        let ev = t.tick(false);
         assert!(ev.phi1_edge);
         assert!(ev.refresh);
         // Φ1 fires even during refresh — the CPU enters Φ1, but Φ2 is
         // suppressed later in this same character clock.
+    }
+
+    #[test]
+    fn vertical_load_is_conditional_and_overrides_count_inhibition() {
+        for (vertical, slot, inhibit, write_control, expected, reload) in [
+            (191, 0, 0x0a, true, 191, None),
+            (192, 0, 0x0a, false, 192, None),
+            (192, 0, 0x0a, true, 0xbf, Some(0xbf)),
+            (192, 33, 0x0a, true, 0, Some(0)),
+            (226, 0, 0x0c, true, 0xbf, Some(0xbf)),
+            (226, 64, 0x0c, true, 0, Some(0)),
+            (255, 64, 0x0a, true, 0, Some(0)),
+        ] {
+            let mut t = Timing {
+                vertical,
+                slot,
+                inhibit,
+                char_phase: 12,
+                ..Timing::new()
+            };
+            let before_edge = t.tick(write_control);
+            assert_eq!(before_edge.vertical_reload, None);
+            assert_eq!(t.vertical, vertical);
+            let edge = t.tick(write_control);
+            assert_eq!(edge.vertical_reload, reload);
+            assert_eq!(t.vertical, expected);
+            assert!(!edge.frame_completed, "a load is not a terminal increment");
+            assert_eq!(t.frames(), 0);
+        }
+    }
+
+    fn check_frame_bursts(inject_reload: bool, expected_lines: u64, expected_mem: u16) {
+        let mut t = Timing::new();
+        let mut lines = 0;
+        let mut mem = 0;
+        let mut bursts = [0u8; 1024];
+        let mut line_pulses = 0;
+        let mut pulse_distribution = [0u16; 41];
+        let mut reloaded = false;
+        for _ in 0..expected_lines * HORIZ_MASTER_TICKS {
+            let write_control = inject_reload
+                && !reloaded
+                && t.vertical == 192
+                && t.slot == 0
+                && t.char_phase == 13;
+            let phase = t.char_phase;
+            let ev = t.tick(write_control);
+            if let Some(value) = ev.vertical_reload {
+                assert_eq!(value, 0xbf);
+                reloaded = true;
+            }
+            if ev.mem_clock {
+                assert_eq!(phase, 3);
+                bursts[ev.burst as usize] += 1;
+                mem += 1;
+                line_pulses += 1;
+            }
+            if ev.char_edge && ev.last_h {
+                lines += 1;
+                pulse_distribution[line_pulses] += 1;
+                line_pulses = 0;
+            }
+            assert_eq!(
+                ev.frame_completed,
+                t.master_ticks() == expected_lines * HORIZ_MASTER_TICKS
+            );
+        }
+        assert_eq!(t.frames(), 1);
+        assert_eq!(lines, expected_lines);
+        assert_eq!(mem, expected_mem);
+        assert_eq!(reloaded, inject_reload);
+        assert_eq!(pulse_distribution[0], 230);
+        assert_eq!(pulse_distribution[8], 8);
+        assert_eq!(pulse_distribution[40], if inject_reload { 25 } else { 24 });
+        for (slot, count) in bursts.into_iter().enumerate() {
+            let expected = if inject_reload && (920..960).contains(&slot) {
+                2
+            } else {
+                1
+            };
+            assert_eq!(count, expected, "raster slot {slot}");
+        }
+    }
+
+    #[test]
+    fn normal_frame_has_262_lines_and_1024_distributed_mem_pulses() {
+        check_frame_bursts(false, 262, 1024);
+    }
+
+    #[test]
+    fn one_bf_reload_repeats_bottom_scan_for_263_lines_and_1064_pulses() {
+        check_frame_bursts(true, 263, 1064);
     }
 }

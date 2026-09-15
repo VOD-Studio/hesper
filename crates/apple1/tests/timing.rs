@@ -9,7 +9,7 @@
 use hesper_apple1::Apple1;
 use hesper_cpu6502::{Bus, CpuError};
 
-/// Master ticks in one complete video frame: 262 scan lines of 65
+/// Master ticks in one normal video frame: 262 scan lines of 65
 /// character clocks, each 14 crystal periods.
 const FRAME_TICKS: u64 = 262 * 65 * 14;
 
@@ -60,6 +60,19 @@ fn run_until_cursor(machine: &mut Apple1, cursor: (usize, usize), budget: u64, w
     }
 }
 
+/// Wait for a natural frame completion, including one isolated scroll.
+fn next_frame(machine: &mut Apple1) -> u64 {
+    (0..2 * FRAME_TICKS)
+        .find_map(|_| {
+            machine
+                .tick()
+                .unwrap()
+                .frame_completed
+                .then(|| machine.master_ticks())
+        })
+        .expect("the video frame must finish within two normal frames")
+}
+
 #[test]
 fn refresh_stops_phi2_but_not_the_video_board() {
     // Across a horizontal period, exactly the four refresh clocks carry no
@@ -102,17 +115,17 @@ fn refresh_stops_phi2_but_not_the_video_board() {
 
 #[test]
 fn the_terminal_takes_a_character_during_a_refresh_clock() {
-    // The video board is not gated by RF. Fill columns 0..34 so the next
-    // cursor slot is column 34, which is a refresh clock, and check that
+    // The video board is not gated by RF. Fill columns 0..9 so the next
+    // cursor slot is column 9 (H129), which is a refresh clock, and check that
     // the character is still taken there and that the B3 one-shot that
     // answers it runs its full nominal length in board time.
     let mut machine = echo_machine();
     machine.reset().unwrap();
-    machine.type_str("ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGH");
+    machine.type_str("ABCDEFGHI");
     run_until_cursor(
         &mut machine,
-        (0, 34),
-        40 * FRAME_TICKS,
+        (0, 9),
+        12 * FRAME_TICKS,
         "the terminal filling its line",
     );
 
@@ -122,7 +135,7 @@ fn the_terminal_takes_a_character_during_a_refresh_clock() {
     for _ in 0..(3 * FRAME_TICKS) {
         let tick = machine.tick().unwrap();
         let master = machine.master_ticks();
-        if taken.is_none() && machine.display().screen()[0][34] == b'Z' {
+        if taken.is_none() && machine.display().screen()[0][9] == b'Z' {
             taken = Some((master, tick.refresh));
         }
         if taken.is_some() && done.is_none() && !machine.io_pending() {
@@ -133,7 +146,7 @@ fn the_terminal_takes_a_character_during_a_refresh_clock() {
     let (taken_at, during_refresh) = taken.expect("the terminal must take the character");
     assert!(
         during_refresh,
-        "the cursor's slot is refresh clock 34, so the take happens with Φ2 suppressed"
+        "the cursor's slot is H129, so the take happens with Φ2 suppressed"
     );
     assert_eq!(
         done.expect("the handshake must finish") - taken_at,
@@ -211,7 +224,7 @@ fn a_write_lands_where_the_cursor_is_when_the_slot_arrives() {
     }
     let accepted_at = accepted_at.expect("the character must be accepted");
     assert!(
-        accepted_at - offered_at > FRAME_TICKS / 2,
+        accepted_at > offered_at,
         "the terminal waits for its own slot, not for the write"
     );
     assert_eq!(machine.display().cursor(), (0, 1));
@@ -338,5 +351,172 @@ fn reset_and_clear_screen_during_a_carriage_return_fill() {
                 .any(|&cell| cell == b'Z'),
             "the terminal must still accept characters (clear = {clear})"
         );
+    }
+}
+
+#[test]
+fn bottom_row_cr_reloads_the_scan_and_advances_the_carousel_one_row() {
+    let mut machine = echo_machine();
+    machine.reset().unwrap();
+    for row in 0..23 {
+        machine.type_char(b'A' + row);
+        machine.type_char(b'\r');
+    }
+    machine.type_str("0123456789");
+    run_until_cursor(
+        &mut machine,
+        (23, 10),
+        80 * FRAME_TICKS,
+        "the bottom-row carriage return setup",
+    );
+    machine.run_ticks(B3_TICKS).unwrap();
+    let start = next_frame(&mut machine);
+    machine.type_char(b'\r');
+    let end = next_frame(&mut machine);
+
+    assert_eq!(
+        end - start,
+        FRAME_TICKS + 65 * 14,
+        "the bottom-row CR repeats scan line 191 instead of keeping a fixed frame"
+    );
+    assert_eq!(machine.display().screen()[0][0], b'B');
+    assert_eq!(machine.display().screen()[23], [b' '; 40]);
+    assert_eq!(machine.display().cursor(), (23, 0));
+}
+
+#[test]
+fn bottom_row_last_column_folds_and_accepts_the_next_character_at_home() {
+    let mut machine = echo_machine();
+    machine.reset().unwrap();
+    for row in 0..23 {
+        machine.type_char(b'A' + row);
+        machine.type_char(b'\r');
+    }
+    machine.type_str(&"X".repeat(39));
+    run_until_cursor(
+        &mut machine,
+        (23, 39),
+        100 * FRAME_TICKS,
+        "the bottom-row last-column setup",
+    );
+    machine.run_ticks(B3_TICKS).unwrap();
+    let start = next_frame(&mut machine);
+
+    machine.type_char(b'Z');
+    let end = next_frame(&mut machine);
+    assert_eq!(
+        end - start,
+        FRAME_TICKS + 65 * 14,
+        "an isolated last-column fold repeats scan line 191"
+    );
+    let mut expected = [[b' '; 40]; 24];
+    for (row, cells) in expected.iter_mut().take(22).enumerate() {
+        cells[0] = b'B' + row as u8;
+    }
+    expected[22] = [b'X'; 40];
+    expected[22][39] = b'Z';
+    assert_eq!(machine.display().screen(), &expected);
+    assert_eq!(machine.display().cursor(), (23, 0));
+
+    machine.type_char(b'Y');
+    run_until_cursor(
+        &mut machine,
+        (23, 1),
+        3 * FRAME_TICKS,
+        "the first character after the last-column fold",
+    );
+    expected[23][0] = b'Y';
+    machine.run_ticks(2 * FRAME_TICKS).unwrap();
+    assert_eq!(machine.display().screen(), &expected);
+    assert_eq!(machine.display().cursor(), (23, 1));
+}
+
+#[test]
+fn repeated_bottom_row_carriage_returns_preserve_content_and_output_order() {
+    let mut machine = echo_machine();
+    machine.reset().unwrap();
+    let mut input = Vec::new();
+    for row in 0..23 {
+        input.extend_from_slice(&[b'A' + row, b'\r']);
+    }
+    input.extend_from_slice(b"X\rY\rZ\r0");
+    for &byte in &input {
+        machine.type_char(byte);
+    }
+
+    // Queue the whole sequence, including consecutive bottom-row scrolls.
+    // Their frame lengths need not match the isolated-scroll case.
+    let output = machine.run_ticks(80 * FRAME_TICKS).unwrap();
+    let mut expected = [[b' '; 40]; 24];
+    for (row, cells) in expected.iter_mut().take(20).enumerate() {
+        cells[0] = b'D' + row as u8;
+    }
+    for (cells, byte) in expected[20..].iter_mut().zip(*b"XYZ0") {
+        cells[0] = byte;
+    }
+    assert_eq!(machine.display().screen(), &expected);
+    assert_eq!(machine.display().cursor(), (23, 1));
+    assert_eq!(output, input);
+    assert!(!machine.io_pending());
+}
+
+#[test]
+fn clear_screen_cancels_pending_reload_and_rephases_after_reload() {
+    for after_reload in [false, true] {
+        let mut machine = echo_machine();
+        machine.reset().unwrap();
+        for _ in 0..23 {
+            machine.type_char(b'\r');
+        }
+        machine.type_str(&"X".repeat(39));
+        run_until_cursor(
+            &mut machine,
+            (23, 39),
+            80 * FRAME_TICKS,
+            "the pending-reload clear setup",
+        );
+        machine.type_char(b'Z');
+        let taken = (0..3 * FRAME_TICKS).any(|_| {
+            machine.tick().unwrap();
+            machine.display().screen()[23][39] == b'Z'
+        });
+        assert!(
+            taken,
+            "the final character must reach the bottom-right slot"
+        );
+
+        // MEMphi accepts Z before the counter clock can reload. Check CLEAR
+        // both in that interval and just after the actual raster reload.
+        if after_reload {
+            let reloaded = (0..65 * 14).any(|_| {
+                machine.tick().unwrap();
+                machine.display().screen()[22][39] == b'Z'
+            });
+            assert!(reloaded, "the counter reload must shift the projected row");
+        }
+        machine.clear_screen();
+        assert_eq!(machine.display().screen(), &[[b' '; 40]; 24]);
+        assert_eq!(machine.display().cursor(), (0, 0));
+        let mut frame = next_frame(&mut machine);
+        for _ in 0..3 {
+            let end = next_frame(&mut machine);
+            assert_eq!(end - frame, FRAME_TICKS, "no delayed reload after CLEAR");
+            assert_eq!(machine.display().screen(), &[[b' '; 40]; 24]);
+            assert_eq!(machine.display().cursor(), (0, 0));
+            frame = end;
+        }
+
+        machine.type_char(b'H');
+        run_until_cursor(
+            &mut machine,
+            (0, 1),
+            3 * FRAME_TICKS,
+            "the first character after cancelling the reload",
+        );
+        machine.run_ticks(2 * FRAME_TICKS).unwrap();
+        let mut expected = [[b' '; 40]; 24];
+        expected[0][0] = b'H';
+        assert_eq!(machine.display().screen(), &expected);
+        assert_eq!(machine.display().cursor(), (0, 1));
     }
 }

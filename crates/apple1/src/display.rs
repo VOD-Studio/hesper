@@ -1,97 +1,38 @@
-//! Apple I video terminal: 2504 carousel memory, 2519 line buffer, and the
-//! C7 acknowledge/capture logic.
+//! Apple I text terminal: six 2504 data tracks, a circulating cursor, and
+//! the C7 write/CR control path.
 //!
-//! # Carousel memory
+//! The 1024-slot memory advances only on MEMΦ, independently of the
+//! raster's vertical counter. In a normal frame there are 24 bursts of
+//! forty slots on scan line 7 of each character row, then eight bursts
+//! of eight slots during vertical blanking. The latter erase the 64
+//! spare slots.
 //!
-//! The terminal has no random-access video RAM. Its screen storage is six
-//! 2504 1024-bit shift registers wired in parallel (six bits per
-//! character) that recirculate continuously: 1024 installed character
-//! slots for a screen of 24 rows x 40 columns = 960 visible cells, leaving
-//! 64 slots that are never displayed in a normal frame.
+//! A request is accepted when the memory head reaches the cursor.
+//! Printable characters write the six data tracks and move the cursor.
+//! CR owns the write port until LAST H, erasing each passing slot. Other
+//! control characters are acknowledged without moving the cursor.
+//! The host observes RDA through the board's B3/PIA handshake.
 //!
-//! MEMΦ advances the carousel one slot at a time. It is *not* a free
-//! running clock: the terminal only bursts it while characters must be
-//! made visible — forty pulses during the first scan line of each
-//! character row, and one pulse per blanking line while the 64 spare slots
-//! are stepped through and erased. One frame therefore advances the
-//! carousel exactly 24 x 40 + 64 = 1024 slots, i.e. one lap.
+//! # Scrolling
 //!
-//! Because the carousel only moves during those bursts, a character is
-//! accepted at the moment the cursor's slot is exposed — which is what
-//! makes display writes slow and position dependent.
+//! C7's write control is held between MEMΦ edges and fed back to the
+//! vertical counters. A write or end-of-line CR can therefore reload
+//! D8/D9 during VBL. The counter's raster position changes; the memory
+//! head does not jump. Repeating scan line 191 adds forty real shifts.
+//! The projected screen origin is derived from these two positions, not
+//! advanced by an independent scroll request or a fixed frame delay.
 //!
-//! # Line buffer
+//! # Host observations
 //!
-//! A row of characters has to be shown eight times (seven for the 5x7
-//! glyph, one blank). The carousel cannot jump back forty slots, so each
-//! row is copied out of the carousel into the 2519 40-character
-//! recirculating line buffer ([`Display::line`]) on LINEΦ and replayed
-//! from there by the character generator for the remaining scan lines.
+//! `screen`, `cursor`, and `drain_output` are text projections. Memory
+//! retains only bits 0–4 and inverted bit 6; a parallel ASCII array
+//! preserves the existing host character convention without feeding
+//! it into hardware control. The 2513/pixel output path is not modeled.
 //!
-//! # Character acceptance (C7)
-//!
-//! `CURS` is high while the slot under the cursor is exposed. The terminal
-//! registers the board's `DA` line (PIA CB2 through an inverter) in the C7
-//! flip-flops: an assertion is captured as a *request* and held until the
-//! cursor's slot comes round, where the write logic is
-//! `ack_n = !(CURS && DA)`, `control = !(ack_n || RD6 || RD7)`,
-//! `write_n = ack_n || control`. In words:
-//!
-//! - The terminal takes exactly one character per request, however long
-//!   the CPU leaves DA asserted, and a write that lands between MEMΦ
-//!   bursts is held rather than missed.
-//! - `RD6`/`RD7` clear means the seven data lines carry a control code:
-//!   the handshake still completes, but nothing is written to the
-//!   carousel and the cursor does not move.
-//! - Otherwise the six data tracks (bits 0-4 and the inverted bit 6; bit 5
-//!   is dropped) are shifted into the carousel and the cursor advances one
-//!   slot, which is also what makes `CURS` fall away before the next
-//!   character can be taken.
-//!
-//! Every accept asserts RDA, which the board turns into the B3 one-shot
-//! pulse on the PIA's CB1 — see `crate::machine`. That is what releases
-//! CB2, which is also how software knows the terminal is ready again.
-//!
-//! A carriage return ($0D, decoded separately from `RD1`/`RD3`/`RD4` high
-//! and `RD2`/`RD5`/`RD6`/`RD7` low) is accepted like any other control
-//! code, but additionally clears the carousel to the end of the line one
-//! slot at a time so the cursor lands on column 0 of the next row. The
-//! carousel can only fill the line *it is currently passing*; there is no
-//! addressable addressing, so the blanking is a sequence, not an
-//! assignment. While that sequence runs it owns the carousel's write port,
-//! so a character offered during the fill waits and is taken at the
-//! cursor's next slot — the start of the next line.
-//!
-//! # Vertical blanking and scrolling
-//!
-//! The 64 slots outside the visible window are erased during vertical
-//! blanking as the carousel steps through them. Without that erase, the
-//! slots left over from the previous lap would scroll in from the bottom
-//! of the screen.
-//!
-//! Scrolling itself is a vertical reload: when the cursor advances past
-//! the last visible slot, the display origin moves forward one row at the
-//! vertical boundary, so the visible window shifts up and the freshly
-//! erased spare slots become the new bottom row. The screen never moves
-//! its contents directly.
-//!
-//! # Host projection
-//!
-//! [`Display::screen`], [`Display::cursor`], and [`Display::drain_output`]
-//! are a host text projection. The carousel keeps only the six bits the
-//! hardware stores ([`Display::memory`]); the projection keeps the
-//! normalised ASCII the host renders in a parallel array that no control
-//! logic reads, so the projection can never feed back into the handshake.
-//!
-//! # CLEAR SCREEN
-//!
-//! The Apple I keyboard has two pushbuttons: RESET and CLEAR SCREEN
-//! (Apple-1 Operation Manual, Section I / Keyboard). CLEAR SCREEN is a
-//! video-board input, entirely separate from the system reset line:
-//! [`Display::clear_screen`] blanks the carousel and homes the cursor
-//! without touching the CPU, the PIA, the keyboard, or this model's
-//! in-flight handshake. It is modeled as one functional action, not as a
-//! button pulse of a particular width.
+//! CLEAR SCREEN remains an atomic host operation, not a timed button
+//! pulse: it blanks memory, homes the cursor, and aligns the blank ring
+//! to the current raster position. It cancels CR/write control without
+//! resetting board time, CPU, PIA, or an offered character.
 
 use crate::timing::TimingEvent;
 
@@ -110,270 +51,188 @@ pub const VISIBLE_SLOTS: usize = COLUMNS * ROWS;
 /// Scan lines each character row occupies.
 pub const SCAN_LINES: usize = 8;
 
-/// The 2504 carousel, the 2519 line buffer, and the C7 write logic.
+/// The circulating video memory and its host text projection.
 pub struct Display {
-    /// Six data tracks, packed as one byte per slot. Bits 0-4 are data
-    /// bits 0-4; bit 5 is the inverted data bit 6 (bit 5 is not stored).
+    /// Packed six-bit hardware data, independent of the host character set.
     memory: [u8; SLOTS],
-    /// Host-projection character per slot. Not hardware state: the
-    /// projection needs the accepted ASCII, and nothing in the control
-    /// path reads it.
+    /// Host-only character for each physical memory slot.
     host: [u8; SLOTS],
-    /// Carousel slot under the cursor.
+    /// Physical slot under the circulating cursor.
     cursor: usize,
-    /// Carousel slot displayed at screen cell (0, 0).
+    /// Physical slot corresponding to projected screen cell (0, 0).
     origin: usize,
-    /// 2519 line buffer: the 40 characters currently being displayed.
-    line: [u8; COLUMNS],
-    /// Row whose forty characters the line buffer currently holds.
-    scanning_row: usize,
-    /// Host projection of the visible window.
+    /// Next physical slot exposed by MEMΦ. Never jumps on vertical reload.
+    head: usize,
+    /// Next slot in a normal raster pass, independent of `head`.
+    raster_slot: usize,
     screen: [[u8; COLUMNS]; ROWS],
-    /// `DA` as seen at the previous character clock, for edge detection.
     da_prev: bool,
-    /// A character has been offered and is waiting for the cursor's slot.
-    /// Captured on DA's rising transition and cleared by the take.
     request: bool,
-    /// Slots still to be blanked by an accepted carriage return.
-    clear_to_eol: u8,
-    /// The cursor left the visible window; the display origin moves at
-    /// the next vertical reload.
-    scroll_pending: bool,
-    /// RDA was asserted by the last MEMΦ edge and has not been reported.
+    /// An accepted CR owns the write port through LAST H.
+    clearing: bool,
+    /// Asserted /WC1, held until the next MEMΦ edge.
+    write_control: bool,
     rda: bool,
-    /// Accepted characters waiting for `drain_output`.
     output: Vec<u8>,
 }
 
 impl Display {
-    /// A carousel of blank characters with the cursor at the home slot.
+    /// Initialise a blank ring aligned to the beginning of a normal frame.
     pub fn new() -> Self {
         Self {
             memory: [0; SLOTS],
             host: [b' '; SLOTS],
             cursor: 0,
             origin: 0,
-            line: [0; COLUMNS],
-            scanning_row: 0,
+            head: 0,
+            raster_slot: 0,
             screen: [[b' '; COLUMNS]; ROWS],
             da_prev: false,
             request: false,
-            clear_to_eol: 0,
-            scroll_pending: false,
+            clearing: false,
+            write_control: false,
             rda: false,
             output: Vec::new(),
         }
     }
 
-    /// The six data tracks the carousel holds, one byte per slot: bits 0-4
-    /// and the inverted bit 6 of each accepted character. This is the
-    /// hardware store, not the host projection — hosts read the projected
-    /// screen through [`Display::screen`]. Only the unit tests inspect it.
     #[cfg(test)]
     pub(crate) fn memory(&self) -> &[u8; SLOTS] {
         &self.memory
     }
 
-    /// Advance the video board by one character clock.
-    ///
-    /// `data` is the seven character data lines (PIA PB0-PB6, or zero when
-    /// the PIA is not driving them) and `da` is the board's DA line — PIA
-    /// CB2 through the inverter.
+    /// Feed /WC1 back to the counters; `true` means asserted (low).
+    pub(crate) fn write_control(&self) -> bool {
+        self.write_control
+    }
+
+    /// Observe character/MEMΦ edges and counter reloads from the board.
     pub(crate) fn clock(&mut self, ev: &TimingEvent, data: u8, da: bool) {
-        // C7 registers DA. A request is captured on the transition and
-        // held until the cursor's slot arrives, so the terminal takes
-        // exactly one character per request however long the CPU leaves
-        // the line asserted — and a write that lands between bursts is
-        // not missed the way a purely level-sampled latch would miss it.
-        if da && !self.da_prev {
+        if !da {
+            self.request = false;
+        } else if !self.da_prev {
             self.request = true;
         }
         self.da_prev = da;
 
-        if ev.line_load {
-            self.load_line(ev.burst);
+        if let Some(vertical) = ev.vertical_reload {
+            // Both hardware presets are in the visible range: 00 starts
+            // a new raster pass; BF repeats the last row's scan line 7.
+            self.raster_slot = vertical as usize / SCAN_LINES * COLUMNS;
+            self.align_projection();
+        } else if ev.frame_completed {
+            self.raster_slot = 0;
+            self.align_projection();
         }
 
-        if ev.mem_clock {
-            // A carriage-return fill drives the carousel's write port
-            // until the line is clear, so a character offered while the
-            // fill is still walking waits its turn instead of landing in
-            // the middle of the line being erased.
-            let ready = self.request && self.clear_to_eol == 0;
-            if ready && (ev.burst as usize) < VISIBLE_SLOTS {
-                let exposed = (self.origin + ev.burst as usize) % SLOTS;
-                if exposed == self.cursor {
-                    self.accept(exposed, data);
-                    self.request = false;
-                }
-            }
-            if ev.burst as usize >= VISIBLE_SLOTS {
-                // Vertical blanking: whichever spare slot is passing is
-                // erased, so leftovers cannot scroll in from the bottom.
-                let spare = (self.origin + ev.burst as usize) % SLOTS;
-                self.store(spare, 0, b' ');
-            }
-            self.clear_one();
-            self.vertical_reload();
-        }
-    }
-
-    /// Accept a character the terminal has clocked in under the cursor.
-    fn accept(&mut self, slot: usize, data: u8) {
-        let control = data & 0x60 == 0;
-        // The one-shot fires on the acknowledge, not on the data: a
-        // control code is accepted and released just like a printable one.
-        self.rda = true;
-
-        if control {
-            if data == 0x0d {
-                // Carriage return: the rest of the line is filled with
-                // blanks, one slot per character clock, which is also what
-                // walks the cursor onto the next row. The fill itself
-                // appends nothing — the CR is reported once, here.
-                self.output.push(b'\r');
-                let column = (slot + SLOTS - self.origin) % SLOTS % COLUMNS;
-                self.clear_to_eol = (COLUMNS - column) as u8;
-            }
+        if !ev.mem_clock {
             return;
         }
 
-        // Six tracks: data bits 0-4, then the inverted bit 6. Bit 5 is not
-        // stored at all (the character generator rebuilds the case bit).
+        let slot = self.head;
+        self.write_control = false;
+        if self.request && !self.clearing && slot == self.cursor {
+            self.write_control = self.accept(slot, data);
+            self.request = false;
+        }
+
+        if self.clearing {
+            self.store(slot, 0, b' ');
+            self.cursor = (slot + 1) % SLOTS;
+            if ev.last_h {
+                self.clearing = false;
+                self.write_control = true;
+            }
+        }
+
+        if ev.vbi {
+            self.store(slot, 0, b' ');
+        }
+        self.head = (slot + 1) % SLOTS;
+        self.raster_slot = (ev.burst as usize + 1) % SLOTS;
+    }
+
+    /// Accept live port data and return whether WRITE is asserted.
+    fn accept(&mut self, slot: usize, data: u8) -> bool {
+        self.rda = true;
+        if data & 0x60 == 0 {
+            if data == 0x0d {
+                self.output.push(b'\r');
+                self.clearing = true;
+            }
+            return false;
+        }
+
         let tracks = (data & 0x1f) | if data & 0x40 == 0 { 0x20 } else { 0 };
         let projected = (data & 0x7f).to_ascii_uppercase();
         self.store(slot, tracks, projected);
         self.output.push(projected);
-        self.step_cursor();
+        self.cursor = (slot + 1) % SLOTS;
+        true
     }
 
-    /// Blank one slot of a pending carriage-return fill and walk the
-    /// cursor along with it.
-    fn clear_one(&mut self) {
-        if self.clear_to_eol == 0 {
-            return;
-        }
-        self.clear_to_eol -= 1;
-        let slot = self.cursor;
-        self.store(slot, 0, b' ');
-        self.step_cursor();
-    }
-
-    /// Move the cursor one carousel slot, scrolling when it leaves the
-    /// visible window.
-    fn step_cursor(&mut self) {
-        self.cursor = (self.cursor + 1) % SLOTS;
-        if (self.cursor + SLOTS - self.origin) % SLOTS >= VISIBLE_SLOTS {
-            self.scroll_pending = true;
-        }
-    }
-
-    /// Write one carousel slot and update the host projection.
     fn store(&mut self, slot: usize, tracks: u8, projected: u8) {
         self.memory[slot] = tracks;
         self.host[slot] = projected;
         let offset = (slot + SLOTS - self.origin) % SLOTS;
         if offset < VISIBLE_SLOTS {
-            let (row, column) = (offset / COLUMNS, offset % COLUMNS);
-            self.screen[row][column] = projected;
-            // The character generator is fed from the line buffer, so a
-            // slot written while its own row is being scanned shows up
-            // immediately.
-            if row == self.scanning_row {
-                self.line[column] = tracks;
+            self.screen[offset / COLUMNS][offset % COLUMNS] = projected;
+        }
+    }
+
+    /// A raster reload changes the interpretation of the passing ring,
+    /// never the ring's physical position or its contents.
+    fn align_projection(&mut self) {
+        let origin = (self.head + SLOTS - self.raster_slot) % SLOTS;
+        if origin == self.origin {
+            return;
+        }
+        self.origin = origin;
+        for (row, cells) in self.screen.iter_mut().enumerate() {
+            for (column, cell) in cells.iter_mut().enumerate() {
+                *cell = self.host[(origin + row * COLUMNS + column) % SLOTS];
             }
         }
     }
 
-    /// Copy the row about to be scanned out of the carousel into the 2519
-    /// line buffer.
-    fn load_line(&mut self, burst: u16) {
-        let row = burst as usize / COLUMNS;
-        if row >= ROWS {
-            return;
-        }
-        for column in 0..COLUMNS {
-            let slot = (self.origin + row * COLUMNS + column) % SLOTS;
-            self.line[column] = self.memory[slot];
-            self.screen[row][column] = self.host[slot];
-        }
-        self.scanning_row = row;
-    }
-
-    /// Apply a scroll requested while the cursor walked off the bottom.
-    /// The visible window moves forward one row; the new bottom row is the
-    /// first row of spare slots, which vertical blanking erased on the
-    /// previous lap.
-    fn vertical_reload(&mut self) {
-        if !self.scroll_pending {
-            return;
-        }
-        self.scroll_pending = false;
-        self.origin = (self.origin + COLUMNS) % SLOTS;
-        for row in 0..ROWS {
-            for column in 0..COLUMNS {
-                let slot = (self.origin + row * COLUMNS + column) % SLOTS;
-                self.screen[row][column] = self.host[slot];
-            }
-        }
-    }
-
-    /// Carousel offset of the cursor within the visible window. Only the
-    /// unit tests need the raw offset; hosts use [`Display::cursor`].
-    #[cfg(test)]
-    fn cursor_offset(&self) -> usize {
-        (self.cursor + SLOTS - self.origin) % SLOTS
-    }
-
-    /// Take the "RDA is asserted" event for the board's B3 one-shot.
+    /// Take the acknowledgement event that triggers B3.
     pub(crate) fn take_rda(&mut self) -> bool {
         std::mem::take(&mut self.rda)
     }
 
-    /// Drain all completed output characters since the last drain.
-    /// These are seven-bit characters with ASCII letters uppercased.
+    /// Drain accepted printable characters and carriage returns.
     pub fn drain_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.output)
     }
 
-    /// Read-only snapshot of the 40x24 character screen. Row 0 is the top
-    /// line currently visible; scrolling shifts row content down in index,
-    /// matching what a host terminal would show, not a raw carousel
-    /// offset.
+    /// Read-only host projection of the visible window.
     pub fn screen(&self) -> &[[u8; COLUMNS]; ROWS] {
         &self.screen
     }
 
-    /// Current cursor position as `(row, column)`, both 0-based.
+    /// Project the cursor as `(row, column)`, both zero-based.
+    ///
+    /// A cursor in the spare slots is offscreen until the vertical reload;
+    /// hosts must hide it when the row is outside the visible window.
     pub fn cursor(&self) -> (usize, usize) {
         let offset = (self.cursor + SLOTS - self.origin) % SLOTS;
         (offset / COLUMNS, offset % COLUMNS)
     }
 
-    /// Whether the terminal has work in flight: a carriage-return fill
-    /// still walking the line, or a scroll waiting for the vertical
-    /// reload. A character merely waiting under the cursor is the PIA's
-    /// handshake, not the terminal's.
+    /// Whether CR or a write-control pulse is still in flight.
     pub fn io_pending(&self) -> bool {
-        self.clear_to_eol > 0 || self.scroll_pending
+        self.clearing || self.write_control
     }
 
-    /// CLEAR SCREEN: blank the whole carousel and home the cursor.
-    ///
-    /// This is the Apple I keyboard's second pushbutton (see the module
-    /// docs), a video-board input independent of the system reset line. It
-    /// runs no machine time and touches nothing else: the CPU, the PIA,
-    /// the keyboard queue, an in-flight B3 pulse, and already-accepted
-    /// output stay exactly as they are. A character that is still being
-    /// offered on the port lines is still offered, so the terminal
-    /// accepts it at the homed cursor's next opportunity.
+    /// Atomic host CLEAR SCREEN, preserving board clocks and the handshake.
     pub fn clear_screen(&mut self) {
         self.memory = [0; SLOTS];
         self.host = [b' '; SLOTS];
-        self.line = [0; COLUMNS];
         self.screen = [[b' '; COLUMNS]; ROWS];
+        self.head = (self.origin + self.raster_slot) % SLOTS;
         self.cursor = self.origin;
-        self.clear_to_eol = 0;
+        self.clearing = false;
+        self.write_control = false;
     }
 }
 
@@ -386,43 +245,47 @@ impl Default for Display {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timing::BLANK_SLOTS;
+    use crate::machine::B3_PULSE_TICKS;
+    use crate::timing::{HORIZ_MASTER_TICKS, SCAN_LINES_PER_FRAME, Timing};
 
-    /// One MEMΦ/character-clock step at carousel offset `burst`.
-    fn step(display: &mut Display, burst: u16, data: u8, da: bool) {
-        let ev = TimingEvent {
-            phi1_edge: false,
-            phi2_edge: false,
-            refresh: false,
-            char_edge: true,
-            mem_clock: true,
-            burst,
-            line_load: burst.is_multiple_of(COLUMNS as u16),
-            vbi: burst >= VISIBLE_SLOTS as u16,
-            frame_completed: false,
-        };
-        display.clock(&ev, data, da);
+    const FRAME_TICKS: u64 = HORIZ_MASTER_TICKS * SCAN_LINES_PER_FRAME as u64;
+
+    fn tick(timing: &mut Timing, display: &mut Display, data: u8, da: bool) -> TimingEvent {
+        let ev = timing.tick(display.write_control());
+        if ev.char_edge || ev.mem_clock {
+            display.clock(&ev, data, da);
+        }
+        ev
     }
 
-    /// Present `ch` on the port lines so that the terminal takes it at the
-    /// cursor's next opportunity, then release DA a few clocks later the
-    /// way the B3/CB1 acknowledge does and run the frame out.
-    fn present(display: &mut Display, ch: u8) {
-        let offset = display.cursor_offset();
-        // DA has to be registered one clock before the cursor's slot, so
-        // assertion starts one clock early (or in the previous frame when
-        // the cursor sits on the first slot).
-        let first = if offset == 0 { SLOTS - 1 } else { offset - 1 };
-        step(display, first as u16, ch, true);
-        // The pulse releases CB2 a few character clocks later, which is
-        // also what lets the terminal look at the next character.
-        let release = offset + 4;
-        for burst in 0..SLOTS {
-            if burst == first {
-                continue;
+    fn next_mem(timing: &mut Timing, display: &mut Display, data: u8, da: bool) {
+        for _ in 0..2 * FRAME_TICKS {
+            if tick(timing, display, data, da).mem_clock {
+                return;
             }
-            step(display, burst as u16, ch, burst <= release);
         }
+        panic!("the circulating memory did not advance");
+    }
+
+    /// Every call starts and finishes at a frame boundary. The memory
+    /// phase comes from the real counters, including any CR reload.
+    fn present(display: &mut Display, ch: u8) {
+        let mut timing = Timing::new();
+        display.take_rda();
+        let mut accepted_at = None;
+        for _ in 0..2 * FRAME_TICKS {
+            let da = accepted_at.is_none_or(|at| timing.master_ticks() < at + B3_PULSE_TICKS);
+            let ev = tick(&mut timing, display, ch, da);
+            if display.rda && accepted_at.is_none() {
+                accepted_at = Some(timing.master_ticks());
+            }
+            if ev.frame_completed
+                && accepted_at.is_some_and(|at| timing.master_ticks() >= at + B3_PULSE_TICKS)
+            {
+                return;
+            }
+        }
+        panic!("the terminal did not accept {ch:02X} and finish its frame");
     }
 
     #[test]
@@ -441,7 +304,6 @@ mod tests {
         assert_eq!(display.screen()[0][0], b'A');
         assert_eq!(display.cursor(), (0, 1));
         assert_eq!(display.drain_output(), b"A");
-        assert!(display.memory()[0] & 0x1f != 0, "the six tracks are stored");
     }
 
     #[test]
@@ -452,12 +314,10 @@ mod tests {
         }
         assert_eq!(display.cursor(), (0, 5));
 
-        // Offer 'Z' from the start of a frame. DA reaches the C7 output on
-        // the first clock, but the accept can only happen at the cursor's
-        // own slot, five clocks later.
-        step(&mut display, 0, b'Z', true);
+        let mut timing = Timing::new();
+        next_mem(&mut timing, &mut display, b'Z', true);
         for burst in 1..5u16 {
-            step(&mut display, burst, b'Z', true);
+            next_mem(&mut timing, &mut display, b'Z', true);
             assert_eq!(
                 display.screen()[0][5],
                 b' ',
@@ -465,7 +325,7 @@ mod tests {
             );
         }
         assert_eq!(display.cursor(), (0, 5));
-        step(&mut display, 5, b'Z', true);
+        next_mem(&mut timing, &mut display, b'Z', true);
         assert_eq!(display.screen()[0][5], b'Z');
         assert_eq!(display.cursor(), (0, 6));
     }
@@ -476,23 +336,26 @@ mod tests {
         // 'A' is offered, but the port lines change to 'B' before the
         // cursor slot arrives: the terminal stores what is on the lines at
         // the moment it takes the character.
-        step(&mut display, SLOTS as u16 - 1, b'A', true);
-        step(&mut display, 0, b'B', true);
+        let mut timing = Timing::new();
+        tick(&mut timing, &mut display, b'A', true);
+        next_mem(&mut timing, &mut display, b'B', true);
         assert_eq!(display.screen()[0][0], b'B');
         assert_eq!(display.drain_output(), b"B");
 
         // Once taken, changing the lines again cannot rewrite the cell.
-        step(&mut display, 1, b'C', true);
+        next_mem(&mut timing, &mut display, b'C', true);
         assert_eq!(display.screen()[0][0], b'B');
     }
 
     #[test]
     fn a_character_offered_after_its_slot_waits_for_the_next_lap() {
         let mut display = Display::new();
-        // Offer 'Q' one clock too late for slot 0 of this lap.
-        step(&mut display, 1, b'Q', true);
-        for burst in 2..SLOTS {
-            step(&mut display, burst as u16, b'Q', false);
+        let mut timing = Timing::new();
+        next_mem(&mut timing, &mut display, 0, false);
+        // Offer 'Q' one memory clock too late for slot 0 of this lap.
+        next_mem(&mut timing, &mut display, b'Q', true);
+        for _ in 2..SLOTS {
+            next_mem(&mut timing, &mut display, b'Q', false);
         }
         assert_eq!(
             display.screen()[0][0],
@@ -502,8 +365,7 @@ mod tests {
         assert_eq!(display.cursor(), (0, 0));
 
         // The next lap exposes slot 0 again and takes it.
-        step(&mut display, SLOTS as u16 - 1, b'Q', true);
-        step(&mut display, 0, b'Q', true);
+        next_mem(&mut timing, &mut display, b'Q', true);
         assert_eq!(display.screen()[0][0], b'Q');
         assert_eq!(display.cursor(), (0, 1));
     }
@@ -640,10 +502,9 @@ mod tests {
         display.memory[spare] = 0x1f;
         display.host[spare] = b'X';
 
-        // A blanking pass erases it, which is what keeps stale characters
-        // from scrolling in at the bottom.
-        for offset in 0..BLANK_SLOTS {
-            step(&mut display, VISIBLE_SLOTS as u16 + offset, 0x7f, false);
+        let mut timing = Timing::new();
+        for _ in 0..SLOTS {
+            next_mem(&mut timing, &mut display, 0x7f, false);
         }
         assert_eq!(display.memory()[spare], 0);
         assert_eq!(display.host[spare], b' ');

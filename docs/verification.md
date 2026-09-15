@@ -870,3 +870,38 @@ CPU 核心（`hesper-cpu6502`）本轮未修改，因此未重跑 SingleStep 151
 | macOS 真实 PTY（120×40，`cargo run … apple1 --rom …` → F10 → Apple-1 配置） | 6 项断言全部通过：表单首帧 02 行带 `Enter 选择` 徽标且无编辑器打开；裸 Enter 立即出现「选择程序」弹层（含分类与 15 Puzzle）；Esc 返回表单；Shift+Tab 到 ROM 行后 Enter 进入 `编辑中` 而非弹层。脚本与转录：`.cache/tui-config-enter-qa/pty_enter.py`、`pty_enter.log`。断言限定在弹层／表单可见文本，未做全屏子串匹配 |
 
 本轮未改 CPU、Apple I 机器行为、配置 schema 或程序资产，未添加依赖；PTY 验收覆盖配置页 Enter 路径，不代表完整 P01–P16、Linux/Windows 或原生桌面终端视觉验收。本轮本地提交，未 push。
+
+## 2026-09-14：条件垂直重载与滚动帧长修复（H18）
+
+补核 M76 Sheet 1/3 的 C10、C9、D8/D9、D15 与 C7 写控制路径，并以 TI 74161／74174 功能说明核对同步边沿规则。共享预置源不是恒高：`P = NOR(D6.Q3, /VBL)`，P=1 加载 `$BF`、P=0 加载 `$00`；`/LOAD = /WC1 OR /VBL`。这更正了上节只追到预置位、未追到网络终点的阶段性结论。原图裁剪位置、器件数据表和原板走线勘误链接见 [硬件依据 H18](apple1/hardware-evidence.md#h18-补充器件依据与独立旁证)；独立 VHDL 重建仅作为旁证，不替代原图或实板验证。
+
+实现变更：
+
+- `timing.rs` 用 D8/D9 八位计数与 D15 使能代替固定 262 行取模；同步 LOAD 优先于计数使能，加载零不伪造帧完成。MEMΦ 独立于 CPU 刷新，改为扫描线 7 的 40 拍可见串与每条指定消隐扫描线的 8 拍，而非首扫描线／每消隐行一拍。
+- `display.rs` 的物理读头仅在 MEMΦ 前进，CR／写控制反馈进入实际垂直计数器；屏幕原点从读头与光栅的相对位置推导。删除 `scroll_pending`、独立加 40 的滚动和未被读取的整行缓存，不把字符投影冒充 2519／2513／D1 像素链。`Timing::tick` 调用与直接构造旧事件的测试均已迁移。
+- DA 撤销会取消未接收请求，修复新 MEMΦ 相位下 RESET 后遗留请求把浮空数据线写入屏幕的问题；既有 `reset_clears_a_character_offered_but_not_yet_taken` 回归通过。CLEAR 仍是原子宿主动作，取消 CR／写控制并按当前光栅重对齐空白循环存储，不改变 CPU、PIA 或板时钟。
+- 光标在重载前可短暂进入备用槽；TUI 与既有文本终端一样，只在可见字符区域内显示光标。保留工作树已有的配置页 Enter 改动及其验证记录，未暂存或覆盖它们。
+
+先加入机器回归 `bottom_row_cr_reloads_the_scan_and_advances_the_carousel_one_row`：旧实现实际返回 238420 tick，期望 239330 tick，测试失败；修复后通过。计数器层逐 tick 验证如下，额外 40 拍确实重复光栅槽 920–959，而不是只修改帧计数：
+
+| 计数器场景 | 扫描线 | master tick | MEMΦ |
+| --- | --- | --- | --- |
+| 正常帧 | 262 | 238420 | 1024 |
+| V192/H95 注入一次 BF 同步重载 | 263 | 239330 | 1064 |
+
+机器层另以真实 PIA 握手验证隔离的底行 CR、底行末列可打印折行及后续字符、三个连续底行 CR 的完整屏幕与输出顺序，以及 CLEAR 在重载前／刚重载后的两侧介入：后续三帧恢复正常长度，屏幕无幽灵滚动，随后字符稳定落在左上角。**263 只对应所列隔离条件，连续滚动没有硬编码此帧长。**
+
+| 命令或场景 | 实际结果 |
+| --- | --- |
+| `cargo test --locked --offline -p hesper-apple1 --test timing` | 11 项通过，含上述边界回归 |
+| `cargo test --locked --offline -p hesper-apple1` | 92 项通过；4 项真实 ROM 测试按约定 ignored |
+| `make verify`（此前执行 `cargo fmt --all`） | 格式、全目标 check、debug／release 各 246 项测试、Clippy `-D warnings`、三种 demo 与 diff 检查全部通过；每种构建的 20 项真实 ROM 测试按约定 ignored |
+| `make wozmon-tests ROM=.cache/apple1/wozmon.bin` | 4 项机器测试与 16 项 CLI 测试通过；使用既有 ROM，未下载或修改镜像 |
+| macOS 真实 PTY，120×40，实际 debug 二进制 | Woz Monitor 用 `300R` 进入临时 19 字节回显程序；40 个 A 后的 B 落在下一行首列；清屏后输入 A–Z 各一行再输入 DONE，整个 40×24 机器面板严格等于 D–Z 加底行 DONE，并在继续运行时保持；再次 CLEAR 后 HOME 稳定出现在左上角 |
+| 同一 PTY 正常退出 | Ctrl-C 后确认退出，退出码 0，ICANON／ECHO 恢复，离开备用屏并关闭 bracketed paste，ANSI 网格解析无未知序列 |
+
+PTY 判据只比较机器面板，不从侧栏周期数推断字符输出。临时回显程序复用 Woz Monitor 已配置的 PIA，并先等待先前显示握手结束；清屏、折行、滚动均由实际运行的机器完成，没有直接设置屏幕。首次临时程序误把已选择 ORB 的 `$D012` 当作 DDRB，修正了探针的初始化协议；退出探针也补齐既有确认弹层，未为这些探针问题修改产品行为。
+
+README、架构、路线图、硬件依据与 Apple I 概览已同步。CPU 核心与其总线／指令语义未改，未重跑 SingleStep／Klaus／Visual6502 完整外部层；未运行远程 CI、跨平台或原生桌面终端视觉验收。C7／TTL 亚字符传播、物理 CLEAR 按钮脉宽、2519 行重放、2513／D1 像素链、DRAM 电荷保持及上电随机态仍未认证，M3 整体验收保持未勾选。临时探针与转录清理后不纳入仓库；没有新增依赖或程序资产。
+
+未提交、推送或发布。

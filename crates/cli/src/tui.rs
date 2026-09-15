@@ -2141,10 +2141,12 @@ fn draw_apple1(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         );
         if app.overlay.is_none() {
             let (row, column) = session.machine().display().cursor();
-            frame.set_cursor_position((
-                screen_rect.x + 1 + column as u16,
-                screen_rect.y + 1 + row as u16,
-            ));
+            let inner = screen_rect.inner(Margin::new(1, 1));
+            if row < ROWS.min(usize::from(inner.height))
+                && column < COLUMNS.min(usize::from(inner.width))
+            {
+                frame.set_cursor_position((inner.x + column as u16, inner.y + row as u16));
+            }
         }
         if show_sidebar {
             let registers = session.machine().cpu().registers();

@@ -85,11 +85,11 @@ impl Apple1 {
     /// original board's synchronous edge order rather than assigning one
     /// stage's new output through another:
     ///
-    /// 1. The board clock advances; Φ1, Φ2, MEMΦ, LINEΦ, and the
-    ///    character clock edges are identified from the old timing state.
-    /// 2. On a character-clock edge the keyboard presents its key, and the
-    ///    terminal advances: MEMΦ shifts the carousel, LINEΦ reloads the
-    ///    line buffer, and the C7 stage samples DA.
+    /// 1. The board clock samples the terminal's write-control output and
+    ///    advances its counters, deriving CPU, MEMΦ, and reload events.
+    /// 2. On a character-clock edge the keyboard presents its key. On
+    ///    MEMΦ the terminal advances its independent circulating memory;
+    ///    write control settles before the next counter sampling edge.
     /// 3. An accepted character asserts RDA, which starts the B3 one-shot
     ///    and pulls CB1 low. The one-shot runs on board time, so it
     ///    finishes even while the CPU is stopped for refresh.
@@ -101,7 +101,7 @@ impl Apple1 {
     /// 6. During refresh the Φ2 edge is skipped: the CPU stays in Φ2, the
     ///    PIA sees no enable, and no bus access occurs.
     pub fn tick(&mut self) -> Result<Tick, CpuError> {
-        let ev = self.timing.tick();
+        let ev = self.timing.tick(self.display.write_control());
 
         // --- B3 one-shot ---
         //
@@ -114,14 +114,14 @@ impl Apple1 {
             }
         }
 
-        // --- Character-clock edge: keyboard and video board ---
-        if ev.char_edge {
-            if !self.bus.pia().reset_asserted() {
-                self.keyboard.tick(self.bus.pia_mut());
-            }
+        // --- Keyboard clock and independent video memory clock ---
+        if ev.char_edge && !self.bus.pia().reset_asserted() {
+            self.keyboard.tick(self.bus.pia_mut());
+        }
 
-            // The terminal's DA input is CB2 through the board's inverter,
-            // and its data inputs are the seven character lines.
+        if ev.char_edge || ev.mem_clock {
+            // CB2 carries DA; the seven port data lines remain live.
+            // MEMΦ is not gated by CPU refresh.
             let (data, da) = {
                 let pia = self.bus.pia();
                 (pia.data_lines(), !pia.cb2_level())
