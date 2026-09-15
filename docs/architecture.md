@@ -16,7 +16,7 @@ Apple I 已实现独立机器 Bus、内存映射、设备状态和板级时钟�
 `hesper-apple1` 把 CPU、内存映射 Bus、PIA、键盘与视频终端放在一个板级时钟模型下，`crates/cli` 只驱动这一个入口。机器层的公开面是窄的：
 
 ```rust
-pub struct Tick { pub cpu: Option<Cycle>, pub refresh: bool, pub frame_completed: bool }
+pub struct Tick { pub cpu: Option<Cycle>, pub refresh: bool, pub frame_completed: bool, pub video: VideoSample }
 Apple1::new(rom) / tick() / run_ticks(ticks) / reset()
 Apple1::master_ticks() / cpu_cycles() / video_frames() / io_pending()
 Apple1::set_reset_line(asserted) / reset_line_asserted() / clear_screen()
@@ -33,7 +33,8 @@ Apple1::type_char() / type_str() / drain_output() / cpu() / bus() / bus_mut() / 
 - **PA7 是板级固定高电平**（`bus.rs`）：初始化时即接到 +5V 的数字电平，Port A 配置为输入时首次按键前也读到 bit 7 = 1；键盘仅更新七位字符并保留 PA7。物理 RESET 保留外部引脚电平，机器重建重新建立接线。它不同于通用 PIA 的内部上拉，不受“电气特性不建模”这一边界排除。
 - **视频终端是循环存储模型**（`timing.rs`、`display.rs`）：1024 个六位字符槽仅随 MEMΦ 前进，物理读头与光标独立于光栅位置。正常帧为 262 行、1024 次存储移位；D8/D9 按 `/WC1`、VBL 与 D6.Q3 同步加载 `$BF` 或 `$00`，D15 控制计数使能。隔离的底行 CR／末列折行会重扫扫描线 191，增加一条扫描线与 40 次真实移位；不是所有滚动都硬编码为 263 行。CR 逐槽清到 LAST H。屏幕、光标和输出流只是宿主文本投影，`origin` 由物理读头与重载后的光栅位置推导，不另行请求滚动。光标暂处备用槽时宿主必须隐藏它。
 - **机器重建**（Ctrl-N）归零两个时钟与显示；物理 RESET 不归零它们、不清屏、不丢弃已排队输入。
-- **不建模**：DRAM 单元电荷保持、TTL 传播延迟与单稳态容差、真实上电随机态、2519 逐字符行重放与 2513／D1 像素／视频合成，以及 PIA 输出线争用与端口上下拉／浮空。CLEAR SCREEN 仍是清空并按当前光栅重新对齐循环存储的原子宿主动作，不模拟按钮脉宽；它取消未完成的 CR／写控制，不复位板时钟、CPU 或 PIA。逐项边界见 `docs/apple1/hardware-evidence.md`。
+- **数字视频输出**（`video.rs`）：存储保留原始 B6，C10 在行缓冲输入端做反相与光标门控；2519 在扫描行 7 逐字符装入，其余行循环。D1 在点时钟沿装载旧行缓冲的组合字模输出并串行移位；C13 输出与同一组计数器对应的复合同步。`tick().video` 每 master tick 给出亮度、H/V/复合同步和点沿；宿主自行有界采集，核心不存视频历史。固定字模及编码、取样相位、VBL 与 VSYNC 的区别见 [视频契约](apple1/video.md)。
+- **不建模**：DRAM 单元电荷保持、TTL 传播延迟与单稳态容差、真实上电随机态、视频模拟电路与负载，以及 PIA 输出线争用与端口上下拉／浮空。原板完整字模逐点认证仍未完成。CLEAR SCREEN 仍是清空并按当前光栅重新对齐循环存储的原子宿主动作，同时清空行缓冲与像素寄存器，不模拟按钮脉宽；它取消未完成的 CR／写控制，不复位板时钟、闪烁相位、CPU 或 PIA。逐项边界见 `docs/apple1/hardware-evidence.md`。
 
 ## 状态与 RESET
 

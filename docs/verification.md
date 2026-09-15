@@ -1015,3 +1015,23 @@ WozMon 的 SHA-256 为 `e5af0d1c4057bd8e0ef5cb069c208ff7cc0984a7dff53b12c5cf119d
 本次只把这六行文字改为「本轮按功能点本地提交，未 push。」：技术结论、验证范围、证据表格与未验收清单均未改动，未改源码、测试、工具、程序资产或依赖，也未重跑 Rust 检查、外部 CPU corpus、ROM-gated 测试或远程 CI。
 
 本轮按功能点本地提交，未 push。
+
+## 2026-09-15：接通 Apple I 数字视频链
+
+范围：原始六轨编码、2519 逐字符装入／循环、固定 P-Lab 替换字模、74166 串行像素、视频光标及 C13 复合同步；每个 `Apple1::tick()` 返回 `VideoSample`。沿用现有主时钟、存储读头、写入握手与 H18 重载，不修改 CPU 执行语义。新增宿主 `video` example，用原创 6502 程序经真实 PIA 写字，导出有界 PGM、CSV 和 SVG。依据、相位、字模许可与电气边界见 [数字视频链](apple1/video.md)。
+
+先运行 `cargo test --locked -p hesper-apple1 space_and_erasure_use_the_same_raw_tracks`，复现失败：输入空格的轨道值为 32，擦除轨道值为 0。修复后存储原始 B6，反相及光标门控在 C10／2519 输入端执行，输入空格与擦除使用同一编码。首次 CPU 写入 F 在 `7*910+25*14+3` tick 接收；第一个像素到 `9*910+25*14+11` 才出现，证明生产路径经过行重放与 D1 装载而非字符屏即时绘制。
+
+本地验证：
+
+- `cargo test --locked -p hesper-apple1 --test video`：5 项通过，覆盖真实 CPU 写入可见时刻、非对称字形与字符间距、六组硬件别名、空白／清屏、RESET 保留像素与板时钟闪烁、连续滚动的水平同步及滚动后像素位置。
+- `make verify`：格式、全目标 check、debug／release 各 **263 项**非忽略测试、Clippy（`-D warnings`）、CLI demo 与 trace、空白检查全部通过。新增共 11 项回归（6 个单元测试、5 个生产路径集成测试），无新 Cargo 依赖。
+- `make wozmon-tests`：使用既有 `.cache/apple1/wozmon.bin`，Apple I 4 项、CLI 16 项 ROM-gated 测试通过；未下载或嵌入该 ROM。
+- `cargo run --locked -p hesper-apple1 --release --example video -- .cache/apple1-video-qa/normal`：采到 **238420 master tick／262 行／16.652 ms**。逐点采图并用 `sips` 转为 PNG，已查看实际图像和同段采样生成的同步波形。
+- 滚动采样使用 TEXT=`A\rB\r…Y\r`（25 个字母各跟真实 CR），FRAME=`24`：**239330 master tick／263 行／16.715 ms**，产物位于 `.cache/apple1-video-qa/scroll`。已查看图像；多出的一行来自真实计数器重扫，采集端没有固定帧高。
+
+产物为忽略缓存，不作为预期夹具反向导入测试。`frame.png`／`frame.pgm` 来自 `Tick.video`，`video.csv` 保留每个主时钟采样，`sync.svg` 绘制实际 H/V/复合同步。TUI 保留字符观察用途。
+
+固定字模来源与 SHA-256 已记录，行 0、Q5..Q1 及代表字形按原厂图核对；全部 64 个字形与目标原板掩膜的独立逐点认证仍未完成。模拟视频电压、负载、TTL 传播／串扰、RC 容差和真实上电行为不在本次数字模型验收内。M3 整体验收保持未勾选；CPU 核心未改，未重跑完整 SingleStep／Klaus／Visual6502 外部层，未运行远程 CI。
+
+本轮按功能点本地提交，未 push。

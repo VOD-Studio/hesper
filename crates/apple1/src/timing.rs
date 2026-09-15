@@ -94,6 +94,14 @@ pub const VISIBLE_SLOTS: u16 = ROWS as u16 * BURST_SLOTS as u16;
 /// What happened on a single master tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimingEvent {
+    /// Master-clock phase sampled before advancing (0..13).
+    pub phase: u8,
+    /// D6/D7 decoded count sampled before advancing (95..159).
+    pub horizontal: u8,
+    /// D8/D9 value sampled before advancing; reloads can repeat lines.
+    pub vertical: u8,
+    /// D15 Q3 is low. This is the vertical sync gate, not VBL.
+    pub vsync: bool,
     /// Rising edge of Φ1 — call `Cpu::half_cycle` once.
     pub phi1_edge: bool,
     /// Ungated Φ2 rising edge. Call `Cpu::half_cycle` only if `refresh`
@@ -193,6 +201,7 @@ impl Timing {
         let refresh = h6 && d6 == 9;
         let last_h = count == 159;
         let vbi = self.in_vbi();
+        let vsync = self.inhibit & 0x08 == 0;
 
         // C10 pin 10 selects BF rather than 00 on the shared preset bus.
         let preset_high = vbi && d6 & 0x08 == 0;
@@ -238,6 +247,10 @@ impl Timing {
         }
 
         TimingEvent {
+            phase: old_phase,
+            horizontal: count,
+            vertical,
+            vsync,
             phi1_edge,
             phi2_edge,
             refresh,

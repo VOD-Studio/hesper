@@ -13,6 +13,7 @@ use crate::bus::{Apple1Bus, RomSizeError};
 use crate::display::Display;
 use crate::keyboard::Keyboard;
 use crate::timing::Timing;
+use crate::video::{Video, VideoSample};
 
 /// Number of real CPU cycles to hold the physical RESET line asserted
 /// before releasing it.  The CPU samples the line once per cycle; four
@@ -34,6 +35,8 @@ pub const B3_PULSE_TICKS: u64 = 51;
 /// What happened on one master tick.
 #[derive(Debug, Clone)]
 pub struct Tick {
+    /// Settled digital video outputs for this master-clock interval.
+    pub video: VideoSample,
     /// A real CPU bus cycle completed on this tick, or `None` when no CPU
     /// bus access occurred (Φ1-only tick, refresh-suppressed Φ2, or
     /// between-cycle idle).
@@ -52,6 +55,7 @@ pub struct Apple1 {
     display: Display,
     keyboard: Keyboard,
     timing: Timing,
+    video: Video,
     /// Real CPU bus cycles completed (excluding refresh-suppressed Φ2).
     cpu_cycle_count: u64,
     reset_line: bool,
@@ -68,6 +72,7 @@ impl Apple1 {
             display: Display::new(),
             keyboard: Keyboard::new(),
             timing: Timing::new(),
+            video: Video::new(),
             cpu_cycle_count: 0,
             reset_line: false,
             b3_ticks: 0,
@@ -76,7 +81,7 @@ impl Apple1 {
 
     /// Advance exactly one master tick.  Returns what happened on that
     /// tick: a real CPU bus cycle (if Φ2 was not suppressed), the refresh
-    /// line state, and whether a video frame completed.
+    /// line state, digital video sample, and whether a video frame completed.
     ///
     /// # Ordering
     ///
@@ -93,6 +98,9 @@ impl Apple1 {
     /// 3. An accepted character asserts RDA, which starts the B3 one-shot
     ///    and pulls CB1 low. The one-shot runs on board time, so it
     ///    finishes even while the CPU is stopped for refresh.
+    ///    Video samples every master tick: MEMΦ-selected data reaches
+    ///    C3 later at LINEΦ; D1 loads the preceding C3 output on that
+    ///    same dot edge, then shifts on subsequent dot edges.
     /// 4. On a Φ1 edge the CPU enters Φ2 (no bus access). A Φ1 already
     ///    held from a refresh is not re-entered.
     /// 5. On a Φ2 edge the PIA's enable rises — firing any strobe an ORB
@@ -137,6 +145,9 @@ impl Apple1 {
             }
         }
 
+        let (tracks, cursor) = self.display.video_input();
+        let video = self.video.tick(&ev, tracks, cursor);
+
         // --- Φ1 edge: the CPU enters Φ2, no bus access ---
         if ev.phi1_edge && self.cpu.next_clock_phase() == ClockPhase::Phi1 {
             self.cpu.half_cycle(&mut self.bus)?;
@@ -166,6 +177,7 @@ impl Apple1 {
         }
 
         Ok(Tick {
+            video,
             cpu: cpu_cycle,
             refresh: ev.refresh,
             frame_completed: ev.frame_completed,
@@ -279,6 +291,7 @@ impl Apple1 {
     /// touching no other state.
     pub fn clear_screen(&mut self) {
         self.display.clear_screen();
+        self.video.clear_screen();
     }
 
     /// Total master ticks since creation or last machine recreate.

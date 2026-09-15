@@ -25,9 +25,10 @@
 //! # Host observations
 //!
 //! `screen`, `cursor`, and `drain_output` are text projections. Memory
-//! retains only bits 0–4 and inverted bit 6; a parallel ASCII array
+//! retains raw bits 0–4 and bit 6; a parallel ASCII array
 //! preserves the existing host character convention without feeding
-//! it into hardware control. The 2513/pixel output path is not modeled.
+//! it into hardware control or the video path. The sixth track is inverted
+//! and cursor-gated only at the 2519 input (see `video`).
 //!
 //! CLEAR SCREEN remains an atomic host operation, not a timed button
 //! pulse: it blanks memory, homes the cursor, and aligns the blank ring
@@ -55,6 +56,9 @@ pub const SCAN_LINES: usize = 8;
 pub struct Display {
     /// Packed six-bit hardware data, independent of the host character set.
     memory: [u8; SLOTS],
+    /// C4/C14 selected data held between MEMΦ and the 2519 clock.
+    video_tracks: u8,
+    video_cursor: bool,
     /// Host-only character for each physical memory slot.
     host: [u8; SLOTS],
     /// Physical slot under the circulating cursor.
@@ -81,6 +85,8 @@ impl Display {
     pub fn new() -> Self {
         Self {
             memory: [0; SLOTS],
+            video_tracks: 0,
+            video_cursor: true,
             host: [b' '; SLOTS],
             cursor: 0,
             origin: 0,
@@ -104,6 +110,11 @@ impl Display {
     /// Feed /WC1 back to the counters; `true` means asserted (low).
     pub(crate) fn write_control(&self) -> bool {
         self.write_control
+    }
+
+    /// Selected raw tracks and cursor, before C10's inversion/blink gate.
+    pub(crate) fn video_input(&self) -> (u8, bool) {
+        (self.video_tracks, self.video_cursor)
     }
 
     /// Observe character/MEMΦ edges and counter reloads from the board.
@@ -148,6 +159,8 @@ impl Display {
         if ev.vbi {
             self.store(slot, 0, b' ');
         }
+        self.video_tracks = self.memory[slot];
+        self.video_cursor = !ev.vbi && slot == self.cursor;
         self.head = (slot + 1) % SLOTS;
         self.raster_slot = (ev.burst as usize + 1) % SLOTS;
     }
@@ -163,7 +176,7 @@ impl Display {
             return false;
         }
 
-        let tracks = (data & 0x1f) | if data & 0x40 == 0 { 0x20 } else { 0 };
+        let tracks = (data & 0x1f) | ((data & 0x40) >> 1);
         let projected = (data & 0x7f).to_ascii_uppercase();
         self.store(slot, tracks, projected);
         self.output.push(projected);
@@ -227,6 +240,8 @@ impl Display {
     /// Atomic host CLEAR SCREEN, preserving board clocks and the handshake.
     pub fn clear_screen(&mut self) {
         self.memory = [0; SLOTS];
+        self.video_tracks = 0;
+        self.video_cursor = false;
         self.host = [b' '; SLOTS];
         self.screen = [[b' '; COLUMNS]; ROWS];
         self.head = (self.origin + self.raster_slot) % SLOTS;
@@ -294,6 +309,21 @@ mod tests {
         assert_eq!(display.screen(), &[[b' '; COLUMNS]; ROWS]);
         assert_eq!(display.cursor(), (0, 0));
         assert!(!display.io_pending());
+        assert_eq!(display.memory(), &[0; SLOTS]);
+    }
+
+    #[test]
+    fn space_and_erasure_use_the_same_raw_tracks() {
+        let mut display = Display::new();
+        present(&mut display, b' ');
+        assert_eq!(
+            display.memory()[0],
+            0,
+            "C14 stores raw B6; inversion belongs after memory"
+        );
+        present(&mut display, b'@');
+        assert_eq!(display.memory()[1], 0x20);
+        display.clear_screen();
         assert_eq!(display.memory(), &[0; SLOTS]);
     }
 

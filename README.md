@@ -6,7 +6,7 @@
 
 Hesper 是一个使用 Rust 编写的经典计算机模拟器项目，包含机器无关、逐周期执行的 NMOS 6502 核心、Apple I 文本机器模型，以及中文 TUI 和可脚本化的 CLI。
 
-CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASIC 和部分预置程序，**M3 整体验收仍未完成**。主板刷新停钟、CB2 显示握手、两端口读回路径，以及含条件垂直重载和滚动帧长变化的循环存储时序已实现。剩余边界包括字符格之外的视频、电气特性和真实上电状态。具体范围见 [`docs/roadmap.md`](docs/roadmap.md) 和 [`硬件依据与差异`](docs/apple1/hardware-evidence.md)。Apple II 与浏览器前端尚未开始。
+CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASIC 和部分预置程序，**M3 整体验收仍未完成**。主板刷新停钟、CB2 显示握手、两端口读回路径，以及含条件垂直重载和滚动帧长变化的循环存储时序已实现；[数字视频链](docs/apple1/video.md)现可输出逐点亮度和同步。剩余边界包括原板字模逐点认证、电气特性和真实上电状态。具体范围见 [`docs/roadmap.md`](docs/roadmap.md) 和 [`硬件依据与差异`](docs/apple1/hardware-evidence.md)。Apple II 与浏览器前端尚未开始。
 
 无参数在 stdin/stdout 都是终端时进入中文 TUI 启动中心；重定向任一流时仍运行可脚本化的内置演示。Apple I 的 TUI 按键约定见 [`docs/apple1/examples.md`](docs/apple1/examples.md)：Ctrl-R 是物理 RESET，Ctrl-L 是键盘上的 CLEAR SCREEN 按钮，Ctrl-P 暂停/继续，Ctrl-N 重建机器，Ctrl-C/Ctrl-D 退出。
 
@@ -34,7 +34,7 @@ CPU 的 M2 本地目标范围已验收；Apple I 已能运行 Woz Monitor、BASI
 - 分离物理 RESET、CLEAR SCREEN 与重新上电；暂停／恢复、输入排队、会话周期预算及有界指令／总线 trace
 - TUI 程序选择、文件浏览、可编辑加载地址、下拉菜单与鼠标操作；管道和重定向使用文本宿主
 
-这是字符级数字模型，不是像素或电气级仿真。原始手册、原理图和 PIA 数据表的指定页已有核对记录；未实现 2513 字模、像素移位与复合视频，DRAM 电荷保持、上电状态和单稳态容差也不在当前模型内。磁带接口、扩展卡和完整机器存档尚未实现。
+机器层包含 2519 行重放、固定 P-Lab 2513 替换字模、74166 像素移位、视频光标及数字复合同步；TUI 仍显示宿主字符格。运行 `cargo run -p hesper-apple1 --release --example video -- /tmp/hesper-video-capture` 可从真实采样导出 PGM 图像、CSV 与 SVG 波形（目录须不存在）。原板字模逐点认证、模拟电压、DRAM 电荷保持、上电状态和单稳态容差不在已验收范围内；详见[视频说明](docs/apple1/video.md)。磁带接口、扩展卡和完整机器存档尚未实现。
 
 ## 快速开始
 

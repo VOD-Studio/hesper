@@ -106,9 +106,11 @@ pub mod keyboard;
 pub mod machine;
 pub mod pia;
 pub mod timing;
+pub mod video;
 
 pub use bus::{Apple1Bus, RamLoadError, RomSizeError};
 pub use display::Display;
 pub use keyboard::Keyboard;
 pub use machine::{Apple1, Tick};
 pub use pia::Pia6821;
+pub use video::VideoSample;
