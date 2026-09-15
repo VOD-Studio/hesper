@@ -1,0 +1,20 @@
+[package]
+name = "hesper-apple1-wasm"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hesper-apple1 = { path = "../apple1" }
+hesper-wasm-support = { path = "../wasm-support" }
+wasm-bindgen.workspace = true
+
+[dev-dependencies]
+hesper-cpu6502 = { path = "../cpu6502" }
+serde_json = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "hesper-cpu6502-wasm"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hesper-cpu6502 = { path = "../cpu6502" }
+hesper-wasm-support = { path = "../wasm-support" }
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true
