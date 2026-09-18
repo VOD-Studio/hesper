@@ -114,6 +114,16 @@ bun run build                                    # production site into dist/
 - Keyboard/display character flow must go through the CPU polling PIA; never forward host I/O directly to the display.
 - Web changes keep the emulator in the Worker, treat `src/generated/` and `public/machine/` as build output, and preserve existing keyboard interactions when adding mouse/UI affordances.
 
+## Commits & Delivery Workflow
+
+- Commit autonomously: once a feature point — one independently verifiable behavior increment — is done and its gate has passed, create the commit. Do not ask for approval before committing; the user has granted standing authorization for local commits in this repository.
+- One feature point is one commit. Do not batch unrelated fixes, and do not commit a state whose focused test and the applicable gate below have not passed.
+- Match the existing history's Conventional-Commit style with a scoped component: `feat(tui): ...`, `fix(apple1): ...`, `test: ...`, `docs: ...`, `ci: ...`, `chore: ...`. State the observable behavior, not "update code".
+- Gates by change area: Rust behavior → focused test target, then `make verify`; CPU timing/pin/interrupt/RESET → also the relevant `make full` layer; Wasm bindings → `make wasm-browser-test`; web workbench → `bun run check` and `bun run build`; release machinery → `python3 -m unittest discover -s tests/release`.
+- User-visible changes get a `CHANGELOG.md` `Unreleased` entry in the same commit as the change. Contributor-only documentation such as this file does not.
+- Use plain `git commit` on the current branch. Never amend, rebase, force-push, or rewrite published history; add a follow-up commit instead.
+- Pushing, tags, GitHub Release, Pages deployment, and merge requests remain explicit-request-only. "Committed" is never "released": report tag push, Release, artifact, Pages, and CI status separately, and re-check current state instead of reusing a previous answer.
+
 ## Important Files
 
 - `Cargo.toml`: workspace membership, CLI default member, Rust 2024 metadata, pinned Wasm deps, and unsafe-code policy.
