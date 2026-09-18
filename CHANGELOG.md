@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- **Web example**：Apple-1 工具栏新增「结束会话，返回启动中心」图标按钮，与清屏、重新上电并列；原先只出现在「关于这间计算机实验室」弹窗中的同名操作已移除。确认弹窗、`stop` 行为与返回启动中心的结果保持不变。
+
 ## [0.2.1] - 2026-09-15
 
 - **Web example / GitHub Pages**：版本 tag 的 Release 成功发布后，自动构建并部署 `examples/web` 到 GitHub Pages。

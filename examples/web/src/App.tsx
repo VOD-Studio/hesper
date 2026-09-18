@@ -13,6 +13,7 @@ import {
   Keyboard,
   Layers,
   LoaderCircle,
+  LogOut,
   Monitor,
   PanelRightClose,
   PanelRightOpen,
@@ -165,6 +166,18 @@ export default function App() {
         },
       });
     } else void bootMachine();
+  }
+  function endSession() {
+    setModal(null);
+    setConfirm({
+      title: "结束 Apple-1 会话？",
+      description: "当前 RAM、屏幕和输入将被丢弃，并返回启动界面。",
+      action: () => {
+        send({ type: "stop" });
+        setConfirm(null);
+        setMode("apple1");
+      },
+    });
   }
   async function bootMachine() {
     setConfirm(null);
@@ -484,6 +497,15 @@ export default function App() {
                   }
                 >
                   <Power />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="结束会话，返回启动中心"
+                  disabled={!state.loaded}
+                  onClick={endSession}
+                >
+                  <LogOut />
                 </Button>
               </>
             )}
@@ -1024,26 +1046,6 @@ export default function App() {
                   Wasm 字模署名 <ArrowUpRight size={12} />
                 </a>
               </div>
-              {emu.apple.loaded && (
-                <Button
-                  variant="destructive"
-                  onClick={() => {
-                    setModal(null);
-                    setConfirm({
-                      title: "结束 Apple-1 会话？",
-                      description:
-                        "当前 RAM、屏幕和输入将被丢弃，并返回启动界面。",
-                      action: () => {
-                        send({ type: "stop" });
-                        setConfirm(null);
-                        setMode("apple1");
-                      },
-                    });
-                  }}
-                >
-                  结束会话，返回启动中心
-                </Button>
-              )}
             </div>
           )}
         </DialogContent>
