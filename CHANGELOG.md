@@ -6,6 +6,7 @@
 
 - **Web example**：Apple-1 工具栏新增「结束会话，返回启动中心」图标按钮，与清屏、重新上电并列；原先只出现在「关于这间计算机实验室」弹窗中的同名操作已移除。确认弹窗、`stop` 行为与返回启动中心的结果保持不变。
 - **Web example**：`examples/web` 依赖对齐当前上游：`lucide-react` 升至 1.47.0、`@types/node` 升至 24.13.5，并把 `@types/react`、`@types/react-dom`、`oxlint`、`typescript` 的声明范围提升到 `bun.lock` 已解析的版本；未新增依赖，生产构建产物与对齐前逐字节一致。
+- **Web example**：`examples/web` 的 TypeScript 升至 7.0.2 原生编译器，与 `make wasm-typecheck` 的固定版本一致；该版本不再包含 `tsserver`，只依赖命令行 `tsc` 的流程不受影响。
 
 ## [0.2.1] - 2026-09-15
 

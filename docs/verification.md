@@ -1162,3 +1162,40 @@ Windows x86_64／ARM64 均完成编译，但同一个文件浏览器测试因 `/
 通过。最终汇总得到六个 CLI 压缩包、四个 Wasm 压缩包与 `SHA256SUMS`。
 手动 dispatch 的发布步骤按条件跳过；这是构建与打包验证，不是新版本发布，
 原 `v0.2.0` tag／Release 保持不变。
+
+
+## 2026-09-18：Web example 依赖同步与 TypeScript 7
+
+`examples/web` 的 19 个直接依赖先做上游对照：范围内只有 `lucide-react`
+（1.46.0 → 1.47.0）与 `@types/node`（patch）存在新版本，其余已是 latest。
+另有 `@types/react`、`@types/react-dom`、`oxlint`、`typescript` 的声明范围
+低于 `bun.lock` 已解析的版本，提升下限以消除 `bun install` 的降级空间；
+`typescript` 进一步升至 7.0.2，与 `make wasm-typecheck` 的固定版本以及本文件
+2026-09-15 记录的本机工具链一致。同一轮把 `@tailwindcss/vite` 与 `shadcn`
+由 `dependencies` 归入 `devDependencies`：前者只被 `vite.config.ts` 使用，
+后者是组件命令行，源码没有任何运行时引用，归类不改变解析结果。
+
+本地验证（`examples/web`，Bun 1.4.2）：
+
+- 三个提交步骤各自重跑检查。依赖区段整理与版本对齐后，
+  `bun install --frozen-lockfile` 均为 362 installs／429 packages `no changes`；
+  升至 TypeScript 7 后为 363 installs／449 packages `no changes`。
+  锁文件未被重写，`lockfileVersion 2` 与 npmmirror 源保持不变，
+  21 个 `@typescript/typescript-*` 平台绑定全部写入锁文件（含 CI 的 linux-x64）。
+- `bun run check`：`tsc -b`、`oxlint`、5 项实际 Wasm 会话回归（153 断言）通过。
+- `bun run build`：与 `release.yml` 的 `pages` job 同路径，产物
+  `dist/assets/index-D8G0Toif.js` 409.78 kB（gzip 130.07 kB）自始至终同哈希，
+  说明这三步都没有改动产物；源码引用的 30 个 `lucide-react` 图标名在 1.47.0
+  中全部存在。
+- 负向对照：注入一处 `string` 赋给 `number` 的错误后，TS 7 与 TS 6.0.3 给出
+  同一条 `TS2322`，退出码分别为 1 与 2；只按非零判定失败的脚本不受影响。
+- `tsc -b --force` 各三次：TS 7.0.2 约 0.15 s，TS 6.0.3 约 1.1–1.6 s。
+  TS 7 会重建 TS 6 写下的 `.tsbuildinfo`，格式与版本号随之更新。
+- `make wasm-typecheck` 通过；其输出里的 `Saved lockfile` 来自 `bunx` 缓存目录，
+  仓库未新增文件。
+- OSV：19 个直接依赖的实装版本均无已知漏洞。
+
+边界：`typescript@7.0.2` 只发布 `bin/tsc`，不再包含 `tsserver`，依赖 tsserver
+的编辑器语言服务需要另行指向仍提供该入口的 TypeScript；本仓库的检查与构建
+流程只调用 `tsc`。远程 CI 与 GitHub Pages 部署本轮未执行（改动尚未推送），
+需推送后以 Actions 结果为准；这也不代替 `examples/web` 的浏览器 UI 验收。
