@@ -1823,3 +1823,19 @@ Worker 未发出 Ready 或串口输出。各通过会话均正常停止，主线
 `make wasm-browser-test` 在 Bun、Node.js、Chromium 各 12 项通过，
 `bun run check` 与 `bun run build` 通过。截图、原始串口与报告在
 `.cache/riscv-linux/repro-c/logs-alpine/browser-zu5eyaqd/`。
+
+## RISC-V Linux 网页会话默认不限额
+
+Chromium 155.0.8059.84 的生产构建通过 `make riscv-linux-browser`。
+标准镜像在串口执行 `sleep 4000` 后输出独立的 `HESPER_LONG:42`，总计
+520,421,376 次客体状态转换，超过原 450,000,000 上限。测试也验证暂停时排队
+的输入在继续后恰好执行一次、停止结束当前机器，以及冷启动使用新机器。
+首个提示符在 37.37 秒出现，长会话命令在 57.18 秒完成，主线程最大观察间隔
+54.2 ms。报告和串口保存在 `.cache/riscv-linux/repro-c/logs/`。
+
+CLI 默认不限额，显式 `--max-fuel 1 --diagnostics` 实测以 `fuel=1/1` 退出。
+`bun run check` 和 `bun run build` 通过。
+
+同一生产构建通过官方 Alpine 安装、冷启动、旧 Alpine 和标准配置回归，
+以及自定义启动根和 CLI／浏览器数据盘交换。Alpine 报告在
+`.cache/riscv-linux/repro-c/logs-alpine/browser-oujshthv/`。

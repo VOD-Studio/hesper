@@ -21,8 +21,6 @@ from sources import require_tools, sha256
 ALPINE_MAX_FUEL = 2_000_000_000
 ALPINE_BOOT_SECONDS = 180
 ALPINE_STEP_SECONDS = 60
-BROWSER_FUEL_QUANTUM = 50_000_000
-BROWSER_MIN_FUEL = 450_000_000
 MANIFEST_MISMATCH = "manifest differs from the embedded image lock"
 DISK_MARKER = "ALPINE_BLK_CONTROL_OK"
 
@@ -120,14 +118,6 @@ def negative_controls(binary, directories, manifests, seed, logs):
     return result
 
 
-def recommended_browser_fuel(transports):
-    peak = max(run["fuel_spent"] for run in transports.values())
-    # Round 3/2 of the larger transition count up to the next quantum exactly.
-    denominator = 2 * BROWSER_FUEL_QUANTUM
-    rounded = (3 * peak + denominator - 1) // denominator * BROWSER_FUEL_QUANTUM
-    return min(ALPINE_MAX_FUEL, max(BROWSER_MIN_FUEL, rounded))
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path, help="path to the built release Hesper CLI")
@@ -182,7 +172,6 @@ def main():
             if sha256(directory / name) != digest:
                 raise ValueError(f"{directory / name}: acceptance changed a locked boot input")
 
-    recommendation = recommended_browser_fuel(transports)
     report = dict(binary=str(binary), binary_sha256=sha256(binary), python=sys.version,
                   host_kernel=os.uname().release, host_arch=os.uname().machine,
                   image_directories={profile: str(directory) for profile, directory in directories.items()},
@@ -192,12 +181,11 @@ def main():
                   legacy_limits=dict(boot_deadline_seconds=BOOT_SECONDS, deadline_per_state_seconds=STEP_SECONDS,
                                      max_fuel=ACCEPTANCE_MAX_FUEL),
                   transports=transports, cold=cold, legacy_controls=dict(alpine=legacy, serial=serial, blk=blk, seed=seed_info),
-                  negative_controls=negative, recommended_browser_fuel=recommendation,
+                  negative_controls=negative,
                   runtime_seconds=time.monotonic() - started)
     path = logs / "report.json"
     path.write_text(json.dumps(report, indent=2) + "\n")
     print(f"Native Alpine pipe, PTY and cold boots, legacy profiles and image rejection passed: {path}")
-    print(f"Recommended browser fuel: {recommendation:,} transitions")
 
 
 if __name__ == "__main__":

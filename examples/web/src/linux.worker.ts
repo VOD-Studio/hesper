@@ -8,10 +8,6 @@ import { validDiskSize } from "./linux-disk";
 import { DEFAULT_INITRAMFS_NAME, validInitramfsSize } from "./linux-initramfs";
 import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
 
-const FUEL_LIMIT = 450_000_000;
-// Same bounded budget as the native Alpine acceptance run.
-const ALPINE_FUEL_LIMIT = 2_000_000_000;
-const ALPINE_LEGACY_FUEL_LIMIT = 1_150_000_000;
 const FUEL_BATCH = 65_536;
 const STALLED_TRAP_LIMIT = 32;
 const SERIAL_BATCH = 4096;
@@ -40,8 +36,7 @@ type Session = {
   exportPending: boolean;
   machine?: RiscvLinux;
   input?: InputQueue;
-  fuel: number;
-  fuelLimit: number;
+  fuel: bigint;
   batchPending: boolean;
   nextReport: number;
 };
@@ -202,8 +197,8 @@ async function readLocal(file: File, kind: string, signal: AbortSignal) {
 }
 
 function report(session: Session) {
-  const { id: sessionId, machine, state, fuel, fuelLimit } = session;
-  post({ type: "state", sessionId, state, time: machine?.time ?? 0n, retired: machine?.retired ?? 0n, fuel, fuelLimit });
+  const { id: sessionId, machine, state, fuel } = session;
+  post({ type: "state", sessionId, state, time: machine?.time ?? 0n, retired: machine?.retired ?? 0n, fuel });
   session.nextReport = performance.now() + REPORT_INTERVAL_MS;
 }
 
@@ -241,10 +236,10 @@ function finish(session: Session, reason?: string, invalidInitramfs = false) {
       reason = reason === undefined ? cleanup : `${reason} ${cleanup}`;
     }
   }
-  const { fuel, fuelLimit } = session;
+  const { fuel } = session;
   const sessionId = session.id;
   if (reason !== undefined) post({ type: "error", sessionId, message: reason, invalidInitramfs });
-  post({ type: "state", sessionId, state: reason === undefined ? "ended" : "failed", time, retired, fuel, fuelLimit });
+  post({ type: "state", sessionId, state: reason === undefined ? "ended" : "failed", time, retired, fuel });
 }
 
 async function boot(session: Session, command: BootCommand) {
@@ -296,9 +291,8 @@ tasks.port1.onmessage = ({ data: id }: MessageEvent<number>) => {
   if (!machine || session.state !== "running") return;
   try {
     const accepted = feedInput(session.input, machine);
-    const allowance = Math.min(FUEL_BATCH, session.fuelLimit - session.fuel);
-    const spent = machine.run(allowance);
-    session.fuel += spent;
+    const spent = machine.run(FUEL_BATCH);
+    session.fuel += BigInt(spent);
     const bytes = machine.receive(SERIAL_BATCH);
     const outputLength = bytes.length;
     if (outputLength !== 0) post({ type: "stdout", sessionId: id, bytes });
@@ -308,9 +302,6 @@ tasks.port1.onmessage = ({ data: id }: MessageEvent<number>) => {
     }
     const diskFault = machine.diskFault;
     if (diskFault !== undefined) throw new Error(`Guest data disk fault: ${diskFault}`);
-    if (session.fuel === session.fuelLimit) {
-      throw new Error(`Guest exhausted its ${session.fuelLimit} transition budget.\n${machine.snapshot()}`);
-    }
     if (spent === 0 && outputLength === 0) {
       if (!session.input?.length) {
         setState(session, "waiting");
@@ -336,10 +327,7 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
       state: "loading",
       pauseRequested: false,
       exportPending: false,
-      fuel: 0,
-      fuelLimit: command.profile === "alpine"
-        ? (alpineImagePins(command.files) === alpineLegacyPins ? ALPINE_LEGACY_FUEL_LIMIT : ALPINE_FUEL_LIMIT)
-        : FUEL_LIMIT,
+      fuel: 0n,
       batchPending: false,
       nextReport: 0,
     };

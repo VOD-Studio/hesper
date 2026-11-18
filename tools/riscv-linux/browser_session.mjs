@@ -378,7 +378,7 @@ try {
       const replies = matches(id);
       const initial = replies.find(reply => reply.type === "state" && reply.state === "running");
       check(replies.filter(reply => reply.type === "ready").length === 1 &&
-        initial?.time === "0" && initial.retired === "0" && initial.fuel === 0,
+        initial?.time === "0" && initial.retired === "0" && initial.fuel === "0",
         `session ${id} lacked a fresh, ready machine`);
       const screenshot = await capture(phase);
       await click(stop);
@@ -387,11 +387,10 @@ try {
         `Worker end state for ${phase}`);
       check(workerEvents.some(event => event.request && event.type === "stop" && event.sessionId === id) &&
         matches(id).every(reply => reply.type !== "error"), `session ${id} did not stop normally`);
-      check(Number.isSafeInteger(ended.fuel) && ended.fuel > 0 && ended.fuel < ended.fuelLimit,
-        `session ${id} did not stop within its transition budget`);
+      check(BigInt(ended.fuel) > 0n, `session ${id} did not report cumulative transitions`);
       Object.assign(phases[phase], { ready: true, initialTick: initial.time, initialRetired: initial.retired,
         xtermLine, screenshot, exitState: ended.state, tick: ended.time, retired: ended.retired,
-        fuel: ended.fuel, fuelLimit: ended.fuelLimit });
+        fuel: ended.fuel });
       streaming = undefined;
     }
 
@@ -405,7 +404,7 @@ try {
       check(message.includes(expected) && inactive(id) && await evaluate(`${tty()}.trim() === ""`),
         `${label} did not fail before guest output: ${message}`);
       const failed = matches(id).find(reply => reply.type === "state" && reply.state === "failed");
-      check(failed?.time === "0" && failed.retired === "0" && failed.fuel === 0 &&
+      check(failed?.time === "0" && failed.retired === "0" && failed.fuel === "0" &&
         matches(id).some(reply => reply.type === "error" && reply.message === message),
         `Worker did not report pre-boot validation failure for ${label}`);
       rejected[label] = { id, message, imageBytes, ready: false, serialBytes: 0, state: failed.state,
@@ -821,7 +820,9 @@ try {
         await click("[data-linux-stop]");
         await until(state("ended"), "destroyed session");
         streaming = undefined;
-        const retire = replies.findLast(reply => reply.sessionId === 3 && reply.state === "ended");
+        const retire = await waitFor(() => replies.findLast(reply => reply.sessionId === 3 && reply.state === "ended"),
+          "final state after exceeding the former transition limit");
+        check(BigInt(retire.fuel) > 450_000_000n, "standard session did not exceed the former transition limit");
         await click("[data-linux-start]");
         await until(`${tty()}.includes('OpenSBI v1.6')`, "fresh firmware after destroying the session");
         check(!(await evaluate(`${tty()}.includes('HESPER_OK:42')`)), "old terminal output leaked into the restart");
@@ -830,7 +831,7 @@ try {
         await until(state("ended"), "ended fresh session");
         check(replies.every(reply => (reply.sessionId !== 1 && reply.sessionId !== 2) || reply.type !== "stdout"), "stale output from cancelled or corrupt boot");
         check(guestDownloadedBytes === 0, "the site fetched guest images instead of reading local Files");
-        emit({ type: "done", pausedTick: paused, maxIntervalMs, retired: retire?.retired, tick: retire?.time, guestDownloadedBytes });
+        emit({ type: "done", pausedTick: paused, maxIntervalMs, retired: retire.retired, tick: retire.time, fuel: retire.fuel, guestDownloadedBytes });
         break;
       } else throw new Error(`unknown browser gate request ${request.type}`);
     }

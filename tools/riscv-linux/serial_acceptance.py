@@ -54,7 +54,7 @@ def result_line(output, line):
     return line in output.split(b"\n")
 
 
-def drive(receive, send, kernelrelease, isa, *, boot_seconds=STEP_SECONDS):
+def shell_states(kernelrelease, isa):
     release = re.escape(kernelrelease.encode("ascii"))
 
     def uname(output):
@@ -68,5 +68,9 @@ def drive(receive, send, kernelrelease, isa, *, boot_seconds=STEP_SECONDS):
                 and re.search(rb"^hart[ \t]*:[ \t]*0$", output, re.M)
                 and re.search(rb"^mmu[ \t]*:[ \t]*sv39$", output, re.M))
 
-    states = zip(("uname", "cpuinfo", "printf"), COMMANDS, (uname, cpuinfo, lambda out: result_line(out, b"HESPER_OK:42")))
-    return session(receive, send, states, boot_seconds)
+    return tuple(zip(("uname", "cpuinfo", "printf"), COMMANDS,
+                     (uname, cpuinfo, lambda out: result_line(out, b"HESPER_OK:42")), strict=True))
+
+
+def drive(receive, send, kernelrelease, isa, *, boot_seconds=STEP_SECONDS):
+    return session(receive, send, shell_states(kernelrelease, isa), boot_seconds)

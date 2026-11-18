@@ -23,6 +23,6 @@ export type LinuxReply = { sessionId: number } & (
   | { type: "stdout"; bytes: Uint8Array }
   | { type: "disk"; bytes: Uint8Array<ArrayBuffer> }
   | { type: "discard-required" }
-  | { type: "state"; state: LinuxState; time: bigint; retired: bigint; fuel: number; fuelLimit: number }
+  | { type: "state"; state: LinuxState; time: bigint; retired: bigint; fuel: bigint }
   | { type: "error"; message: string; invalidInitramfs?: boolean }
 );

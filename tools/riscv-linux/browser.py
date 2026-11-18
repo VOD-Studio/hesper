@@ -15,10 +15,11 @@ import tempfile
 import time
 
 from build_guest import ENV, IMAGE_DIR, LOGS, verified_manifest
-from serial_acceptance import COMMANDS, STEP_BYTES, STEP_SECONDS, drive
+from serial_acceptance import STEP_BYTES, result_line, session, shell_states
 from sources import PROFILE, require_tools
 
 BOOT_SECONDS = 180
+COMMAND_SECONDS = 60
 SETUP_SECONDS = 25
 EXIT_SECONDS = 20
 MAX_INTERVAL_MS = 350
@@ -108,11 +109,14 @@ def run(dist, manifest):
             else:
                 os.link(IMAGE_DIR / name, corrupt / name)
         argv = ["bun", PROFILE / "browser_session.mjs", dist, IMAGE_DIR, LOGS, "serial", corrupt]
-        with browser_session(argv, LOGS, len(COMMANDS)) as (event, receive, send, keys, complete, serial):
+        states = (*shell_states(manifest["kernelrelease"], manifest["isa"]),
+                  ("past-former-limit", b"sleep 4000 && printf 'HESPER_LONG:%s\\n' \"$((6 * 7))\"\n",
+                   lambda output: result_line(output, b"HESPER_LONG:42")))
+        with browser_session(argv, LOGS, len(states)) as (event, receive, send, keys, complete, serial):
             start = event(time.monotonic() + SETUP_SECONDS)
             if start["type"] != "start" or start["imageBytes"] != sum(entry["bytes"] for entry in manifest["images"]):
                 raise ValueError("browser did not select the four pinned local resources")
-            times = drive(receive, keys, manifest["kernelrelease"], manifest["isa"], boot_seconds=BOOT_SECONDS)
+            times = session(receive, keys, states, BOOT_SECONDS, step_seconds=COMMAND_SECONDS)
             if len(re.findall(rb"(?:^|\n)Linux \S+ " + re.escape(manifest["kernelrelease"].encode("ascii")), serial)) != 1:
                 raise ValueError("paused uname command must be delivered exactly once")
             send(dict(type="finish"))
@@ -123,8 +127,9 @@ def run(dist, manifest):
     return dict(manifest=manifest, browser=start["browser"], url=start["url"], host=platform.platform(),
                 guest_http_download_bytes=finish["guestDownloadedBytes"], local_image_bytes=start["imageBytes"],
                 serial_timing_seconds=times, boot_deadline_seconds=BOOT_SECONDS,
-                deadline_per_command_seconds=STEP_SECONDS, serial_bytes=len(serial),
+                deadline_per_command_seconds=COMMAND_SECONDS, serial_bytes=len(serial),
                 paused_tick=finish["pausedTick"], guest_exit_tick=finish["tick"], guest_exit_retired=finish["retired"],
+                guest_exit_fuel=finish["fuel"],
                 max_main_interval_ms=finish["maxIntervalMs"], main_interval_limit_ms=MAX_INTERVAL_MS,
                 serial_log=str(LOGS / "browser-serial.raw"), screenshot=str(LOGS / "browser-terminal.png"))
 
