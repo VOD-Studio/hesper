@@ -56,9 +56,22 @@
 
 **L1b：按这个顺序制作客体，混用 ABI 是第一排查项。**
 
+构建入口是 `make riscv-linux-data`，构建器需要原生 Linux 和 Python 3.11+。
+若宿主缺少 `dtc` 等工具，可使用固定 Debian 12 基础镜像：
+
+```sh
+docker build -t hesper-riscv-build tools/riscv-linux
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
+  -e RISCV_LINUX_JOBS=8 hesper-riscv-build make riscv-linux-data
+```
+
+设置 `RISCV_LINUX_CACHE` 到另一空目录可独立复建；只共享已验的源码归档和
+Buildroot 下载缓存，不共享 `build/` 或 `images/`。构建记录和验收状态见
+[验证记录](../verification.md#risc-v-linux-l1a固定源码输入)。
+
 1. 用 Buildroot 的内部工具链，不用发行版 `riscv64-linux-gnu` 的默认 `lp64d` sysroot。起始 defconfig 逐项设为 `y`：`BR2_riscv`、`BR2_riscv_custom`、`BR2_RISCV_64`、`BR2_RISCV_USE_MMU`、`BR2_RISCV_ISA_RVM`、`BR2_RISCV_ISA_RVA`、`BR2_RISCV_ISA_RVC`、`BR2_RISCV_ABI_LP64`、`BR2_TOOLCHAIN_BUILDROOT_MUSL`、`BR2_STATIC_LIBS`、`BR2_INIT_BUSYBOX`、`BR2_TARGET_ROOTFS_CPIO`、`BR2_TARGET_ROOTFS_CPIO_NONE`、`BR2_REPRODUCIBLE`。I 由 custom 选择，不选 G/F/D/V。[Buildroot 架构选项](https://github.com/buildroot/buildroot/blob/2024.02.12/arch/Config.in.riscv)与[该版 BusyBox](https://github.com/buildroot/buildroot/blob/2024.02.12/package/busybox/busybox.mk)是依据。用绝对路径执行 `make -C "$BR" O="$BR_OUT" BR2_DEFCONFIG="$DEFCONFIG" defconfig` 再 `make -C "$BR" O="$BR_OUT"`；`BR` 是已校验源码，`BR_OUT` 是缓存构建目录。核对实际 `.config` 和 `host/bin/` 下生成的编译器，以其带尾部 `-` 的前缀设置 `CROSS_COMPILE`。不要在 Buildroot 里另建一份内核。
 2. 在 defconfig 指定 `BR2_ROOTFS_OVERLAY`，放入 0755 的 `/init`；在构建 cpio **前**创建 overlay。`/init` 用 `/bin/sh` 挂载 `devtmpfs` 到 `/dev`、`proc` 到 `/proc`、`sysfs` 到 `/sys`，`export PS1='hesper# '`，`exec /bin/sh -i </dev/console >/dev/console 2>&1`。收录 `/bin/sh` 对 BusyBox 的链接和 mount、uname、cat、printf applet；核对 `/dev/console` 字符设备主次号 5:1。产物取 `"$BR_OUT/images/rootfs.cpio"`，不是直接打包 `target/`；见 [newc 与 console 节点生成规则](https://github.com/buildroot/buildroot/blob/2024.02.12/fs/cpio/cpio.mk)。`cpio -itv` 检查条目、权限与解释器；对 BusyBox 跑交叉 `readelf -h -A -l`：ELF64/RISC-V、soft-float ABI，不能有 `PT_INTERP`，不能要求 F/D/V。RVC 标志本身不表示浮点。
-3. 用同一交叉工具链运行 OpenSBI 的 `make`，指定 `PLATFORM=generic PLATFORM_RISCV_XLEN=64 PLATFORM_RISCV_ISA=rv64imac_zicntr_zicsr_zifencei PLATFORM_RISCV_ABI=lp64 FW_TEXT_START=0x80000000 FW_JUMP=y FW_JUMP_ADDR=0x80200000 FW_JUMP_FDT_ADDR=0x87800000`。保留 `platform/generic/firmware/fw_jump.{elf,bin}`；检查 ELF 程序头、符号与最终编译参数。绝对地址优先于 generic 默认 OFFSET；FDT 参数是搬移目标，不会替你生成 DTB，见 [v1.6 交接汇编](https://github.com/riscv-software-src/opensbi/blob/v1.6/firmware/fw_jump.S)。
+3. 用同一交叉工具链运行 OpenSBI 的 `make`，指定 `PLATFORM=generic PLATFORM_RISCV_XLEN=64 PLATFORM_RISCV_ISA=rv64imac_zicsr_zifencei PLATFORM_RISCV_ABI=lp64 FW_TEXT_START=0x80000000 FW_JUMP=y FW_JUMP_ADDR=0x80200000 FW_JUMP_FDT_ADDR=0x87800000`。Buildroot 默认的 GNU Binutils 2.40 不识别 `zicntr` 属性，但能以这些参数编码 `rdtime`、`rdcycle` 和 `rdinstret`；只从编译参数去掉该属性，客体板仍提供 Zicntr。保留 `platform/generic/firmware/fw_jump.{elf,bin}`；检查 ELF 程序头、符号与最终编译参数。绝对地址优先于 generic 默认 OFFSET；FDT 参数是搬移目标，不会替你生成 DTB，见 [v1.6 交接汇编](https://github.com/riscv-software-src/opensbi/blob/v1.6/firmware/fw_jump.S)。
 4. 独立构建 Linux：先导出 `ARCH=riscv` 和上一步的 `CROSS_COMPILE`，运行 `make -C "$LINUX" O="$KOUT" defconfig`；从内核源码目录运行 `scripts/kconfig/merge_config.sh -m -O "$KOUT" "$KOUT/.config" "$FRAGMENT"`，再执行 `make -C "$LINUX" O="$KOUT" olddefconfig` 和 `make -C "$LINUX" O="$KOUT" Image`。检查**最终** `.config`：RV64、MMU、SBI、`RISCV_ISA_C`、`SIFIVE_PLIC`、`SERIAL_8250`/`SERIAL_8250_CONSOLE` 和 OF 串口驱动、`BLK_DEV_INITRD`、`BINFMT_ELF`/`BINFMT_SCRIPT`、`PROC_FS`、`SYSFS`、`DEVTMPFS` 均为内建；`SMP/FPU/RISCV_ISA_V` 关闭。不要只改 fragment 就宣称选项生效；[v6.12 架构 Makefile](https://github.com/torvalds/linux/blob/v6.12/arch/riscv/Makefile)决定实际 ISA/ABI。取 `"$KOUT/arch/riscv/boot/Image"` 并保留 `vmlinux`。固定 `SOURCE_DATE_EPOCH`、`KBUILD_BUILD_TIMESTAMP/USER/HOST/VERSION` 和本地版本字符串；在另一干净构建目录复验哈希，不把第一次生成的哈希当作可重复构建证明。
 5. 按**实际** cpio 长度生成最终 `board.dts`/`board.dtb`，预留固件修改空间。根节点和 `soc` 用两 cell 地址/大小，`cpus` 用一 cell hart ID、零 size cell。CPU0 标 `mmu-type="riscv,sv39"`，列出真实 ISA，`cpu-intc` 为 hart 本地中断父节点；CLINT 的 `interrupts-extended` 接本地 3/7，PLIC 的 M/S 接 11/9；UART 为 `ns16550a`、`clock-frequency=3686400`、PLIC 源 10。`/memory` 为 128 MiB、`/chosen` 设置 stdout-path、`console=ttyS0 rdinit=/init` 和两项 initrd 地址。`dtc` 编译后用 `fdtget` 逐项读回，确认地址 cell 的高低顺序，检查 `initrd-end - initrd-start` 等于**字节数**。保留 `reserved-memory`、phandle 和设备连线；不复制 QEMU 的 PCI、virtio、RTC。对照 [Linux 的 CPU 节点约束](https://github.com/torvalds/linux/blob/v6.12/Documentation/devicetree/bindings/riscv/cpus.yaml)。
 

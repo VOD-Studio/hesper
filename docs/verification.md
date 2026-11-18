@@ -1219,3 +1219,25 @@ Windows x86_64／ARM64 均完成编译，但同一个文件浏览器测试因 `/
   `.cache/riscv-linux/logs/l1a-negative.elKIYyRY/`。
 
 本卡只验证输入，不证明客体能启动。
+
+## RISC-V Linux L1b：两个干净目录复建客体
+
+从 `tools/riscv-linux/Dockerfile` 构建的 Debian 12 / x86-64 宿主，GNU make
+4.3、宿主 GCC 12.2、dtc 1.6.1；Buildroot 内部 GCC 12.4.0、Binutils 2.40
+和 musl 1.2.4，ABI 为 RV64 `lp64`。按[计划中的容器命令](plan/riscv-linux.md)
+分别设置 `RISCV_LINUX_CACHE=/work/.cache/riscv-linux/repro-c` 和 `repro-d`
+对应的绝对路径，`RISCV_LINUX_JOBS=8`，在空 `build/` 与 `images/` 中各执行
+`make riscv-linux-data`。仅共享已锁定的 tar 和 Buildroot 包下载缓存。
+
+- 源码锁 SHA-256：`4708cded4c64ea86912e597ee2fab6af82f23a035ada3989c6d906e8a1ad3ff7`。
+- 预期两次构建的镜像 SHA-256、装载范围、工具链和最终 config 摘要相同；
+  `cmp .cache/riscv-linux/repro-{c,d}/images/manifest.json` 退出 0。分别用时
+  661.0、664.4 秒；编译日志、ELF 属性、固件符号和 DTB 读回在各缓存 `logs/`。
+- 四份产物为 `fw_jump.bin`、`Image`（`6.12.0-hesper`）、`initramfs.cpio`、
+  `board.dtb`。实际 CPIO 932864 字节，含 0755 的 `/init`、BusyBox `/bin/sh`
+  链接及 `5:1` 的 `/dev/console`；DTB 回读 initrd `[0x84000000, 0x840e3c00)`。
+- 试构建的首个 ABI 差异是 GCC 额外标注 M 已包含的 `zmmul`。Binutils 2.40
+  不识别 `-march` 里的 `zicntr` 属性；用实际交叉汇编器确认去掉该属性仍得到
+  `rdtime`、`rdcycle`、`rdinstret` 的编码，没有改动板上 ISA。
+
+这一关只验证镜像构建；QEMU 串口验收是下一关。

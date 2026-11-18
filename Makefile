@@ -19,6 +19,7 @@
 #   make tools-test  用 Bun 运行 tools/ 下 4 个验证脚本自身的回归测试
 #                  （不在 verify 中：冷缓存首次运行需要联网真实下载）
 #   make riscv-linux-sources  获取并校验参考板的固定源码（显式联网）
+#   make riscv-linux-data     构建并校验固定的四份参考板镜像（需要 Linux 构建宿主）
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -32,7 +33,7 @@
 
 .PHONY: verify fmt fix check test test-release clippy demo diff build build-release \
         wasm wasm-setup wasm-build wasm-test wasm-browser-test wasm-typecheck \
-        tools-test riscv-linux-sources \
+        tools-test riscv-linux-sources riscv-linux-data \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -103,6 +104,9 @@ tools-test:
 
 riscv-linux-sources:
 	python3 tools/riscv-linux/sources.py
+
+riscv-linux-data: riscv-linux-sources
+	python3 tools/riscv-linux/build_guest.py
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

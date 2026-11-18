@@ -1,0 +1,88 @@
+/dts-v1/;
+
+/ {
+    compatible = "hesper,riscv-linux";
+    model = "Hesper RISC-V Linux";
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    chosen {
+        stdout-path = &uart0;
+        bootargs = "console=ttyS0 rdinit=/init";
+        linux,initrd-start = <0x0 0x84000000>;
+        linux,initrd-end = <0x0 @INITRD_END@>;
+    };
+
+    aliases {
+        serial0 = &uart0;
+    };
+
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0x0 0x80000000 0x0 0x08000000>;
+    };
+
+    // OpenSBI adds its actual PMP-protected ranges with no-map at handoff.
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        timebase-frequency = <10000000>;
+
+        cpu@0 {
+            device_type = "cpu";
+            compatible = "riscv";
+            reg = <0>;
+            status = "okay";
+            mmu-type = "riscv,sv39";
+            riscv,isa = "rv64imac_zicntr_zicsr_zifencei";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "c", "zicntr", "zicsr", "zifencei";
+
+            cpu_intc: interrupt-controller {
+                compatible = "riscv,cpu-intc";
+                interrupt-controller;
+                #address-cells = <0>;
+                #interrupt-cells = <1>;
+            };
+        };
+    };
+
+    soc {
+        compatible = "simple-bus";
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        clint@2000000 {
+            compatible = "sifive,clint0", "riscv,clint0";
+            reg = <0x0 0x02000000 0x0 0x00010000>;
+            interrupts-extended = <&cpu_intc 3 &cpu_intc 7>;
+        };
+
+        plic: interrupt-controller@c000000 {
+            compatible = "sifive,plic-1.0.0", "riscv,plic0";
+            reg = <0x0 0x0c000000 0x0 0x00600000>;
+            interrupt-controller;
+            #address-cells = <0>;
+            #interrupt-cells = <1>;
+            interrupts-extended = <&cpu_intc 11 &cpu_intc 9>;
+            riscv,ndev = <10>;
+        };
+
+        uart0: serial@10000000 {
+            compatible = "ns16550a";
+            reg = <0x0 0x10000000 0x0 0x00000100>;
+            clock-frequency = <3686400>;
+            interrupt-parent = <&plic>;
+            interrupts = <10>;
+            reg-shift = <0>;
+            reg-io-width = <1>;
+        };
+    };
+};
