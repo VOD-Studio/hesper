@@ -7,8 +7,10 @@ mod compressed;
 mod decode;
 mod hart;
 mod machine;
+mod privilege;
 
 pub use machine::{DebugState, LoadError, Machine, Progress, Trap};
+pub use privilege::PrivilegeMode;
 
 /// Guest physical address of the first DRAM byte.
 pub const DRAM_BASE: u64 = 0x8000_0000;

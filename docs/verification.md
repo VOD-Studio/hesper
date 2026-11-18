@@ -1331,3 +1331,15 @@ QEMU 与 Hesper 的 32 字节实际结果均为
 镜像 SHA-256 `684979e3db3fb5591ea2109c042bf60655673eb7c45b31d9f66be110b9d342ed`；
 反汇编和两端结果在 `.cache/riscv-linux/repro-c/logs/isa-ac-*`。同一脚本的
 I/M 签名复验也通过。这不是完整 ISA 认证，也未执行完整测试 ELF。
+
+## RISC-V Linux L3a/b：特权级、陷入和返回
+
+`cargo test --locked -p hesper-riscv-linux --test privilege` 5 项通过，`make verify`
+通过。客体从 M→S→U：U ECALL 委派给 S（cause 8），S ECALL 进入 M（cause 9）；
+处理器读回原 EPC、状态栈和 tval，软件更新 EPC 后 `MRET`、`SRET` 返回。
+同组探针验证只读 CSR 分别读通/写拒、越级读取不写回、异常与向量中断分流、
+中断电平不被清除、本地与全局使能门控，以及 WFI 在无有效请求时提前归还 fuel。
+
+测试按 1 步核对异常；WFI 以 50 fuel 尝试，等待时实际只用 3 fuel，局部使能的
+MTIP 唤醒后未误取全局屏蔽的中断。日志在 `.cache/riscv-linux/logs/l3ab-*.log`。
+本卡未证明 PMP、分页或真实固件启动。

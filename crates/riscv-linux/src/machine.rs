@@ -1,4 +1,4 @@
-use crate::{DRAM_SIZE, dram_range, hart::Hart};
+use crate::{DRAM_SIZE, PrivilegeMode, dram_range, hart::Hart};
 use core::fmt;
 
 /// Failure to load a host byte span into the board's DRAM.
@@ -20,7 +20,7 @@ impl fmt::Display for LoadError {
 
 impl std::error::Error for LoadError {}
 
-/// Observation of the last synchronous machine trap.
+/// Observation of the last trap. Bit 63 of `cause` marks an interrupt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Trap {
     pub epc: u64,
@@ -33,6 +33,7 @@ pub struct Trap {
 pub struct DebugState {
     pub pc: u64,
     pub x: [u64; 32],
+    pub mode: PrivilegeMode,
     pub last_trap: Option<Trap>,
     pub retired: u64,
     pub time: u64,
@@ -86,22 +87,35 @@ impl Machine {
         DebugState {
             pc: self.hart.pc,
             x: self.hart.x,
+            mode: self.hart.privilege.mode,
             last_trap: self.hart.last_trap,
             retired: self.retired,
             time: self.time,
         }
     }
 
-    /// Execute at most `fuel` transitions. A fault consumes a tick but does not retire.
+    /// Drive the board's local and external interrupt lines. Set one bit per cause.
+    pub fn set_interrupt_lines(&mut self, asserted: u64) {
+        self.hart.privilege.set_interrupt_lines(asserted);
+    }
+
+    /// Execute at most `fuel` transitions. A trap consumes a tick but does not
+    /// retire. WFI with no enabled pending interrupt returns without busy-waiting.
     pub fn run(&mut self, fuel: u32) -> Progress {
-        let mut retired = 0;
-        for _ in 0..fuel {
-            retired += u32::from(self.hart.step(&mut self.ram));
+        let (mut spent, mut retired) = (0, 0);
+        while spent < fuel {
+            let Some(did_retire) = self.hart.step(&mut self.ram, self.time, self.retired) else {
+                break;
+            };
+            spent += 1;
+            self.time = self.time.wrapping_add(1);
+            if did_retire {
+                retired += 1;
+                self.retired = self.retired.wrapping_add(1);
+            }
         }
-        self.retired = self.retired.wrapping_add(u64::from(retired));
-        self.time = self.time.wrapping_add(u64::from(fuel));
         Progress {
-            spent: fuel,
+            spent,
             retired,
             time: self.time,
         }

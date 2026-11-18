@@ -1,4 +1,4 @@
-use crate::{DRAM_BASE, atomic, compressed, decode::alu, dram_range, machine::Trap};
+use crate::{DRAM_BASE, atomic, compressed, decode::alu, dram_range, machine::Trap, privilege};
 use core::ops::Range;
 
 #[derive(Debug)]
@@ -6,6 +6,8 @@ pub(crate) struct Hart {
     pub(crate) pc: u64,
     pub(crate) x: [u64; 32],
     pub(crate) last_trap: Option<Trap>,
+    pub(crate) privilege: privilege::State,
+    waiting: bool,
     reservation: Option<(u64, usize)>,
 }
 
@@ -15,19 +17,35 @@ impl Hart {
             pc: DRAM_BASE,
             x: [0; 32],
             last_trap: None,
+            privilege: privilege::State::new(),
+            waiting: false,
             reservation: None,
         }
     }
 
-    pub(crate) fn step(&mut self, ram: &mut [u8]) -> bool {
-        match self.execute(ram) {
+    pub(crate) fn step(&mut self, ram: &mut [u8], time: u64, retired: u64) -> Option<bool> {
+        if self.waiting {
+            if !self.privilege.locally_pending() {
+                return None;
+            }
+            self.waiting = false;
+        }
+        if let Some(cause) = self.privilege.pending_interrupt() {
+            self.enter_trap(self.trap(cause, 0));
+            return Some(false);
+        }
+        Some(match self.execute(ram, [time, time, retired]) {
             Ok(()) => true,
             Err(trap) => {
-                self.last_trap = Some(trap);
-                self.pc = 0; // Reset value of the M-mode trap vector.
+                self.enter_trap(trap);
                 false
             }
-        }
+        })
+    }
+
+    fn enter_trap(&mut self, trap: Trap) {
+        self.last_trap = Some(trap);
+        self.pc = self.privilege.take_trap(trap);
     }
 
     fn trap(&self, cause: u64, value: u64) -> Trap {
@@ -38,7 +56,7 @@ impl Hart {
         }
     }
 
-    fn execute(&mut self, ram: &mut [u8]) -> Result<(), Trap> {
+    fn execute(&mut self, ram: &mut [u8], counters: [u64; 3]) -> Result<(), Trap> {
         let pc = self.pc;
         if pc & 1 != 0 {
             return Err(self.trap(0, pc));
@@ -130,8 +148,32 @@ impl Hart {
             // instructions to discard. The ISA requires ignoring reserved
             // register fields of these two forms, not other funct3 encodings.
             (0x0f, 0 | 1) => {}
-            (0x73, 0) if instruction == 0x73 => return Err(self.trap(11, 0)),
-            (0x73, 0) if instruction == 0x0010_0073 => return Err(self.trap(3, pc)),
+            (0x73, 0) => match instruction {
+                0x0000_0073 => return Err(self.trap(8 + self.privilege.mode as u64, 0)),
+                0x0010_0073 => return Err(self.trap(3, pc)),
+                0x1020_0073 | 0x3020_0073 => {
+                    let invalid = illegal();
+                    next = self
+                        .privilege
+                        .return_from(instruction == 0x3020_0073)
+                        .ok_or(invalid)?;
+                }
+                0x1050_0073 if self.privilege.can_wfi() => self.waiting = true,
+                _ => return Err(illegal()),
+            },
+            (0x73, 1..=3 | 5..=7) => {
+                let operand = if funct3 & 4 == 0 {
+                    lhs
+                } else {
+                    u64::from((instruction >> 15) & 31)
+                };
+                let invalid = illegal();
+                let previous = self
+                    .privilege
+                    .csr(instruction, operand, counters)
+                    .ok_or(invalid)?;
+                self.write(rd, previous);
+            }
             _ => return Err(illegal()),
         }
         self.pc = next;
