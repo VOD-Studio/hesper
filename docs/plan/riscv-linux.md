@@ -226,6 +226,8 @@ printf 'HESPER_OK:%s\n' "$((6 * 7))"
 
 **L8 后的独立增量：**[持久化数据盘](riscv-linux-data-disk.md)已通过 QEMU 参考板、Hesper 原生 CLI 跨冷启动读回、浏览器与 CLI 交换 raw 盘验收。上述无盘配置不变。
 
+**下一步（计划，未实现）：**[自定义 initramfs](riscv-linux-initramfs.md)。保留单 hart 与锁定的固件、内核、基础设备树，先在参考机和原生 CLI 证明可以运行用户自己的 `/init`，再用同一份归档验收浏览器。
+
 ## 3. 执行纪律与依据
 
 - 每个可独立观察的增量一个提交。L0 的聚焦命令是 `cargo test --locked -p hesper-riscv-linux`；`make verify` 保持现有 workspace 门禁。自 L2 起把首个分歧缩为可离线重放的探针；既不修改 6502 指令/总线契约，也不拿现有 Apple I 测试当作 RISC-V 的验收。
