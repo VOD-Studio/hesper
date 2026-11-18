@@ -1,6 +1,6 @@
 # Hesper Web Lab
 
-Apple-1 与 NMOS 6502 的浏览器工作台。React 19.3、shadcn/ui（Base UI）、Tailwind CSS 4 和 Vite 8；实际执行来自仓库的两个独立 Wasm 包。
+Apple-1、NMOS 6502 与固定 RISC-V Linux 板的浏览器工作台。React 19.3、shadcn/ui（Base UI）、Tailwind CSS 4 和 Vite 8；执行来自独立的 Wasm 包。
 
 ## 启动
 
@@ -42,9 +42,22 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 
 完成结果：`$0200–$0209 = 00–09`，`PC=$800F`，54 条指令，147 个指令周期加 7 个 RESET 周期，共 154 cycles。
 
+### RISC-V Linux
+
+在仓库根目录运行 `make riscv-linux-data`，在 **RISC-V Linux** 工作区一次选择
+`fw_jump.bin`、`Image`、`initramfs.cpio` 和 `board.dtb`，然后点击启动。
+默认镜像目录是 `.cache/riscv-linux/images`。文件只由独立 Worker 在本地读取，
+使用内置锁定清单校验长度和 SHA-256；需要 HTTPS 或 loopback HTTP，不上传镜像。
+静态站点不捆绑客体镜像。
+
+待串口出现 `hesper# ` 后，聚焦终端再输入命令。暂停时客体虚拟时钟不推进，
+已输入的字节在继续后投递；停止丢弃当前机器，再启动得到新的 RAM 和终端。
+启动期间可取消。只承诺固定板的 Linux 串口，不提供网络、磁盘、图形或机器存档。
+
 ## 数据流与边界
 
 - React → Worker 消息 → `runtime.ts` → Apple1 / Cpu6502Ram。两个工作区使用独立实例。
+- RISC-V Linux 在启动时才创建自己的 Worker 和 Wasm 实例，使用独立 UART 字节流及 xterm；不依赖 Apple-1 的屏幕和键盘规则。
 - CPU core、Apple-1 时序及 Wasm public API 均沿用现有代码；本例没有 JS 总线替代或设备直接读取。
 - `crates/cli/examples/web_assets.rs` 使用现有公开的 `presets` 和 demo 常量，通过 TOML 输出给 Bun 构建脚本。不解析 Rust 源码、不维护第二份程序目录，不给 CPU 引入依赖。
 - Worker 分批执行，按有限时间片向主线程让出控制。批次预算不是实时性能承诺；14.31818 MHz 为模拟主时钟基准，实际推进速度取决于设备性能。
@@ -63,7 +76,11 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 - 全部 42 个预置的块大小和加载、扩展 RAM 要求、Blackjack 多段 BASIC 的 LIST。
 - 地址校验、粘贴归一化和固定 40×24 字符投影。
 
-根目录 `make wasm-browser-test` 另行验证 Bun、Node.js 和真实 Chrome 中的 8 项绑定检查；`make verify` 检查本机 Rust 工作区。这些不等于 42 个程序的完整玩法或硬件 conformance 验收。
+根目录 `make wasm-browser-test` 在 Bun、Node.js 和真实 Chrome 中运行 10 项轻量绑定检查；`make verify` 检查本机 Rust 工作区。这些不等于 42 个程序的完整玩法或硬件 conformance 验收。
+
+`make riscv-linux-browser`（可设置 `CHROME_BIN=chromium`）重建并在真实浏览器
+打开生产站点，使用准备好的四份本地镜像，执行同一串口验收和取消/重启测试；
+缺少镜像会失败。结果和原始串口见 `.cache/riscv-linux/logs/`。
 
 ### 2026-09-15 本轮 QA
 

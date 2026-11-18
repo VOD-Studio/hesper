@@ -57,7 +57,7 @@ cpSync(
   resolve(root, "crates/apple1/tests/data/README.md"),
   resolve(web, "public/machine/rom-notes.md"),
 );
-for (const name of ["apple1", "cpu6502"]) {
+for (const name of ["apple1", "cpu6502", "riscv-linux"]) {
   cpSync(
     resolve(root, `target/wasm-packages/${name}/web`),
     resolve(web, `src/generated/${name}`),
@@ -69,5 +69,5 @@ for (const name of ["apple1", "cpu6502"]) {
   );
 }
 console.log(
-  `Prepared ${catalogue.presets.length} presets, bundled Woz Monitor, CPU demo and both Wasm packages.`,
+  `Prepared ${catalogue.presets.length} presets, bundled Woz Monitor, CPU demo and all Wasm packages.`,
 );

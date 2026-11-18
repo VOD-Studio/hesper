@@ -46,7 +46,7 @@ make wasm-build         # 生成 target/wasm-packages/ 下的 web / nodejs 包
 make wasm-browser-test  # 原生对照、Bun / Node.js 和真实 Chrome 验证
 ```
 
-两个独立包分别导出 `Cpu6502Ram` 和 `Apple1`，包含 `.wasm`、JS 与 TypeScript 类型声明。构建、接口和调用示例见 [WASM 文档](docs/wasm.md)。
+三个独立包分别导出 `Cpu6502Ram`、`Apple1` 和 `RiscvLinux`，包含 `.wasm`、JS 与 TypeScript 类型声明。构建、接口和调用示例见 [WASM 文档](docs/wasm.md)。
 
 ### Web 工作台
 
@@ -58,7 +58,7 @@ bun install --frozen-lockfile
 bun run dev
 ```
 
-React 19.3 + shadcn/ui，提供 Apple-1 40×24 屏幕、内置 Woz Monitor、42 个预置及本地程序装载，以及独立 CPU 6502 单步、寄存器、内存和总线记录。通过 Worker 运行真实 Wasm；使用说明与验证边界见 [examples/web](examples/web/README.md)。
+通过独立 Worker 运行真实 Wasm：Apple-1 有内置 Woz Monitor 和 42 个预置；CPU 6502 支持单步、内存和总线记录；RISC-V Linux 可选择本地锁定镜像并使用 `ttyS0`。见 [Web 工作台说明](examples/web/README.md)。
 
 ### 本机 CLI / TUI
 
@@ -130,7 +130,8 @@ make riscv-linux-native  # 真实 OpenSBI 探针、CLI 管道与 PTY 验收
 crates/
 ├── cpu6502/   # NMOS 6502 CPU、Bus/Ram、周期执行器及一致性测试
 ├── cli/       # 中文 TUI、文本 CLI、演示宿主、程序预置与资源加载
-└── apple1/    # Apple I 主板时钟、地址译码 Bus、PIA、显示与键盘
+├── apple1/    # Apple I 主板时钟、地址译码 Bus、PIA、显示与键盘
+└── riscv-linux/ # 固定 RV64IMAC、Sv39、CLINT、PLIC 与 UART 板
 
 tools/         # 固定外部数据准备及 Visual6502 重放工具
 docs/          # 架构、opcode、路线图、来源和验证记录

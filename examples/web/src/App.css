@@ -119,6 +119,7 @@ kbd,
   padding: 8px 20px;
   border-radius: 6px;
   font-size: 12px;
+  white-space: nowrap;
   color: #95a090;
   transition:
     background 0.18s,
@@ -1354,6 +1355,11 @@ kbd {
     max-width: 720px;
   }
 }
+@media (max-width: 800px) {
+  .workspace-tabs button {
+    padding-inline: 12px;
+  }
+}
 @media (max-width: 600px) {
   .topbar {
     height: 106px;
@@ -1385,8 +1391,13 @@ kbd {
   .workspace-tabs button {
     justify-content: center;
     flex: 1;
-    padding: 7px;
+    gap: 5px;
+    padding: 7px 4px;
     font-size: 11px;
+  }
+  .workspace-tabs svg {
+    width: 14px;
+    height: 14px;
   }
   main {
     padding: 24px 14px 16px;

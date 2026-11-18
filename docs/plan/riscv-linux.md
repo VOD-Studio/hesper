@@ -4,6 +4,11 @@
 
 **起点（L0）**：独立 workspace 库 `hesper-riscv-linux` 和固定 DRAM 地址窗口。L0 只校验 RAM 切片范围，不分配整机内存、不执行指令。各卡实际进度以[验证记录](../verification.md)为准；QEMU 上的启动不是 Hesper 的兼容性证据。
 
+**实施结果**：同一组锁定镜像已通过 QEMU 参考、原生 Hesper（管道和 PTY）、
+Bun / Node.js Wasm 与生产网页 Chromium 验收。见 [L6 本机记录](../verification.md#risc-v-linux-l6本机-cli-冷启动与串口)
+及 [L8 浏览器记录](../verification.md#risc-v-linux-l8生产网页与范围冻结)。
+浏览器使用本地文件；镜像未随站点分发。兼容范围仍为下文的单 hart 固定板。
+
 ## 0. 给实施者的入口（6.2 sol 从这里开始）
 
 起点是分支 `feat/riscv-linux` 的 `d3f25f7`。如果分支上已有后续提交，以实际产物和验证记录判断进度，不回退到起点。先看[现有库](../../crates/riscv-linux/src/lib.rs)、[DRAM 边界测试](../../crates/riscv-linux/tests/dram.rs)和[仓库门禁](../../Makefile)。下表按卡列出工作与退出证据；每次只为当张卡创建用得到的文件。不要另起分支树、重写 README 或先搭一套通用虚拟机框架。
@@ -15,7 +20,7 @@
 | L3a CSR/陷入 → L3b 返回/委派 → L3c PMP | 库内特权状态；`tests/privilege.rs`。先做 U→S、S→M 两条陷入路径，再加入保护区。 | 同时核对故障指令地址、目标向量、模式和没有发生的写入。 |
 | L4a 遍历 → L4b 权限/故障 → L4c 跨页 | 私有 MMU；`tests/sv39.rs` 以手工页表访问已知物理签名。 | 翻译正确、故障分类正确、失败后能从同一 EPC 重试。 |
 | L5a 时钟/设备 → L5b 装载/交接 → L5c 固件探针 | 板级总线与设备、装载器；`tests/devices.rs`、`tests/boot.rs`。设备先寄存器测试，后进真实 OpenSBI。 | S 态探针从定时和 UART 中断返回。仅见串口文字不解锁 L6。 |
-| L6 原生 shell | `crates/cli/src/main.rs` 分派至独立 Linux 会话；`crates/cli/tests/` 驱动真实二进制。 | L1c 的同一交互脚本通过管道和 PTY；记录预算与串口尾部。 |
+| L6 原生 shell | `crates/cli/src/main.rs` 分派至独立 Linux 会话；`tools/riscv-linux/native.py` 驱动真实二进制，复用参考串口脚本。 | L1c 的同一交互脚本通过管道和 PTY；记录预算与串口尾部。 |
 | L7 绑定/调度 → L8 页面 | 新绑定在 L7 才入 workspace；绑定对照在 `tests/wasm/`，页面在 `examples/web/`。 | 真实 Wasm 与原生探针对照；随后真实浏览器操作同哈希客体，两份报告分开。 |
 
 **续做规则**：认领最早一张没有退出证据的卡。第一条命令先检查它的输入，不凭上一轮聊天判断“已完成”。在 `docs/verification.md` 追加通过的卡号、提交对应的配置、命令、输入指纹、预期/实际、预算与记录路径。失败交接写成 `卡号 / 可复现命令 / 首个预期≠实际 / 最小输入 / 下一项检查`。大日志进 `.cache/`，关键差异和重放方法留在版本库；只写“已测”不能交接。如果缺工具，指出具体可执行文件或不支持的 ABI，不把跳过写成通过。每张可独立验证的行为增量通过对应门禁后再提交，不推送、不发布。

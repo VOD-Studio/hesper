@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Activity,
   ArrowRight,
@@ -56,6 +56,26 @@ import {
 } from "./machine";
 import "./App.css";
 
+// Keep the Linux workspace and terminal code out of the default Apple-1 load.
+const LinuxWorkspace = lazy(() =>
+  import("./LinuxWorkspace").catch((reason: unknown) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    return {
+      default: function UnavailableLinuxWorkspace({
+        hidden,
+      }: {
+        hidden: boolean;
+      }) {
+        return (
+          <main hidden={hidden}>
+            <p role="alert">无法加载 Linux 工作区：{message}</p>
+          </main>
+        );
+      },
+    };
+  }),
+);
+
 type Modal =
   | "config"
   | "library"
@@ -98,7 +118,10 @@ const colors = { green: "#a4e6a1", amber: "#edc17b", white: "#e5e9df" };
 export default function App() {
   const emu = useEmulator();
   const { send, notify } = emu;
-  const [mode, setMode] = useState<Mode>("apple1");
+  const [workspace, setWorkspace] = useState<Mode | "linux">("apple1");
+  const [linuxVisited, setLinuxVisited] = useState(false);
+  const linuxActive = workspace === "linux";
+  const mode = workspace === "linux" ? "apple1" : workspace;
   const [modal, setModal] = useState<Modal>(null);
   const [confirm, setConfirm] = useState<{
     title: string;
@@ -123,7 +146,7 @@ export default function App() {
   );
   const activeExpansion = !!emu.apple.expansion;
   const state = mode === "apple1" ? emu.apple : emu.cpu;
-  const blocked = !!modal || !!confirm || hidden || busy;
+  const blocked = linuxActive || !!modal || !!confirm || hidden || busy;
 
   useEffect(() => {
     send({ type: "gate", mode, blocked });
@@ -175,7 +198,7 @@ export default function App() {
       action: () => {
         send({ type: "stop" });
         setConfirm(null);
-        setMode("apple1");
+        setWorkspace("apple1");
       },
     });
   }
@@ -235,7 +258,7 @@ export default function App() {
             : "输入地址检查内存，或装载一个程序。"),
       };
       send({ type: "boot", boot: config });
-      setMode("apple1");
+      setWorkspace((current) => (current === "linux" ? current : "apple1"));
       setModal(null);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
@@ -359,7 +382,7 @@ export default function App() {
           href="#"
           onClick={(event) => {
             event.preventDefault();
-            setMode("apple1");
+            setWorkspace("apple1");
           }}
           aria-label="Hesper 首页"
         >
@@ -370,18 +393,32 @@ export default function App() {
         </a>
         <nav className="workspace-tabs" aria-label="工作区">
           <button
-            className={mode === "apple1" ? "selected" : ""}
-            onClick={() => setMode("apple1")}
+            className={workspace === "apple1" ? "selected" : ""}
+            aria-pressed={workspace === "apple1"}
+            onClick={() => setWorkspace("apple1")}
           >
             <Monitor size={16} />
             Apple-1
           </button>
           <button
-            className={mode === "cpu" ? "selected" : ""}
-            onClick={() => setMode("cpu")}
+            className={workspace === "cpu" ? "selected" : ""}
+            aria-pressed={workspace === "cpu"}
+            onClick={() => setWorkspace("cpu")}
           >
             <Cpu size={16} />
             CPU 6502
+          </button>
+          <button
+            className={linuxActive ? "selected" : ""}
+            aria-pressed={linuxActive}
+            data-linux-tab
+            onClick={() => {
+              setLinuxVisited(true);
+              setWorkspace("linux");
+            }}
+          >
+            <Terminal size={16} />
+            RISC-V Linux
           </button>
         </nav>
         <div className="top-actions">
@@ -393,21 +430,32 @@ export default function App() {
           >
             <CircleHelp />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="显示设置"
-            onClick={() => open("settings")}
-          >
-            <Settings2 />
-          </Button>
+          {!linuxActive && (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="显示设置"
+              onClick={() => open("settings")}
+            >
+              <Settings2 />
+            </Button>
+          )}
           <span className="local-label">
             <i />
             本地运行
           </span>
         </div>
       </header>
-      <main>
+      {linuxVisited && (
+        <Suspense
+          fallback={
+            linuxActive ? <main role="status">正在加载 Linux 工作区…</main> : null
+          }
+        >
+          <LinuxWorkspace hidden={!linuxActive} />
+        </Suspense>
+      )}
+      <main hidden={linuxActive}>
         <div className="page-heading">
           <div>
             <div className="eyebrow">
@@ -637,7 +685,7 @@ export default function App() {
       </main>
 
       <Dialog
-        open={modal !== null}
+        open={modal !== null && (!linuxActive || modal === "help")}
         onOpenChange={(value) => {
           if (!value && !busy) setModal(null);
         }}
@@ -667,7 +715,7 @@ export default function App() {
                     config: "选择固件与程序，然后开始新的 Apple-1 会话。",
                     library: `${presets.length} 个程序。把好奇心装进几千字节。`,
                     settings: "让这台终端看起来更像你的终端。",
-                    help: "Hesper · Apple-1 与 NMOS 6502 交互工作台",
+                    help: "Hesper · Apple-1、NMOS 6502 与 RISC-V Linux 交互工作台",
                     input: "支持 ASCII 文本；换行会作为 Enter 发送。",
                     status: "当前寄存器、计数和内存配置。",
                   } as const
@@ -990,8 +1038,8 @@ export default function App() {
           {modal === "help" && (
             <div className="help-content">
               <p>
-                使用现有 Rust 核心，在浏览器中运行 Apple-1 和独立的 CPU
-                6502。所有文件和执行都留在当前浏览器。
+                使用现有 Rust 核心，在浏览器中运行 Apple-1、独立的 CPU
+                6502 和 RISC-V Linux。所有文件和执行都留在当前浏览器。
               </p>
               <h3>Apple-1 操作</h3>
               <ul>
@@ -1018,7 +1066,12 @@ export default function App() {
                 前停止。可逐指令或逐周期观察真实总线访问；最近 256
                 个周期保存在执行记录中。
               </p>
-              <h3>显示与兼容范围</h3>
+              <h3>RISC-V Linux</h3>
+              <p>
+                选择约定版本的四个本地镜像，启动后在串口终端输入。
+                暂停会保留客体状态；继续后才处理暂停期间的输入。
+              </p>
+              <h3>Apple-1 显示与兼容范围</h3>
               <p>
                 屏幕是 40 × 24 字符投影；辉光属于界面效果。当前为固定 NMOS 6502
                 与 Apple-1 模型，预置可加载不等于所有功能已验收。

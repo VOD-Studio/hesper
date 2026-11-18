@@ -1,0 +1,288 @@
+import imageLock from "../../../tools/riscv-linux/images.lock.json";
+import { initSync, RiscvLinux } from "./generated/riscv-linux/hesper_riscv_linux";
+import wasmUrl from "./generated/riscv-linux/hesper_riscv_linux_bg.wasm?url";
+import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
+
+const FUEL_LIMIT = 450_000_000;
+const FUEL_BATCH = 65_536;
+const STALLED_TRAP_LIMIT = 32;
+const SERIAL_BATCH = 4096;
+const INPUT_CAPACITY = 256 * 1024;
+const REPORT_INTERVAL_MS = 250;
+const GUEST_MEMORY_MIB = 128;
+
+const pins = new Map(imageLock.images.map((pin) => [pin.path, pin]));
+const tasks = new MessageChannel();
+const usedIds = new Set<number>();
+let wasmInitialized = false;
+let active: Session | undefined;
+
+type InputQueue = { bytes: Uint8Array; start: number; length: number };
+type Session = {
+  id: number;
+  abort: AbortController;
+  state: LinuxState;
+  pauseRequested: boolean;
+  machine?: RiscvLinux;
+  input?: InputQueue;
+  fuel: number;
+  batchPending: boolean;
+  nextReport: number;
+};
+
+function post(reply: LinuxReply) {
+  if (reply.type === "stdout") {
+    // wasm-bindgen's returned byte array owns its buffer, not a view of guest RAM.
+    self.postMessage(reply, { transfer: [reply.bytes.buffer as ArrayBuffer] });
+  } else {
+    self.postMessage(reply);
+  }
+}
+
+function detail(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function selectFiles(files: File[]) {
+  const selected = new Map<string, File>();
+  for (const file of files) {
+    const pin = pins.get(file.name);
+    if (!pin) throw new Error(`Unexpected Linux image: ${file.name}.`);
+    if (selected.has(file.name)) throw new Error(`Duplicate Linux image: ${file.name}.`);
+    if (file.size !== pin.bytes) {
+      throw new Error(`${file.name}: expected ${pin.bytes} bytes, got ${file.size}.`);
+    }
+    selected.set(file.name, file);
+  }
+  for (const name of pins.keys()) {
+    if (!selected.has(name)) throw new Error(`Missing Linux image: ${name}.`);
+  }
+  return selected;
+}
+
+async function verifiedImage(
+  name: string,
+  selected: Map<string, File>,
+  subtle: SubtleCrypto,
+  signal: AbortSignal,
+) {
+  const pin = pins.get(name);
+  const file = selected.get(name);
+  if (!pin || !file) throw new Error(`Missing pinned Linux image: ${name}.`);
+  signal.throwIfAborted();
+  let buffer: ArrayBuffer;
+  let digest: ArrayBuffer;
+  try {
+    buffer = await file.arrayBuffer();
+    signal.throwIfAborted();
+    digest = await subtle.digest("SHA-256", buffer);
+  } catch (error) {
+    throw new Error(`Cannot read or verify ${name} (check file access and available memory): ${detail(error)}`);
+  }
+  signal.throwIfAborted();
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (hash !== pin.sha256) throw new Error(`${name}: SHA-256 does not match the pinned image.`);
+  return { bytes: new Uint8Array(buffer), end: pin.end };
+}
+
+async function initializeWasm(signal: AbortSignal) {
+  if (wasmInitialized) return;
+  try {
+    const response = await fetch(wasmUrl, { signal });
+    signal.throwIfAborted();
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const binary = await response.arrayBuffer();
+    signal.throwIfAborted();
+    const module = await WebAssembly.compile(binary);
+    signal.throwIfAborted();
+    // Synchronous finalization prevents an aborted load from replacing the
+    // binding's module-level exports after another session has started.
+    initSync({ module });
+    wasmInitialized = true;
+  } catch (error) {
+    throw new Error(`Cannot load the Linux WebAssembly resource: ${detail(error)}`);
+  }
+}
+
+async function loadMachine(files: File[], signal: AbortSignal) {
+  const selected = selectFiles(files);
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) throw new Error("SHA-256 verification requires a secure browser context (HTTPS or localhost).");
+  await initializeWasm(signal);
+
+  // Read and hash one local file at a time, retaining just the verified bytes
+  // required by the Wasm boot call. The main thread only holds File handles.
+  const firmware = await verifiedImage("fw_jump.bin", selected, subtle, signal);
+  const kernel = await verifiedImage("Image", selected, subtle, signal);
+  const initramfs = await verifiedImage("initramfs.cpio", selected, subtle, signal);
+  const fdt = await verifiedImage("board.dtb", selected, subtle, signal);
+  signal.throwIfAborted();
+  try {
+    return RiscvLinux.boot(firmware.bytes, BigInt(firmware.end), kernel.bytes, initramfs.bytes, fdt.bytes);
+  } catch (error) {
+    throw new Error(`Cannot initialize the Linux guest (${GUEST_MEMORY_MIB} MiB guest RAM plus Wasm and image memory required): ${detail(error)}`);
+  }
+}
+
+function report(session: Session) {
+  const { id: sessionId, machine, state } = session;
+  post({ type: "state", sessionId, state, time: machine?.time ?? 0n, retired: machine?.retired ?? 0n });
+  session.nextReport = performance.now() + REPORT_INTERVAL_MS;
+}
+
+function schedule(session: Session) {
+  if (session.batchPending) return;
+  session.batchPending = true;
+  tasks.port2.postMessage(session.id);
+}
+
+function setState(session: Session, state: LinuxState) {
+  session.state = state;
+  report(session);
+  if (state === "running") schedule(session);
+}
+
+function finish(session: Session, reason?: string) {
+  if (active !== session) return;
+  active = undefined;
+  session.abort.abort();
+  session.input = undefined;
+  const machine = session.machine;
+  session.machine = undefined;
+  let time = 0n;
+  let retired = 0n;
+  if (machine) {
+    try {
+      try {
+        time = machine.time;
+        retired = machine.retired;
+      } finally {
+        machine.free();
+      }
+    } catch (error) {
+      const cleanup = `Cannot release the Linux guest: ${detail(error)}`;
+      reason = reason === undefined ? cleanup : `${reason} ${cleanup}`;
+    }
+  }
+  const sessionId = session.id;
+  if (reason !== undefined) post({ type: "error", sessionId, message: reason });
+  post({ type: "state", sessionId, state: reason === undefined ? "ended" : "failed", time, retired });
+}
+
+async function boot(session: Session, files: File[]) {
+  try {
+    const machine = await loadMachine(files, session.abort.signal);
+    if (active !== session) {
+      machine.free();
+      return;
+    }
+    session.machine = machine;
+    post({ type: "ready", sessionId: session.id });
+    setState(session, session.pauseRequested ? "paused" : "running");
+  } catch (error) {
+    finish(session, detail(error));
+  }
+}
+
+function enqueue(session: Session, bytes: Uint8Array) {
+  if (bytes.length === 0) return;
+  const queued = session.input?.length ?? 0;
+  if (bytes.length > INPUT_CAPACITY - queued) {
+    throw new Error(`Serial input queue exceeds ${INPUT_CAPACITY} bytes.`);
+  }
+  const input = (session.input ??= { bytes: new Uint8Array(INPUT_CAPACITY), start: 0, length: 0 });
+  const end = (input.start + input.length) % INPUT_CAPACITY;
+  const first = Math.min(bytes.length, INPUT_CAPACITY - end);
+  input.bytes.set(bytes.subarray(0, first), end);
+  if (first < bytes.length) input.bytes.set(bytes.subarray(first), 0);
+  input.length += bytes.length;
+  if (session.state === "waiting") setState(session, "running");
+}
+
+function feedInput(input: InputQueue | undefined, machine: RiscvLinux) {
+  if (!input?.length) return 0;
+  const length = Math.min(input.length, SERIAL_BATCH, INPUT_CAPACITY - input.start);
+  const accepted = machine.send(input.bytes.subarray(input.start, input.start + length));
+  input.start = (input.start + accepted) % INPUT_CAPACITY;
+  input.length -= accepted;
+  return accepted;
+}
+
+// There is at most one queued batch per session. Each port message yields to
+// control/input tasks without the delay imposed on chained timers.
+tasks.port1.onmessage = ({ data: id }: MessageEvent<number>) => {
+  const session = active;
+  if (!session || id !== session.id) return;
+  session.batchPending = false;
+  const machine = session.machine;
+  if (!machine || session.state !== "running") return;
+  try {
+    const accepted = feedInput(session.input, machine);
+    const allowance = Math.min(FUEL_BATCH, FUEL_LIMIT - session.fuel);
+    const spent = machine.run(allowance);
+    session.fuel += spent;
+    const bytes = machine.receive(SERIAL_BATCH);
+    const outputLength = bytes.length;
+    if (outputLength !== 0) post({ type: "stdout", sessionId: id, bytes });
+
+    if (machine.stalledTraps >= STALLED_TRAP_LIMIT) {
+      throw new Error(`Guest stalled in a trap loop at PC 0x${machine.pc.toString(16)}.`);
+    }
+    if (session.fuel === FUEL_LIMIT) throw new Error(`Guest exhausted its ${FUEL_LIMIT} transition budget.`);
+    if (spent === 0 && outputLength === 0) {
+      if (!session.input?.length) {
+        setState(session, "waiting");
+        return;
+      }
+      if (accepted === 0) throw new Error("Guest is idle with serial input still pending.");
+    }
+    if (performance.now() >= session.nextReport) report(session);
+    schedule(session);
+  } catch (error) {
+    finish(session, `Linux execution failed: ${detail(error)}`);
+  }
+};
+
+self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
+  if (command.type === "boot") {
+    if (usedIds.has(command.sessionId)) return;
+    usedIds.add(command.sessionId);
+    if (active) finish(active);
+    const session: Session = {
+      id: command.sessionId,
+      abort: new AbortController(),
+      state: "loading",
+      pauseRequested: false,
+      fuel: 0,
+      batchPending: false,
+      nextReport: 0,
+    };
+    active = session;
+    report(session);
+    void boot(session, command.files);
+    return;
+  }
+
+  const session = active;
+  if (!session || command.sessionId !== session.id) return;
+  switch (command.type) {
+    case "stdin":
+      try {
+        enqueue(session, command.bytes);
+      } catch (error) {
+        finish(session, `Cannot queue serial input: ${detail(error)}`);
+      }
+      break;
+    case "pause":
+      session.pauseRequested = true;
+      if (session.state === "running" || session.state === "waiting") setState(session, "paused");
+      break;
+    case "resume":
+      session.pauseRequested = false;
+      if (session.state === "paused") setState(session, "running");
+      break;
+    case "stop":
+      finish(session);
+      break;
+  }
+};

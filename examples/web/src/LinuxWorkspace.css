@@ -1,0 +1,180 @@
+.linux-workbench {
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr);
+  overflow: hidden;
+  background: #161b15;
+  border: 1px solid #333c2e;
+  border-top: 0;
+  border-radius: 0 0 11px 11px;
+}
+
+.linux-details {
+  display: grid;
+  align-content: start;
+  gap: 22px;
+  padding: 20px;
+  border-right: 1px solid #333c2e;
+}
+
+.linux-details h2 {
+  margin-bottom: 9px;
+}
+
+.linux-details .section-label,
+.linux-console-top .section-label {
+  font-size: 11px;
+}
+
+.linux-details p,
+.linux-terminal-hint {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.linux-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 12px 0;
+}
+
+.linux-images li {
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: #d2dfc9;
+  font-size: 11px;
+}
+
+.linux-details input[type="file"] {
+  width: 100%;
+  padding: 5px;
+  color: var(--muted-foreground);
+  background: #101610;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.linux-details input[type="file"]::file-selector-button {
+  margin-inline-end: 6px;
+  padding: 3px 7px;
+  color: var(--primary);
+  background: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.linux-details input[type="file"]:disabled {
+  opacity: 0.6;
+}
+
+.linux-details input[type="file"]:disabled::file-selector-button {
+  cursor: default;
+}
+
+.linux-details input[aria-invalid="true"] {
+  border-color: var(--destructive);
+}
+
+.linux-details [role="alert"] {
+  margin-top: 5px;
+  color: var(--destructive);
+}
+
+.linux-metrics {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.linux-metrics > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.linux-metrics dt {
+  color: var(--muted-foreground);
+}
+
+.linux-metrics dd {
+  font-family: "Geist Mono Variable", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.linux-console {
+  min-width: 0;
+  padding: 16px;
+}
+
+.linux-console-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.linux-terminal-frame {
+  overflow: hidden;
+  padding: 9px;
+  background: #101610;
+  border: 1px solid #364233;
+  border-radius: 8px;
+}
+
+.linux-terminal-frame:focus-within {
+  border-color: var(--ring);
+}
+
+.linux-terminal {
+  height: clamp(300px, 53dvh, 630px);
+}
+
+.linux-terminal-hint {
+  margin-top: 7px;
+}
+
+.linux-error {
+  padding: 8px 16px;
+  border-inline: 1px solid #333c2e;
+  background: #2b1d1a;
+  color: var(--destructive);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .linux-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .linux-details {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    border-right: 0;
+    border-bottom: 1px solid #333c2e;
+  }
+
+  .linux-toolbar,
+  .linux-toolbar .run-controls {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 480px) {
+  .linux-details {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 13px;
+  }
+
+  .linux-details,
+  .linux-console {
+    padding: 12px;
+  }
+
+  .linux-terminal-frame {
+    padding: 5px;
+  }
+}

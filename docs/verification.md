@@ -1401,9 +1401,9 @@ claim 清 pending、complete 后电平重报和 RBR 消费后撤销均有断言�
 `cargo test --locked -p hesper-riscv-linux --test boot` 2 项通过：初始
 `pc=0x80000000`、M 态、`satp=0`、`a0=0`、`a1=0x87800000`，有效重启后旧
 RAM 与 tick 清零。用有效 Image 头但越过 initramfs 起点的 `image_size`、
-过长的固件驻留区和错误 FDT 总长/实际 initrd 地址，分别验证冲突与格式错误；
-拒绝后保留原 PC、寄存器及 RAM。`make verify` 通过；日志在
-`.cache/riscv-linux/logs/l5b-*.log`。
+过长的固件驻留区、末端伸入 DTB 的 initramfs 和错误 FDT 总长/实际 initrd 地址，
+分别验证冲突与格式错误；拒绝后保留原 PC、寄存器及 RAM。`make verify` 通过；日志在
+`.cache/riscv-linux/logs/l5b-*.log`；initramfs 重叠复核见 `l8-boot-boundaries.log`。
 
 另用 `Machine::boot` 装载 L1c 锁定的四份原始镜像（含真实 DTB），观察
 同一复位寄存器及 DTB 字节，见 `repro-c/logs/l5b-locked-loader.log`。
@@ -1454,3 +1454,37 @@ Bun 1.4.4 和 Node.js 26.13.1 分别在 33.87 / 34.26 s 到同一 Linux shell，
 峰值 RSS 208532 / 222740 KiB；两次退出均为 `340787200/450000000`
 fuel、`340754648` 退休及 `677471556` tick。`repro-c/logs/hesper-wasm.json`
 记录清单、原始串口与预算。这是 JS 绑定的完整客体启动，不是网页验收。
+
+## RISC-V Linux L7b：独立 Worker 与串口会话
+
+`bun run check`（含原有 5 项真实 Wasm 会话）和 `bun run build` 通过。
+实浏览器对生产构建验证：初始 Apple-1 工作区未请求 Linux Worker/Wasm
+且真实 Woz Monitor 能输出；文件通过 SHA-256 前客体未执行，单字节损坏的
+DTB 被拒绝；取消加载后立即启动下一代没有旧串口输出。
+暂停时键入 `uname -a`，暂停观测停在 tick `359942450` 且无串口输出；
+恢复从同一 tick 开始，结果行只出现一次。停止后重新启动的会话初始
+时间和退休数为零，终端没有上一代结果，新固件重新打印 `OpenSBI v1.6`。
+
+## RISC-V Linux L8：生产网页与范围冻结
+
+```sh
+RISCV_LINUX_CACHE="$PWD/.cache/riscv-linux/repro-c" CHROME_BIN=chromium make riscv-linux-browser
+```
+
+Chromium `155.0.8059.84`、Arch Linux x86_64、Ryzen 7 5800、系统识别约 47 GiB RAM，
+在 loopback HTTP `/hesper/` 上打开 1440×960 的生产页面。用浏览器原生文件
+选择和键盘事件，真实 Worker 读取与 QEMU、原生 CLI 相同的四份文件：
+本地 `16823349` 字节，客体镜像 HTTP 下载 `0` 字节。首次完整提示耗时
+`34.84 s`，180 s 启动门限；后续命令各限 20 s / 256 KiB。主线程 16 ms
+采样的最长回调间隔 `47.1 ms`（门限 350 ms），不是从原生速度推算。
+
+页面显示 `Linux (none) 6.12.0-hesper … riscv64 GNU/Linux`、hart 0、
+`rv64imac_zicntr_zicsr_zifencei_zca` 和独立的 `HESPER_OK:42`，随后再收到
+`hesper# `。Linux 日志确认固件占用的 `0x80000000..0x80060000` 已标为
+不可映射保留内存。结束时 `340623673` 退休、`642515238` tick。
+`repro-c/logs/hesper-browser.json` 记录镜像散列和观测值，旁有
+`browser-serial.raw`、`browser-input.raw` 及 `browser-terminal.png`。
+
+验收只覆盖这套固定的 RV64IMAC、OpenSBI + Linux + 静态 BusyBox 串口板；
+未声明通用 RISC-V、外设或发行版兼容性。客体镜像只选本地已校验文件，
+未发布、未上传、未部署 Pages；无远程 CI 结论。
