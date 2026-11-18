@@ -89,7 +89,6 @@ def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termina
         raise ValueError(f"unsupported serial termination: {transport}/{termination}")
     if transport not in ("pipe", "pty"):
         raise ValueError(f"unsupported serial transport: {transport}")
-    started = time.monotonic()
     input_bytes = output_bytes = 0
     with ExitStack() as stack:
         output = stack.enter_context(output_path.open("wb"))
@@ -100,9 +99,11 @@ def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termina
             stack.callback(os.close, master)
             # Start with a normal slave: the tested CLI must set its own raw mode.
             with os.fdopen(slave, "r+b", buffering=0) as terminal:
+                started = time.monotonic()
                 guest = subprocess.Popen(argv, env=ENV, stdin=terminal, stdout=terminal, stderr=errors)
             rx = tx = master
         else:
+            started = time.monotonic()
             guest = subprocess.Popen(argv, env=ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
             rx, tx = guest.stdout.fileno(), guest.stdin.fileno()
         stack.enter_context(guest)
@@ -146,6 +147,7 @@ def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termina
 
         try:
             os.set_blocking(tx, False)
+            spawn_to_exchange = time.monotonic() - started
             timings = exchange(receive, send) if exchange is not None else {}
             if termination == "quit":
                 send(QUIT)
@@ -183,7 +185,7 @@ def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termina
     if not (0 <= retired <= fuel <= limit and 0 < limit):
         raise ValueError(f"{transport}: inconsistent fuel or CPU counters; see {error_path}")
     return dict(command=argv, exit_status=guest.returncode, exit_reason=reason, serial_timing_seconds=timings,
-                runtime_seconds=runtime, peak_rss_kib=rss,
+                runtime_seconds=runtime, spawn_to_exchange_seconds=spawn_to_exchange, peak_rss_kib=rss,
                 fuel_spent=fuel, max_fuel=limit, exit_retired=retired, exit_tick=tick,
                 input_bytes=input_bytes, output_bytes=output_bytes, input_log=str(input_path),
                 serial_log=str(output_path), diagnostics_log=str(error_path))

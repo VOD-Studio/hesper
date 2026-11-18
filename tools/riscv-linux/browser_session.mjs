@@ -10,10 +10,12 @@ const alpineDiskGate = mode === "alpine-disk";
 const diskGate = mode === "disk" || alpineDiskGate;
 const initramfsGate = mode === "initramfs";
 const alpineGate = mode === "alpine";
+const benchmark = mode === "alpine-bench";
+const benchDisk = benchmark ? input[0] : undefined;
 const [cliDisk, webDisk, oversized, alpineSerialImages, standardImages] = input;
 const [corrupt] = input;
-const lockName = alpineDiskGate ? "images-alpine-lts-blk.lock.json" : diskGate ? "images-blk.lock.json"
-  : alpineGate ? "images-alpine-lts.lock.json" : "images.lock.json";
+const lockName = alpineDiskGate || benchDisk ? "images-alpine-lts-blk.lock.json" : diskGate ? "images-blk.lock.json"
+  : alpineGate || benchmark ? "images-alpine-lts.lock.json" : "images.lock.json";
 const readLock = name => JSON.parse(readFileSync(new URL(name, import.meta.url), "utf8"));
 const lock = readLock(lockName);
 const root = resolve(dist);
@@ -23,6 +25,7 @@ const tab = "/hesper/";
 const guestNames = new Set(lock.images.map(entry => entry.path));
 if (initramfsGate) for (const file of input.slice(1)) guestNames.add(basename(file));
 if (diskGate) for (const file of [cliDisk, webDisk]) guestNames.add(basename(file));
+if (benchDisk) guestNames.add(basename(benchDisk));
 const isGuestPath = path => guestNames.has(basename(path)) || (alpineGate && /\.apk$/i.test(path));
 const alpineWorkerEvents = [], networkTrace = [], networkRequests = new Map(), servedWasm = new Set();
 const guestRequests = [];
@@ -307,7 +310,66 @@ try {
   if (diskGate) await runDiskGate();
   else if (initramfsGate) await runInitramfsGate();
   else if (alpineGate) await runAlpineGate();
+  else if (benchmark) await runBenchmark();
   else await runSerialGate();
+
+  async function runBenchmark() {
+    const start = "[data-linux-start]";
+    const result = "HESPER_BENCH:42";
+    await selectProfile("alpine");
+    if (benchDisk) await setFiles("[data-linux-disk]", [benchDisk]);
+    const imageBytes = await selectFiles(images);
+    await evaluate(`(() => {
+      const clock = () => performance.timeOrigin + performance.now();
+      const sample = globalThis.hesperBootBenchmark = {};
+      document.addEventListener("click", () => {
+        sample.clicked = clock();
+        const observer = new MutationObserver(() => {
+          const rows = ${tty()}.split("\\n");
+          if (!rows.some(row => row.startsWith("hesper# "))) return;
+          sample.prompt ??= clock();
+          const proof = rows.findIndex(row => row.trimEnd() === ${JSON.stringify(result)});
+          if (proof >= 0 && rows.slice(proof + 1).some(row => row.startsWith("hesper# ") &&
+              row.trimEnd() === "hesper#")) {
+            sample.command = clock();
+            observer.disconnect();
+          }
+        });
+        observer.observe(document.querySelector("[data-linux-terminal]"), {
+          subtree: true, childList: true, characterData: true,
+        });
+      }, { capture: true, once: true });
+    })()`);
+    streaming = 1;
+    emit({ type: "start", browser: version.Browser, imageBytes });
+    await click(start);
+    for await (const line of createInterface({ input: process.stdin })) {
+      const request = JSON.parse(line);
+      if (request.type === "keys") {
+        await until("globalThis.hesperBootBenchmark.prompt", "complete first xterm prompt");
+        await type(request.text);
+      } else if (request.type === "finish") {
+        try {
+          await until("globalThis.hesperBootBenchmark.command", "independent command result and second xterm prompt");
+        } catch (error) {
+          writeFileSync(join(logs, "browser-terminal.txt"), await evaluate(tty()));
+          throw error;
+        }
+        const timing = await evaluate("globalThis.hesperBootBenchmark");
+        const initial = replies.find(reply => reply.sessionId === 1 && reply.state === "running");
+        check(initial?.time === "0" && initial.retired === "0" && initial.fuel === "0",
+          "benchmark did not start from a fresh machine");
+        await click("[data-linux-stop]");
+        await until(state("ended"), "stopped benchmark session");
+        const ended = await waitFor(() => replies.find(reply => reply.sessionId === 1 && reply.state === "ended"),
+          "final benchmark counters");
+        check(guestRequests.length === 0, "benchmark fetched guest images over HTTP");
+        emit({ type: "done", timing, fuel: ended.fuel, retired: ended.retired, tick: ended.time,
+          stages: replies.filter(reply => reply.sessionId === 1 && reply.type === "benchmark") });
+        return;
+      } else throw new Error(`unknown benchmark request ${request.type}`);
+    }
+  }
 
   async function runAlpineGate() {
     const [standardImages, legacyImages, damagedKernel] = input;

@@ -10,12 +10,12 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use hesper_riscv_linux::{
     BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, HartIsa, INITRAMFS_ADDRESS,
-    KERNEL_ADDRESS, MAX_INITRAMFS_BYTES, Machine,
+    KERNEL_ADDRESS, MAX_INITRAMFS_BYTES, Machine, Progress,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -36,6 +36,34 @@ const STALLED_TRAP_LIMIT: u32 = 32;
 const IO_BYTES: usize = 2048;
 const IDLE_WAIT: Duration = Duration::from_millis(10);
 const QUIT: u8 = 0x1d;
+const ALPINE_BENCH: bool = option_env!("HESPER_ALPINE_BENCH").is_some();
+
+fn bench_phase(phase: &str, started: Instant) {
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    eprintln!(r#"linux-bench: {{"phase":"{phase}","ms":{ms}}}"#);
+}
+
+struct BenchPrompt {
+    started: Instant,
+    matched: usize,
+}
+
+impl BenchPrompt {
+    fn observe(&mut self, bytes: &[u8]) -> bool {
+        const PROMPT: &[u8] = b"\nhesper# ";
+        for &byte in bytes {
+            if byte == PROMPT[self.matched] {
+                self.matched += 1;
+                if self.matched == PROMPT.len() {
+                    return true;
+                }
+            } else {
+                self.matched = usize::from(byte == PROMPT[0]);
+            }
+        }
+        false
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 enum LinuxError {
@@ -214,6 +242,7 @@ fn boot(
     directory: &Path,
     replacement: Option<&Path>,
     disk: Option<DataDisk>,
+    images_started: Option<Instant>,
 ) -> Result<Machine, LinuxError> {
     let path = directory.join("manifest.json");
     let actual = serde_json::from_slice::<Value>(&read_bounded(&path, MAX_MANIFEST_BYTES, false)?)
@@ -282,6 +311,10 @@ fn boot(
         initramfs: &initramfs,
         fdt: &fdt,
     };
+    let load_started = images_started.map(|started| {
+        bench_phase("images", started);
+        Instant::now()
+    });
     if let Some(path) = replacement {
         let locked_initramfs_len = usize::try_from(locked_initramfs_len)
             .map_err(|_| LinuxError::ImageLock("invalid initramfs length".into()))?;
@@ -292,10 +325,14 @@ fn boot(
             },
         );
     }
-    Ok(match disk {
+    let machine = match disk {
         Some(disk) => Machine::boot_with_isa_and_disk(images, isa, disk)?,
         None => Machine::boot_with_isa(images, isa)?,
-    })
+    };
+    if let Some(started) = load_started {
+        bench_phase("load", started);
+    }
+    Ok(machine)
 }
 
 fn hex_address(text: &str) -> Option<u64> {
@@ -594,6 +631,10 @@ impl Session {
         let mut pending: Range<usize> = 0..0;
         let mut input_end = None;
         let mut idle = false;
+        let mut benchmark = ALPINE_BENCH.then(|| BenchPrompt {
+            started: Instant::now(),
+            matched: 0,
+        });
         loop {
             if terminated
                 .as_ref()
@@ -635,7 +676,7 @@ impl Session {
             let progress = self.machine.run(fuel);
             self.spent = self.spent.saturating_add(u64::from(progress.spent));
             let output = self
-                .drain(&mut stdout)
+                .drain(&mut stdout, &mut benchmark, progress)
                 .map_err(|source| LinuxError::HostIo {
                     operation: "writing serial stdout",
                     source,
@@ -671,7 +712,12 @@ impl Session {
         }
     }
 
-    fn drain(&mut self, stdout: &mut impl Write) -> io::Result<bool> {
+    fn drain(
+        &mut self,
+        stdout: &mut impl Write,
+        benchmark: &mut Option<BenchPrompt>,
+        progress: Progress,
+    ) -> io::Result<bool> {
         let mut output = [0; IO_BYTES];
         let mut wrote = false;
         loop {
@@ -680,6 +726,18 @@ impl Session {
                 break;
             }
             let bytes = &output[..count];
+            if ALPINE_BENCH
+                && let Some(prompt) = benchmark
+                && prompt.observe(bytes)
+            {
+                let ms = prompt.started.elapsed().as_secs_f64() * 1000.0;
+                let cpu = self.machine.debug_state();
+                eprintln!(
+                    r#"linux-bench: {{"phase":"prompt","ms":{ms},"batch_spent":{},"batch_retired":{},"spent":{},"retired":{},"time":{}}}"#,
+                    progress.spent, progress.retired, self.spent, cpu.retired, progress.time
+                );
+                *benchmark = None;
+            }
             self.tail.append(bytes);
             stdout.write_all(bytes)?;
             wrote = true;
@@ -709,13 +767,19 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
         );
         return Ok(());
     };
+    let images_started = ALPINE_BENCH.then(Instant::now);
     let disk = options
         .disk
         .as_ref()
         .map(|(input, output)| load_disk(input, output))
         .transpose()?;
     let mut session = Session {
-        machine: boot(&options.images, options.initramfs.as_deref(), disk)?,
+        machine: boot(
+            &options.images,
+            options.initramfs.as_deref(),
+            disk,
+            images_started,
+        )?,
         spent: 0,
         tail: SerialTail::new(),
     };

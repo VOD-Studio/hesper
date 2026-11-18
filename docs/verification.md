@@ -1892,3 +1892,76 @@ CLI 只读复导出的哈希与网页下载一致。验收也覆盖继续后再�
 `bun run check` 和 `bun run build` 通过。
 本地双向交换报告在
 `.cache/riscv-linux/repro-c/logs-alpine-blk/hesper-blk-browser.json`。
+
+## RISC-V Linux 官方 Alpine 冷启动基准
+
+在 Linux 宿主准备 `images-alpine-lts` 和 `images-alpine-lts-blk`，然后运行：
+
+```sh
+CHROME_BIN=chromium make riscv-linux-alpine-bench
+```
+
+若镜像在另一处，用 `RISCV_LINUX_CACHE` 指向包含以上两个目录的缓存。
+脚本校验锁定镜像，生成一份 8 MiB ext2 种子，每轮从空白客体 RAM 启动。
+每种组合先预热一次，再串行测三次，并按轮交错无盘和带盘。各轮都保留
+输入、原始串口、日志及 JSON，报告写入 `.cache/riscv-linux/alpine-bench-*/`。
+CLI 从创建进程计时，到 PTY 收齐 `hesper# `。Chromium 在文件已选好的
+状态下，从实际点击启动计时，到 xterm 行显示完整提示符。脚本随后核对
+独立的 `HESPER_BENCH:42` 行和第二次提示符。
+
+跑过普通构建后，可用独立构建记录镜像读入与校验、机器装载及执行到提示符的耗时。两端还报告
+提示符批次的推进量、累计退休数及虚拟时间，Chromium 同时报告 Worker
+发出提示符到 xterm 渲染的间隔。
+
+```sh
+HESPER_ALPINE_BENCH=1 CARGO_PROFILE_RELEASE_DEBUG=1 \
+  cargo build --locked --release -p hesper --target-dir .cache/riscv-linux/bench-native
+(cd examples/web && bun run build --mode alpine-bench \
+  --outDir ../../.cache/riscv-linux/bench-web)
+CHROME_BIN=chromium python3 tools/riscv-linux/alpine_bench.py \
+  .cache/riscv-linux/bench-native/release/hesper .cache/riscv-linux/bench-web \
+  --diagnostic --samples 1 --seed "$ALPINE_BENCH_SEED"
+```
+
+比较两个普通 release 构建时，将各版 CLI 和生产站点拷贝到独立目录，
+复用报告中的种子。两版在同一轮内交替执行，报告逐次耗时及中位数差值。
+
+```sh
+CHROME_BIN=chromium python3 tools/riscv-linux/alpine_bench.py \
+  "$BASELINE_CLI" "$BASELINE_DIST" --revision "$BASELINE_REV" \
+  --candidate "$CANDIDATE_CLI" "$CANDIDATE_DIST" --candidate-revision "$CANDIDATE_REV" \
+  --seed "$ALPINE_BENCH_SEED"
+```
+
+### 普通 release 基线
+
+原生 CLI 和生产站点均从 `be4424c` 构建。本机为 AMD Ryzen 7 5800，
+Arch Linux x86-64，Rust 1.100.0，Chromium 155.0.8059.84。
+16 次启动均通过交互检查。下表以秒计，列出三次正式样本。
+
+| 宿主 | 镜像 | 首次 | 第二次 | 第三次 | 中位数 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CLI | 无盘 | 69.50 | 69.63 | 69.90 | 69.63 |
+| CLI | 带盘 | 95.16 | 94.50 | 94.53 | 94.53 |
+| Chromium | 无盘 | 103.82 | 94.29 | 96.47 | 96.47 |
+| Chromium | 带盘 | 129.61 | 126.76 | 128.81 | 128.81 |
+
+无盘 Chromium 的首个样本期间同一宿主编译了诊断构建。原始样本保留在
+`.cache/riscv-linux/alpine-bench-fvljix9r/report.json`，报告中记录镜像、构建和种子
+SHA-256。所用种子为 `.cache/riscv-linux/alpine-bench-pvofb4ic/seed.raw`。
+同一套工具也用空缓存做了失败检查，四轮均生成失败记录并以非零状态结束。
+
+### 分阶段测量
+
+| 宿主 | 镜像 | 读取校验（ms） | 装载（ms） | 到首提示的执行（s） | 累计退休 | 百万退休指令/s | Worker 到 xterm（ms） |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| CLI | 无盘 | 25.17 | 14.41 | 71.68 | 912,718,512 | 12.73 | — |
+| CLI | 带盘 | 28.85 | 14.36 | 96.40 | 1,253,764,843 | 13.01 | — |
+| Chromium | 无盘 | 33.10 | 20.70 | 93.83 | 912,767,639 | 9.73 | 4.80 |
+| Chromium | 带盘 | 40.10 | 23.20 | 128.34 | 1,253,813,963 | 9.77 | 7.60 |
+
+两端的带盘客体到首提示都多退休约 3.41 亿条指令（37.4%），每秒退休数
+略有上升。串口中带盘的 `/init` 后出现 virtio 块设备探测和容量报告，
+启用的数据盘镜像在进入串口 shell 前加载八个模块。表中的数据包含整段客体
+启动，设备实现的成本需要函数级测量。报告包含首提示批次的推进量及虚拟时间，
+见 `.cache/riscv-linux/alpine-bench-hnn7zx1i/report.json`。

@@ -38,6 +38,7 @@
 #   make riscv-linux-alpine-blk-data / riscv-linux-alpine-blk-reference  复建并验证官方 Alpine 数据盘配置
 #   make riscv-linux-fd-reference  对照 QEMU 与 Hesper 的浮点位签名
 #   make riscv-linux-alpine-native  原生管道、PTY、冷启动和镜像拒绝验收
+#   make riscv-linux-alpine-bench   同一宿主的官方 Alpine 冷启动基准（手动执行）
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -229,6 +230,13 @@ riscv-linux-initramfs-browser:
 riscv-linux-alpine-browser:
 	cd examples/web && bun run build
 	python3 tools/riscv-linux/browser_alpine.py
+
+.PHONY: riscv-linux-alpine-bench
+riscv-linux-alpine-bench:
+	cargo build --locked --release -p hesper
+	cd examples/web && bun run build
+	python3 tools/riscv-linux/alpine_bench.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper" \
+		examples/web/dist
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

@@ -15,6 +15,8 @@ const SERIAL_BATCH = 4096;
 const INPUT_CAPACITY = 256 * 1024;
 const REPORT_INTERVAL_MS = 250;
 const GUEST_MEMORY_MIB = 128;
+const ALPINE_BENCH = import.meta.env.MODE === "alpine-bench";
+const BENCH_PROMPT = "\nhesper# ";
 
 const pins = new Map(imageLock.images.map((pin) => [pin.path, pin]));
 const diskPins = new Map(diskImageLock.images.map((pin) => [pin.path, pin]));
@@ -41,6 +43,7 @@ type Session = {
   fuel: bigint;
   batchPending: boolean;
   nextReport: number;
+  benchmark?: { started: number; matched: number };
 };
 
 function post(reply: LinuxReply) {
@@ -128,7 +131,7 @@ function alpineImagePins(files: File[]) {
   return kernel && kernel.size === alpineLegacyPins.get("Image")?.bytes ? alpineLegacyPins : alpinePins;
 }
 
-async function loadMachine({ profile, files, initramfs, disk }: BootCommand, signal: AbortSignal) {
+async function loadMachine({ sessionId, profile, files, initramfs, disk }: BootCommand, signal: AbortSignal) {
   if (profile !== "standard" && profile !== "alpine") {
     throw new Error("Unknown Linux boot profile.");
   }
@@ -155,6 +158,7 @@ async function loadMachine({ profile, files, initramfs, disk }: BootCommand, sig
   if (!subtle) throw new Error("SHA-256 verification requires a secure browser context (HTTPS or localhost).");
   await initializeWasm(signal);
   signal.throwIfAborted();
+  const imagesStarted = ALPINE_BENCH ? performance.now() : 0;
 
   // Read and hash one local file at a time, retaining just the verified bytes
   // required by the Wasm boot call. The main thread only holds File handles.
@@ -172,6 +176,8 @@ async function loadMachine({ profile, files, initramfs, disk }: BootCommand, sig
   const diskBytes = disk ? await readLocal(disk, "data disk", signal) : undefined;
   signal.throwIfAborted();
   const firmwareEnd = BigInt(firmware.end);
+  if (ALPINE_BENCH) benchmarkPhase(sessionId, "images", imagesStarted);
+  const loadStarted = ALPINE_BENCH ? performance.now() : 0;
   try {
     if (profile === "alpine") {
       if (diskBytes) {
@@ -193,6 +199,34 @@ async function loadMachine({ profile, files, initramfs, disk }: BootCommand, sig
       throw new InvalidInitramfs(error.message);
     }
     throw new Error(`Cannot initialize the Linux guest (${GUEST_MEMORY_MIB} MiB guest RAM plus Wasm and image memory required): ${detail(error)}`);
+  } finally {
+    if (ALPINE_BENCH) benchmarkPhase(sessionId, "load", loadStarted);
+  }
+}
+
+function benchmarkPhase(sessionId: number, phase: string, started: number) {
+  self.postMessage({ type: "benchmark", sessionId, phase, ms: performance.now() - started });
+}
+
+function benchmarkPrompt(session: Session, machine: RiscvLinux, bytes: Uint8Array, batchSpent: number) {
+  const benchmark = session.benchmark;
+  if (!benchmark) return;
+  for (const byte of bytes) {
+    if (byte === BENCH_PROMPT.charCodeAt(benchmark.matched)) {
+      benchmark.matched++;
+      if (benchmark.matched === BENCH_PROMPT.length) {
+        const now = performance.now();
+        self.postMessage({
+          type: "benchmark", phase: "prompt", sessionId: session.id,
+          ms: now - benchmark.started, posted: performance.timeOrigin + now,
+          spent: session.fuel, retired: machine.retired, time: machine.time, batch_spent: batchSpent,
+        });
+        session.benchmark = undefined;
+        return;
+      }
+    } else {
+      benchmark.matched = Number(byte === BENCH_PROMPT.charCodeAt(0));
+    }
   }
 }
 
@@ -263,6 +297,7 @@ async function boot(session: Session, command: BootCommand) {
       return;
     }
     session.machine = machine;
+    if (ALPINE_BENCH) session.benchmark = { started: performance.now(), matched: 0 };
     post({ type: "ready", sessionId: session.id });
     setState(session, session.pauseRequested ? "paused" : "running");
   } catch (error) {
@@ -308,7 +343,10 @@ tasks.port1.onmessage = ({ data: id }: MessageEvent<number>) => {
     session.fuel += BigInt(spent);
     const bytes = machine.receive(SERIAL_BATCH);
     const outputLength = bytes.length;
-    if (outputLength !== 0) post({ type: "stdout", sessionId: id, bytes });
+    if (outputLength !== 0) {
+      if (ALPINE_BENCH) benchmarkPrompt(session, machine, bytes, spent);
+      post({ type: "stdout", sessionId: id, bytes });
+    }
 
     if (machine.stalledTraps >= STALLED_TRAP_LIMIT) {
       throw new Error(`Guest stalled in a trap loop at PC 0x${machine.pc.toString(16)}.`);
