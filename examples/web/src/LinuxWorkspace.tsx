@@ -11,11 +11,13 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
 import { validDiskSize } from "./linux-disk";
+import { DEFAULT_INITRAMFS_NAME, validInitramfsSize } from "./linux-initramfs";
 import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
 import "@xterm/xterm/css/xterm.css";
 import "./LinuxWorkspace.css";
 
-const imageNames = ["fw_jump.bin", "Image", "initramfs.cpio", "board.dtb"];
+const baseImageNames = ["fw_jump.bin", "Image", "board.dtb"];
+const defaultImageNames = [...baseImageNames, DEFAULT_INITRAMFS_NAME];
 const inputChunkSize = 4096;
 const encoder = new TextEncoder();
 
@@ -107,11 +109,14 @@ function downloadDisk(bytes: Uint8Array<ArrayBuffer>) {
 
 export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   const [files, setFiles] = useState<File[]>([]);
+  const [initramfs, setInitramfs] = useState<File>();
+  const [initramfsError, setInitramfsError] = useState("");
   const [diskSelection, setDiskSelection] = useState<DiskSelection>("empty");
   const [status, setStatus] = useState<Status>({ state: "ended" });
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState("");
   const [hasTerminal, setHasTerminal] = useState(false);
+  const initramfsInput = useRef<HTMLInputElement>(null);
   const diskInput = useRef<HTMLInputElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const serial = useRef<Serial | null>(null);
@@ -134,6 +139,24 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   function updatePending(current: Session, action: Pending) {
     current.pending = action;
     setPending(action);
+  }
+
+  function selectInitramfs(input: HTMLInputElement) {
+    const file = input.files?.[0];
+    if (file && !validInitramfsSize(file.size)) {
+      input.value = "";
+      setInitramfs(undefined);
+      setInitramfsError("自定义 initramfs 必须非空，且不得超过 16 MiB。");
+    } else {
+      setInitramfs(file);
+      setInitramfsError("");
+    }
+  }
+
+  function clearInitramfs() {
+    if (initramfsInput.current) initramfsInput.current.value = "";
+    setInitramfs(undefined);
+    setInitramfsError("");
   }
 
   function selectDisk(input: HTMLInputElement) {
@@ -237,7 +260,8 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
           case "error":
             current.ready = false;
             terminal.options.disableStdin = true;
-            setError(data.message);
+            if (data.invalidInitramfs) setInitramfsError(data.message);
+            else setError(data.message);
             break;
         }
       };
@@ -249,7 +273,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       worker.onmessageerror = () => {
         if (session.current === current) fail("无法读取 Linux Worker 消息。");
       };
-      const command: LinuxCommand = { type: "boot", sessionId: id, files, disk };
+      const command: LinuxCommand = { type: "boot", sessionId: id, files, initramfs, disk };
       worker.postMessage(command);
     } catch (reason) {
       fail(reason instanceof Error ? reason.message : String(reason));
@@ -283,8 +307,13 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   const active = status.state !== "ended" && status.state !== "failed";
   const stopping = pending === "stopping";
   const advancing = status.state === "running" || status.state === "waiting";
-  const wrongCount = files.length !== 0 && files.length !== imageNames.length;
-  const canStart = files.length === imageNames.length && diskSelection !== "invalid";
+  const requiredImages = initramfs ? baseImageNames : defaultImageNames;
+  const selectedNames = new Set(files.map((file) => file.name));
+  const missingImages = requiredImages.filter((name) => !selectedNames.has(name));
+  const unexpectedImages = selectedNames.size !== files.length ||
+    files.some((file) => !defaultImageNames.includes(file.name));
+  const canStart = missingImages.length === 0 && !unexpectedImages &&
+    !initramfsError && diskSelection !== "invalid";
   const canExport = status.state === "paused" && pending === null && diskSelection === "selected";
 
   return (
@@ -364,40 +393,77 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
         <aside className="linux-details">
           <section aria-labelledby="linux-images-label">
             <h2 className="section-label" id="linux-images-label">
-              本地启动镜像
+              基础启动文件
             </h2>
             <p id="linux-files-help">
-              请一次选择锁定版本的四个文件。浏览器只在本地读取并校验，不会上传。
+              请一次选择此配置的锁定文件。浏览器只在本地读取并校验，不会上传。
             </p>
             <ul className="linux-images">
-              {imageNames.map((name) => (
+              {requiredImages.map((name) => (
                 <li key={name}>
                   <code>{name}</code>
                 </li>
               ))}
             </ul>
+            {initramfs && (
+              <p data-linux-ignored-initramfs>
+                如果同时选择了默认的 <code>{DEFAULT_INITRAMFS_NAME}</code>，本次启动不会读取它。
+              </p>
+            )}
             <input
               data-linux-files
               type="file"
               multiple
               aria-label="选择 Linux 启动镜像"
               aria-describedby="linux-files-help"
-              aria-invalid={wrongCount}
+              aria-invalid={unexpectedImages || (files.length > 0 && missingImages.length > 0)}
               disabled={active}
               onChange={(event) =>
                 setFiles(Array.from(event.currentTarget.files ?? []))
               }
             />
-            {wrongCount && (
-              <p role="alert">需要四个文件，已选 {files.length} 个。</p>
+            {unexpectedImages ? (
+              <p role="alert">选择中存在重复或未知的文件名。</p>
+            ) : files.length > 0 && missingImages.length > 0 && (
+              <p data-linux-files-error role="alert">缺少启动文件：{missingImages.join(", ")}。</p>
             )}
           </section>
-          <section className="linux-disk" aria-labelledby="linux-disk-label">
+          <section className="linux-local-input" aria-labelledby="linux-initramfs-label">
+            <h2 className="section-label" id="linux-initramfs-label">
+              自定义 initramfs（可选）
+            </h2>
+            <p id="linux-initramfs-help">
+              选择未压缩的 newc 归档（至多 16 MiB），从中运行客体的 /init。归档只在本地读取，不会上传；清除后恢复默认启动根。
+            </p>
+            <input
+              data-linux-initramfs
+              ref={initramfsInput}
+              type="file"
+              aria-label="选择自定义 initramfs"
+              aria-describedby="linux-initramfs-help"
+              aria-invalid={Boolean(initramfsError)}
+              disabled={active}
+              onChange={(event) => selectInitramfs(event.currentTarget)}
+            />
+            {initramfsError && (
+              <p data-linux-initramfs-error role="alert">{initramfsError}</p>
+            )}
+            <Button
+              data-linux-clear-initramfs
+              variant="outline"
+              size="sm"
+              disabled={active || (!initramfs && !initramfsError)}
+              onClick={clearInitramfs}
+            >
+              清除自定义 initramfs
+            </Button>
+          </section>
+          <section className="linux-local-input" aria-labelledby="linux-disk-label">
             <h2 className="section-label" id="linux-disk-label">
               本地数据盘（可选）
             </h2>
             <p id="linux-disk-help">
-              选用数据盘时需配套的四个块设备启动镜像。先在客体卸载数据盘，再暂停并导出。数据盘不会上传或覆盖原文件。
+              选用数据盘时，基础文件须来自块设备配置。先在客体卸载数据盘，再暂停并导出。数据盘不会上传或覆盖原文件。
             </p>
             <input
               data-linux-disk

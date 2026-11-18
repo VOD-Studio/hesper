@@ -1,12 +1,13 @@
 // Use real Chromium, production assets, native file selection and key events.
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 
 const [dist, images, logs, mode, ...input] = process.argv.slice(2);
 const diskGate = mode === "disk";
+const initramfsGate = mode === "initramfs";
 const [cliDisk, webDisk, oversized] = input;
 const [corrupt] = input;
 const lock = JSON.parse(readFileSync(new URL(diskGate ? "images-blk.lock.json" : "images.lock.json", import.meta.url), "utf8"));
@@ -15,17 +16,29 @@ const profile = mkdtempSync(join(tmpdir(), "hesper-riscv-chrome-"));
 const chrome = process.env.CHROME_BIN || "google-chrome";
 const tab = "/hesper/";
 const guestNames = new Set(lock.images.map(entry => entry.path));
+if (initramfsGate) for (const file of input.slice(1)) guestNames.add(basename(file));
+const guestRequests = [];
 let guestDownloadedBytes = 0;
+let firstLinuxWasm, releaseFirstLinuxWasm;
+// Hold only the first real Linux Wasm response so cancellation exercises an
+// outstanding production load, regardless of CPU speed or filesystem cache.
+const cancelledFetch = new Promise(done => { releaseFirstLinuxWasm = done; });
 const server = Bun.serve({
   hostname: "127.0.0.1", port: 0,
   async fetch(request) {
     const path = decodeURIComponent(new URL(request.url).pathname);
+    const guestPath = guestNames.has(basename(path));
+    if (guestPath || !["GET", "HEAD"].includes(request.method)) guestRequests.push(path);
     if (!path.startsWith(tab)) return new Response(null, { status: 404 });
     const file = resolve(root, path.slice(tab.length) || "index.html");
     if (!file.startsWith(root + sep)) return new Response(null, { status: 404 });
     const asset = Bun.file(file);
     if (!await asset.exists()) return new Response(null, { status: 404 });
-    if (guestNames.has(path.slice(path.lastIndexOf("/") + 1))) guestDownloadedBytes += asset.size;
+    if (guestPath) guestDownloadedBytes += asset.size;
+    if (initramfsGate && !firstLinuxWasm && /\/hesper_riscv_linux_bg-[^/]+\.wasm$/.test(path)) {
+      firstLinuxWasm = path;
+      await cancelledFetch;
+    }
     return new Response(asset);
   },
 });
@@ -85,7 +98,7 @@ try {
       dialogs.push(message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params.name === "observeHesper") {
       const event = JSON.parse(message.params.payload);
-      if (diskGate) workerEvents.push(event);
+      if (diskGate || initramfsGate) workerEvents.push(event);
       if (event.request) return;
       replies.push(event);
       if (event.sessionId !== streaming) return;
@@ -127,6 +140,15 @@ try {
       tick();
     })`, true);
     check(available, `page did not reach ${name}`);
+  }
+  async function waitFor(predicate, name) {
+    const started = performance.now();
+    while (performance.now() - started < 8000) {
+      const result = predicate();
+      if (result) return result;
+      await delay(12);
+    }
+    throw new Error(`Chrome did not report ${name}`);
   }
   const enabled = selector => `(() => {
     const control = document.querySelector(${JSON.stringify(selector)});
@@ -198,11 +220,12 @@ try {
         });
       }
       postMessage(message, ...transfer) {
-        if (${diskGate} && typeof message?.sessionId === 'number' && message.type !== 'input') {
+        if (${diskGate || initramfsGate} && typeof message?.sessionId === 'number' && message.type !== 'stdin') {
           this.#observedSessionId = message.sessionId;
+          const file = value => value instanceof File ? {name: value.name, size: value.size} : undefined;
           observeHesper(JSON.stringify({request: true, sessionId: message.sessionId, type: message.type,
-            files: Object.values(message).flat().filter(value => value instanceof File)
-              .map(file => ({name: file.name, size: file.size}))}));
+            files: Object.values(message).flat().filter(value => value instanceof File).map(file),
+            initramfs: file(message.initramfs), disk: file(message.disk)}));
         }
         return super.postMessage(message, ...transfer);
       }
@@ -230,7 +253,147 @@ try {
   await click("[data-linux-tab]");
   await until(visible("[data-linux-files]"), "lazy Linux workspace");
   if (diskGate) await runDiskGate();
+  else if (initramfsGate) await runInitramfsGate();
   else await runSerialGate();
+
+  async function runInitramfsGate() {
+    const [serialImages, fixture, disk, oversized, damagedBoard, malformed] = input;
+    const serialLock = JSON.parse(readFileSync(new URL("images.lock.json", import.meta.url), "utf8"));
+    const files = "[data-linux-files]", picker = "[data-linux-initramfs]", diskPicker = "[data-linux-disk]";
+    const start = "[data-linux-start]", stop = "[data-linux-stop]", clear = "[data-linux-clear-initramfs]";
+    const pickerError = "[data-linux-initramfs-error]";
+    const basenameIs = (selector, value) => `document.querySelector('${selector}').files[0]?.name === ${JSON.stringify(basename(value))}`;
+    const text = selector => `document.querySelector('${selector}')?.textContent.trim()`;
+    const nextId = () => 1 + (workerEvents.findLast(event => event.request && event.type === "boot")?.sessionId ?? 0);
+    const bootRequest = sessionId => waitFor(() => workerEvents.find(event =>
+      event.request && event.type === "boot" && event.sessionId === sessionId), `boot request for session ${sessionId}`);
+    const inactive = id => replies.every(reply => reply.sessionId !== id || !["ready", "stdout"].includes(reply.type));
+    const paths = (directory, profile, full = false) => profile.images
+      .filter(entry => full || entry.path !== "initramfs.cpio").map(entry => join(directory, entry.path));
+    const serialBase = paths(serialImages, serialLock);
+    const serialFull = paths(serialImages, serialLock, true);
+    const blkBase = paths(images, lock);
+    const expectedCustom = "ROOT_OK:custom-v1:42";
+    const negative = {}, phases = {};
+    const url = `http://127.0.0.1:${server.port}${tab}`;
+
+    async function chooseCustom(path) {
+      await setFiles(picker, [path]);
+      await until(`${basenameIs(picker, path)} && ${enabled(clear)} && !${visible(pickerError)}`, "local custom initramfs");
+    }
+
+    async function invalidLoad(name, selector, expected, disabled = false) {
+      const id = nextId();
+      await click(start);
+      await until(`${state("failed")} && ${visible(selector)}`, `${name} rejection before guest execution`);
+      const message = await evaluate(text(selector));
+      check(message.includes(expected) && inactive(id), `${name} did not fail before guest execution: ${message}`);
+      if (disabled) check(!await evaluate(enabled(start)), `${name} left Start enabled`);
+      negative[name] = message;
+    }
+
+    async function openPhase(phase, custom, dataDisk = false) {
+      const id = nextId();
+      const imageBytes = await evaluate(`Array.from(document.querySelector('${files}').files, file => file.size).reduce((a,b) => a+b, 0)`);
+      streaming = id;
+      // Mark the serial stream before clicking: Chromium can boot while CDP
+      // delivers the response to the click or the passive request observer.
+      emit({ type: "start", phase, browser: version.Browser, url, imageBytes });
+      await click(start);
+      const request = await bootRequest(id);
+      check(custom ? request.initramfs?.name === basename(fixture) && request.initramfs.size === statSync(fixture).size
+        : request.initramfs === undefined, `Worker did not boot with the intended archive for ${phase}`);
+      check(dataDisk ? request.disk?.name === basename(disk) && request.disk.size === statSync(disk).size
+        : request.disk === undefined, `Worker did not boot with the intended disk for ${phase}`);
+      phases[phase] = { id, imageBytes, custom: request.initramfs, disk: request.disk };
+    }
+
+    async function closePhase(phase, custom) {
+      const id = streaming;
+      if (custom) await until(`${tty()}.includes('${expectedCustom}')`, "rendered custom proof");
+      else {
+        await until(`${tty()}.includes('/bin/root-proof: not found')`, "rendered default root proof rejection");
+        check(!await evaluate(`${tty()}.includes('ROOT_OK:')`), "stale custom output in default terminal");
+      }
+      check(!await evaluate(`${enabled(files)} || ${enabled(picker)} || ${enabled(diskPicker)} || ${enabled(clear)}`),
+        "Linux boot inputs can be changed while the session is live");
+      const screenshot = await call("Page.captureScreenshot", { format: "png" });
+      const path = join(logs, `browser-${phase}.png`);
+      writeFileSync(path, Buffer.from(screenshot.data, "base64"));
+      await click(stop);
+      await until(state("ended"), `stopped ${phase}`);
+      const ended = await waitFor(() => replies.find(reply => reply.sessionId === id && reply.state === "ended"),
+        `Worker end state for ${phase}`);
+      Object.assign(phases[phase], { screenshot: path, exitState: ended.state, tick: ended.time, retired: ended.retired });
+      streaming = undefined;
+    }
+
+    await setFiles(files, serialBase);
+    await chooseCustom(fixture);
+    const cancelled = nextId();
+    await click(start);
+    const requested = await bootRequest(cancelled);
+    check(requested.initramfs?.size === statSync(fixture).size, "cancelled session did not select the reference fixture");
+    const pendingWasm = await waitFor(() => firstLinuxWasm, "outstanding production Wasm response");
+    check(await evaluate(state("loading")), "custom session A was not loading before cancellation");
+    await click(stop);
+    await until(state("ended"), "cancelled custom session A");
+    await waitFor(() => workerEvents.some(event => event.request && event.type === "terminate" && event.sessionId === cancelled),
+      "termination of loading Worker A");
+    releaseFirstLinuxWasm();
+    await click(clear);
+    await until(`document.querySelector('${picker}').files.length === 0 && !${enabled(start)} &&
+      ${text("[data-linux-files-error]")}?.includes('initramfs.cpio')`, "missing default cpio after clearing");
+    negative["missing-after-clear"] = await evaluate(text("[data-linux-files-error]"));
+
+    await setFiles(files, serialFull);
+    await until(enabled(start), "four default serial images for B");
+    let phase = "default-after-cancel";
+    await openPhase(phase, false);
+    for await (const line of createInterface({ input: process.stdin })) {
+      const request = JSON.parse(line);
+      if (request.type === "keys") {
+        await type(request.text);
+      } else if (request.type === "custom-serial" && phase === "default-after-cancel") {
+        await closePhase(phase, false);
+        check(inactive(cancelled), "cancelled session A emitted Ready or serial output during default B");
+        const next = nextId();
+        await setFiles(picker, [oversized]);
+        await until(`${text(pickerError)}?.includes('16 MiB') && !${enabled(start)}`, "local oversized custom archive rejected");
+        check(nextId() === next, "oversized selection started a Worker");
+        negative.oversized = await evaluate(text(pickerError));
+        await click(clear);
+        await until(enabled(start), "default Start restored after clearing invalid selection");
+
+        await chooseCustom(fixture);
+        await setFiles(files, serialBase.map(path => basename(path) === "board.dtb" ? damagedBoard : path));
+        await invalidLoad("damaged-dtb", "[data-linux-error]", "board.dtb: SHA-256");
+        await setFiles(files, serialBase);
+        await chooseCustom(malformed);
+        await invalidLoad("malformed-archive", pickerError, "malformed custom initramfs", true);
+        await chooseCustom(fixture);
+        phase = request.type;
+        await openPhase(phase, true);
+      } else if (request.type === "custom-blk" && phase === "custom-serial") {
+        await closePhase(phase, true);
+        await setFiles(diskPicker, [disk]);
+        await until(basenameIs(diskPicker, disk), "local ext2 data disk");
+        await invalidLoad("wrong-profile", "[data-linux-error]", "Image: expected");
+        // Even an unusable default cpio must be ignored in explicit replacement mode.
+        await setFiles(files, [...blkBase, malformed]);
+        await until(`${visible("[data-linux-ignored-initramfs]")} && ${enabled(start)}`, "four base files with unused default cpio");
+        phase = request.type;
+        await openPhase(phase, true, true);
+      } else if (request.type === "finish" && phase === "custom-blk") {
+        await closePhase(phase, true);
+        check(inactive(cancelled), "cancelled session A emitted Ready or serial output");
+        check(guestRequests.length === 0 && guestDownloadedBytes === 0, `guest resources requested over HTTP: ${guestRequests.join(", ")}`);
+        emit({ type: "done", phases, negative, cancelled: { id: cancelled, pendingWasm, noReadyOrOutput: true },
+          guestRequests: guestRequests.length, guestDownloadedBytes });
+        break;
+      } else throw new Error(`unexpected browser initramfs gate request ${request.type} during ${phase}`);
+    }
+  }
 
   async function runDiskGate() {
     const diskInput = "[data-linux-disk]";
@@ -246,16 +409,6 @@ try {
     const pausedSnapshots = [];
     let paused;
     let race;
-
-    async function waitFor(predicate, name) {
-      const started = performance.now();
-      while (performance.now() - started < 8000) {
-        const result = predicate();
-        if (result) return result;
-        await delay(12);
-      }
-      throw new Error(`Chrome did not report ${name}`);
-    }
 
     async function selectDisk(path) {
       await setFiles(diskInput, [path]);
@@ -485,6 +638,7 @@ try {
   process.exitCode = 1;
 } finally {
   process.stdin.destroy();
+  releaseFirstLinuxWasm();
   socket?.close();
   browserSocket?.close();
   await server.stop(true);

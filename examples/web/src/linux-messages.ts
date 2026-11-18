@@ -7,7 +7,7 @@ export type LinuxState =
   | "ended";
 
 export type LinuxCommand = { sessionId: number } & (
-  | { type: "boot"; files: File[]; disk?: File }
+  | { type: "boot"; files: File[]; initramfs?: File; disk?: File }
   | { type: "stdin"; bytes: Uint8Array }
   | { type: "pause" }
   | { type: "resume" }
@@ -22,5 +22,5 @@ export type LinuxReply = { sessionId: number } & (
   | { type: "disk"; bytes: Uint8Array<ArrayBuffer> }
   | { type: "discard-required" }
   | { type: "state"; state: LinuxState; time: bigint; retired: bigint }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; invalidInitramfs?: boolean }
 );

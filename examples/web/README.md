@@ -54,10 +54,20 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 已输入的字节在继续后投递；停止丢弃当前机器，再启动得到新的 RAM 和终端。
 启动期间可取消。只支持固定板，不提供网络、图形或机器存档。
 
+#### 可选自定义启动根
+
+在「自定义 initramfs（可选）」中选择未压缩的单个 `newc` 归档（含填充最多
+16 MiB）。此时「基础启动文件」只需要锁定的 `fw_jump.bin`、`Image`、`board.dtb`；
+即使选择了原来的四个文件，Worker 也不会读取默认归档。清除自定义选择后必须
+提供全部四个原版文件。不能在运行中换根。
+
+只运行可信的归档；客体 `/init` 及其依赖由制作者提供。可使用
+[`make riscv-linux-initramfs-reference` 生成的验收归档](../../docs/plan/riscv-linux-initramfs.md#u1--制作一份能辨别真假的测试根在参考机启动)。
+
 #### 可选数据盘
 
-在仓库根目录执行 `make riscv-linux-blk-data`，选择 `.cache/riscv-linux/images-blk`
-中配套的四个启动文件，再用单独的选择框加载 raw 盘。磁盘须为 512 字节的
+在仓库根目录执行 `make riscv-linux-blk-data`，从 `.cache/riscv-linux/images-blk`
+选择配套的启动文件，再用单独的选择框加载 raw 盘。磁盘须为 512 字节的
 正整数倍且不超过 16 MiB；可使用 [CLI 建立的 ext2 种子或导出盘](../../README.md#risc-v-linux-数据盘本机)。
 客体的根仍在 RAM；手动挂载 `/dev/vda` 到 `/mnt/data`，写入后 `sync` 并成功卸载。
 随后点「暂停」和「导出数据盘」，浏览器下载独立的 `hesper-data.raw`。不上传、
@@ -94,6 +104,10 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 `make riscv-linux-blk-browser` 对生产网页执行 CLI 写入 → 浏览器冷启动读回、
 浏览器写入 → 下载 → 新 CLI 进程读回；使用准备好的 `images-blk/` 产物，
 真 Chrome 串口、下载证据与各盘哈希见 `.cache/riscv-linux/logs-blk/`。
+
+`make riscv-linux-initramfs-browser` 用同一份 QEMU 验收归档验证生产网页的
+串口、数据盘和默认根恢复。准备原版 `serial` / `blk` 镜像；若块设备镜像在
+另一缓存中，通过 `RISCV_LINUX_BLK_IMAGES` 指定其 `images-blk` 目录。
 
 ### 2026-09-15 本轮 QA
 

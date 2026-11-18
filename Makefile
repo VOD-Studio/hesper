@@ -31,6 +31,7 @@
 #   make riscv-linux-blk-native  管道与 PTY 两次数据盘冷启动
 #   make riscv-linux-blk-browser  生产 Chrome 与 CLI 双向互换数据盘
 #   make riscv-linux-initramfs-reference  复建替换根并在固定 QEMU 验证
+#   make riscv-linux-initramfs-browser  生产 Chrome 的替换根、默认根与数据盘启动
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -169,6 +170,12 @@ riscv-linux-blk-browser:
 	cargo build --locked --release -p hesper
 	cd examples/web && bun run build
 	python3 tools/riscv-linux/browser_disk.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
+
+.PHONY: riscv-linux-initramfs-browser
+riscv-linux-initramfs-browser:
+	cd examples/web && bun run build
+	python3 tools/riscv-linux/browser_initramfs.py \
+		$(if $(RISCV_LINUX_BLK_IMAGES),--blk-images "$(RISCV_LINUX_BLK_IMAGES)")
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

@@ -1655,3 +1655,26 @@ Unable to mount root fs on unknown-block(0,0)`，耗尽 450000000 fuel 退出，
 没有请求保存或生成目标盘。门限为启动 90 秒、每条命令 20 秒 / 256 KiB。
 报告、原始串口和盘在 `.cache/riscv-linux/repro-c/logs-initramfs/native-5g4_q6j2/`。
 原有 `make riscv-linux-native` 和 `make riscv-linux-blk-native` 仍通过。
+
+## RISC-V Linux U4：生产网页启动同一替换根
+
+Arch Linux x86-64，Chromium 155.0.8059.84、Bun 1.4.4、Node.js 26.13.1。
+`CHROME_BIN=chromium make riscv-linux-initramfs-browser` 使用上节同一套锁和
+886904 字节的 U1 归档。生产页面实际选择文件并用键盘输入。`serial` 与
+`blk` 的替换启动分别在 34.69 / 39.56 秒到首提示，均执行 `root-proof`
+读回 `ROOT_OK:custom-v1:42`、`ROOT_OK:custom-v1:15` 与 `6.12.0-hesper`。
+读回客体树尾址 `0x840d8878`，与预期一致；`blk` 只读挂载并执行盘中脚本，
+得到 `BROWSER_DATA_OK:42` 和 `DISK_UNMOUNTED`，输入盘 SHA-256 不变。
+页面选择的无效默认 cpio 不影响显式替换。客体文件的 HTTP 请求与传输均为 0。
+
+取消等待 Wasm 的旧会话时未收到其 `ready` 或串口输出；随后默认根用
+39.96 秒到首提示，读回原尾址 `0x840e3c00`，同一路径报告 `not found`。
+清除后缺默认包、超限、DTB 损坏、坏归档及配置混用均不能启动。
+三个成功会话通过停止控件结束；启动门限 180 秒、每命令 20 秒 / 256 KiB。
+报告见 `.cache/riscv-linux/repro-c/initramfs/hesper-initramfs-browser.json`，
+原始串口、输入和截图在同级 `browser-oe3w79g8/`。
+
+`make wasm-browser-test` 的 Bun、Node.js 和 Chromium 各 12 项通过，
+包括伪装长度的 `Uint8Array`；`bun run check`、`bun run build`、原有
+`make riscv-linux-browser` 和 `make riscv-linux-blk-browser` 均通过。
+以上为本地证据；没有远程 CI、Release 或 Pages 部署结论。

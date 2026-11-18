@@ -83,8 +83,8 @@
   color: var(--destructive);
 }
 
-.linux-disk input,
-.linux-disk button {
+.linux-local-input input,
+.linux-local-input button {
   margin-top: 6px;
 }
 

@@ -3,6 +3,7 @@ import diskImageLock from "../../../tools/riscv-linux/images-blk.lock.json";
 import { initSync, RiscvLinux } from "./generated/riscv-linux/hesper_riscv_linux";
 import wasmUrl from "./generated/riscv-linux/hesper_riscv_linux_bg.wasm?url";
 import { validDiskSize } from "./linux-disk";
+import { DEFAULT_INITRAMFS_NAME, validInitramfsSize } from "./linux-initramfs";
 import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
 
 const FUEL_LIMIT = 450_000_000;
@@ -22,6 +23,7 @@ let active: Session | undefined;
 
 type ImagePin = (typeof imageLock.images)[number];
 type SelectedImages = Map<string, { file: File; pin: ImagePin }>;
+type BootCommand = Extract<LinuxCommand, { type: "boot" }>;
 type InputQueue = { bytes: Uint8Array; start: number; length: number };
 type Session = {
   id: number;
@@ -49,19 +51,23 @@ function detail(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function selectFiles(files: File[], pins: ReadonlyMap<string, ImagePin>) {
+class InvalidInitramfs extends Error {}
+
+function selectFiles(files: File[], pins: ReadonlyMap<string, ImagePin>, custom: boolean) {
   const selected: SelectedImages = new Map();
   for (const file of files) {
     const pin = pins.get(file.name);
     if (!pin) throw new Error(`Unexpected Linux image: ${file.name}.`);
     if (selected.has(file.name)) throw new Error(`Duplicate Linux image: ${file.name}.`);
-    if (file.size !== pin.bytes) {
+    if (!(custom && file.name === DEFAULT_INITRAMFS_NAME) && file.size !== pin.bytes) {
       throw new Error(`${file.name}: expected ${pin.bytes} bytes, got ${file.size}.`);
     }
     selected.set(file.name, { file, pin });
   }
   for (const name of pins.keys()) {
-    if (!selected.has(name)) throw new Error(`Missing Linux image: ${name}.`);
+    if (!(custom && name === DEFAULT_INITRAMFS_NAME) && !selected.has(name)) {
+      throw new Error(`Missing Linux image: ${name}.`);
+    }
   }
   return selected;
 }
@@ -110,39 +116,65 @@ async function initializeWasm(signal: AbortSignal) {
   }
 }
 
-async function loadMachine(files: File[], disk: File | undefined, signal: AbortSignal) {
+async function loadMachine({ files, initramfs, disk }: BootCommand, signal: AbortSignal) {
+  if (initramfs && !validInitramfsSize(initramfs.size)) {
+    throw new InvalidInitramfs("A custom initramfs must be non-empty and no larger than 16 MiB.");
+  }
   if (disk && !validDiskSize(disk.size)) {
     throw new Error("A data disk must be a positive multiple of 512 bytes and no larger than 16 MiB.");
   }
-  const selected = selectFiles(files, disk ? diskPins : pins);
+  const profile = disk ? diskPins : pins;
+  const selected = selectFiles(files, profile, initramfs !== undefined);
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("SHA-256 verification requires a secure browser context (HTTPS or localhost).");
   await initializeWasm(signal);
+  signal.throwIfAborted();
 
   // Read and hash one local file at a time, retaining just the verified bytes
   // required by the Wasm boot call. The main thread only holds File handles.
   const firmware = await verifiedImage("fw_jump.bin", selected, subtle, signal);
-  const kernel = await verifiedImage("Image", selected, subtle, signal);
-  const initramfs = await verifiedImage("initramfs.cpio", selected, subtle, signal);
-  const fdt = await verifiedImage("board.dtb", selected, subtle, signal);
-  let diskBytes: Uint8Array<ArrayBuffer> | undefined;
-  if (disk) {
-    signal.throwIfAborted();
-    try {
-      diskBytes = new Uint8Array(await disk.arrayBuffer());
-    } catch (error) {
-      throw new Error(`Cannot read data disk ${disk.name}: ${detail(error)}`);
-    }
-  }
   signal.throwIfAborted();
+  const kernel = await verifiedImage("Image", selected, subtle, signal);
+  signal.throwIfAborted();
+  const fdt = await verifiedImage("board.dtb", selected, subtle, signal);
+  signal.throwIfAborted();
+  // Never read or hash the pinned cpio when a replacement was selected.
+  const initrd = initramfs
+    ? await readLocal(initramfs, "custom initramfs", signal)
+    : (await verifiedImage(DEFAULT_INITRAMFS_NAME, selected, subtle, signal)).bytes;
+  signal.throwIfAborted();
+  const diskBytes = disk ? await readLocal(disk, "data disk", signal) : undefined;
+  signal.throwIfAborted();
+  const firmwareEnd = BigInt(firmware.end);
   try {
-    if (diskBytes) {
-      return RiscvLinux.bootWithDisk(firmware.bytes, BigInt(firmware.end), kernel.bytes, initramfs.bytes, fdt.bytes, diskBytes);
+    if (initramfs) {
+      const locked = profile.get(DEFAULT_INITRAMFS_NAME);
+      if (!locked) throw new Error("Linux profile lacks a pinned initramfs length.");
+      return RiscvLinux.bootWithInitramfs(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes, locked.bytes, diskBytes);
     }
-    return RiscvLinux.boot(firmware.bytes, BigInt(firmware.end), kernel.bytes, initramfs.bytes, fdt.bytes);
+    if (diskBytes) {
+      return RiscvLinux.bootWithDisk(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes, diskBytes);
+    }
+    return RiscvLinux.boot(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes);
   } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "InvalidInitramfs") {
+      throw new InvalidInitramfs(error.message);
+    }
     throw new Error(`Cannot initialize the Linux guest (${GUEST_MEMORY_MIB} MiB guest RAM plus Wasm and image memory required): ${detail(error)}`);
   }
+}
+
+async function readLocal(file: File, kind: string, signal: AbortSignal) {
+  signal.throwIfAborted();
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch (error) {
+    const message = `Cannot read ${kind} ${file.name}: ${detail(error)}`;
+    throw kind === "custom initramfs" ? new InvalidInitramfs(message) : new Error(message);
+  }
+  signal.throwIfAborted();
+  return new Uint8Array(buffer);
 }
 
 function report(session: Session) {
@@ -163,7 +195,7 @@ function setState(session: Session, state: LinuxState) {
   if (state === "running") schedule(session);
 }
 
-function finish(session: Session, reason?: string) {
+function finish(session: Session, reason?: string, invalidInitramfs = false) {
   if (active !== session) return;
   active = undefined;
   session.abort.abort();
@@ -186,14 +218,14 @@ function finish(session: Session, reason?: string) {
     }
   }
   const sessionId = session.id;
-  if (reason !== undefined) post({ type: "error", sessionId, message: reason });
+  if (reason !== undefined) post({ type: "error", sessionId, message: reason, invalidInitramfs });
   post({ type: "state", sessionId, state: reason === undefined ? "ended" : "failed", time, retired });
 }
 
-async function boot(session: Session, files: File[], disk?: File) {
+async function boot(session: Session, command: BootCommand) {
   try {
-    const machine = await loadMachine(files, disk, session.abort.signal);
-    if (active !== session) {
+    const machine = await loadMachine(command, session.abort.signal);
+    if (session.abort.signal.aborted || active !== session) {
       machine.free();
       return;
     }
@@ -201,7 +233,7 @@ async function boot(session: Session, files: File[], disk?: File) {
     post({ type: "ready", sessionId: session.id });
     setState(session, session.pauseRequested ? "paused" : "running");
   } catch (error) {
-    finish(session, detail(error));
+    finish(session, detail(error), error instanceof InvalidInitramfs);
   }
 }
 
@@ -283,7 +315,7 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
     };
     active = session;
     report(session);
-    void boot(session, command.files, command.disk);
+    void boot(session, command);
     return;
   }
 

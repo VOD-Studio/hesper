@@ -142,6 +142,15 @@ SHA-256；绑定不下载、不分发客体镜像。实例不持有输入数组�
 `diskFault` 为需要设备复位的协议错误文本（正常时为 `undefined`）。
 这些接口不处理 ext2，也不保证宿主已保存导出的数据。
 
+### 自定义启动根
+
+`RiscvLinux.bootWithInitramfs(firmware, firmwareEnd, kernel, initramfs, fdt, lockedInitramfsLen, disk?)`
+只替换归档。调用方从相应的 `serial` 或 `blk` 锁核对固件、内核和**原始**
+DTB，从同一锁读取原版归档的字节数 `lockedInitramfsLen`（`number`）；不传
+原版归档。装载器只修改客体 RAM 中的 initrd 尾址。自定义归档须为单个未压缩的
+`newc`（含填充不超过 16 MiB）；格式无效报 `InvalidBootImage`。可选的 `disk`
+与 `bootWithDisk` 参数含义相同，不用于装载启动根。
+
 ## 类型、错误与生命周期
 
 - 6502/Apple I 的地址和字节，以及各绑定的单次预算是 `number`。绑定先验证有限、整数与范围；RISC-V 的地址使用 `bigint`，不截断到 Wasm32。

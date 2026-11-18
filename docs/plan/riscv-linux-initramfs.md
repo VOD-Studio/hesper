@@ -1,6 +1,6 @@
-# RISC-V Linux 下一步：在固定内核上启动自己的 `/init`
+# RISC-V Linux：在固定内核上启动自己的 `/init`
 
-**状态：U1–U3 已在本地验收；CLI 可更换启动根，U4 浏览器门禁尚未全部完成。** [固定板启动](riscv-linux.md)和[数据盘 D1–D5](riscv-linux-data-disk.md)已在本地验收。这一轮只换启动链的最后一件东西：用户提供 `initramfs.cpio`，不用重编 Hesper、OpenSBI 或内核，就能在串口运行自己的程序。
+**状态：U1–U4 已在本地验收。** 原生 CLI 和浏览器可在[固定板](riscv-linux.md)上替换 RAM 启动根，也可同时使用独立的[数据盘](riscv-linux-data-disk.md)。不用重编 Hesper、OpenSBI 或内核。见[验证记录](../verification.md#risc-v-linux-u1固定-qemu-启动替换根)。
 
 不先加 hart：多核既不能改变镜像锁，也不能让现有 RV64IMAC 核心执行发行版常见的 `lp64d` 程序。这一轮不开放任意内核、DTB、bootargs、压缩归档、分区系统盘、UEFI 或网络；不发布镜像，不部署 Pages。
 
@@ -22,7 +22,7 @@ hesper linux --images .cache/riscv-linux/images-blk --initramfs ./my-root.cpio \
 
 原生 `manifest.json` 在两种模式都必须与内置锁的 JSON 值一致；不接受用户修改清单里的第四项来“批准”自制镜像。网页继续使用内置锁，不额外索要 manifest。用户选择的归档是**待执行的客体代码**：算出 SHA-256 可用于重放，不等于项目认证。替换模式失败直接报错，不回退至默认包。反过来，默认模式也不能因哈希不对而猜测用户想换包。
 
-**首版格式。** 接受单个未压缩 `newc`（`070701`）归档，允许 `TRAILER!!!` 后有全零填充。不接受 gzip、`070702`、串接多个归档或 raw/ext2。建议将替换包的产品上限定为 **16 MiB（含填充）**：避免在浏览器为用户选择的大文件分配过多内存；这是本轮的取舍，与数据盘上限分别维护。物理窗口其实是 `[0x84000000, 0x87800000)`，共 56 MiB；两种边界不可互相替代。保证能装载不等于保证能运行：受支持的验收样例用小端 RV64IMAC、`lp64` 软浮点静态程序；脚本的解释器、可执行的 `/init` 及所需设备节点由制作者放进归档。宿主不递归检查每个 ELF，也不替用户补 `/bin/sh`。
+**格式。** 接受单个未压缩 `newc`（`070701`）归档，允许 `TRAILER!!!` 后有全零填充。不接受 gzip、`070702`、串接多个归档或 raw/ext2。替换包上限为 **16 MiB（含填充）**，独立于数据盘上限和 `[0x84000000, 0x87800000)` 的 56 MiB 物理窗口。可装载不等于可执行：验收样例为小端 RV64IMAC、`lp64` 软浮点静态程序；脚本解释器、可执行的 `/init` 和所需设备节点由制作者放进归档。宿主不递归检查 ELF，也不替用户补 `/bin/sh`。
 
 ## U1 · 制作一份能辨别真假的测试根，在参考机启动
 
@@ -30,7 +30,7 @@ hesper linux --images .cache/riscv-linux/images-blk --initramfs ./my-root.cpio \
 2. 新 `/init` 挂载 devtmpfs、proc、sysfs，导出仅它会设置的 `HESPER_ROOT_ID=custom-v1`，从 `/dev/console` 进入交互 shell，保留 `hesper# ` 供现有等待器使用。用同一工具链生成静态 `/bin/root-proof`：接收两个整数，读取该环境变量，打印标识和乘积；缺标识不能返回成功。`readelf -h -A -lW` 核对 ELF64/RISC-V、软浮点、ISA 与无 `INTERP`。归档含可执行的两文件和字符设备 `/dev/console`（5:1）。使归档**长度与默认值不同**，才能检出沿用旧设备树的问题。独立生成两回比对哈希。
 3. 复用 [QEMU 参考脚本](../../tools/riscv-linux/reference.py)的单 hart、128 MiB、固定 CPU、固定地址 raw loader。用构建工具在临时目录按新包实际长度生成参考 DTB，**不用 Hesper 待测的 DTB 修改逻辑**。QMP 取 OpenSBI 交接后的树，核对 initrd 起止、原 bootargs 和固件 `no-map` 保留区。这里的 manifest 仍记录基础锁；新归档长度、指纹和派生树另记，不伪造一份能通过原锁的目录。
 
-**退出证据：**等待完整提示，输入 `/bin/root-proof 6 7`，要求独立结果行 `ROOT_OK:custom-v1:42` 和下一次提示；再以不同参数得到不同乘积。串口输入不含期望结果。`uname -r` 仍是 `6.12.0-hesper`；对照用默认根运行同一路径不能成功。后续 CLI 与浏览器使用这份 cpio 的**同一 SHA-256**，不各造一份。建议新增 `make riscv-linux-initramfs-reference`；这一关只证明客体与参考板相容。
+**退出证据：**等待完整提示，输入 `/bin/root-proof 6 7`，要求独立结果行 `ROOT_OK:custom-v1:42` 和下一次提示；再以不同参数得到不同乘积。串口输入不含期望结果。`uname -r` 仍是 `6.12.0-hesper`；对照用默认根运行同一路径不能成功。CLI 与浏览器使用这份 cpio 的**同一 SHA-256**，不各造一份。这一关只证明客体与参考板相容。
 
 准备好 `make riscv-linux-data` 和 `make riscv-linux-qemu` 的产物后，运行
 `make riscv-linux-initramfs-reference`。可沿用[构建容器](riscv-linux.md)和
@@ -58,15 +58,13 @@ hesper linux --images .cache/riscv-linux/images-blk --initramfs ./my-root.cpio \
 - `blk` 也走一次组合验收：新根内运行 `root-proof`，挂载 `/dev/vda` 写脚本，成功 `sync`、卸载、Ctrl+] 导出；第二个进程用默认 `blk` 根挂载输出盘并执行脚本。由此区分“换启动根”和“保存数据”；输入种子哈希不变。
 - 分别损坏基础 DTB 一字节、混用 `serial` 内核和 `blk` 清单、给坏归档。这三种情况都应在执行固件前失败。另做一份结构合法但没有 `/init`、备用 init 或 shell 的最小包：预期固件和内核已执行，串口留下内核启动失败的诊断，不能误判为宿主哈希错误。驱动在预算内结束，不请求保存，目标盘不存在。原有 `make riscv-linux-native` 与 `make riscv-linux-blk-native` 仍按原锁通过。
 
-**到此可声明：CLI 在固定内核上能更换用户空间。** 在 U4 通过之前，不把这一结论写成浏览器支持。
-
 ## U4 · 浏览器选择同一份 cpio，运行同一个程序
 
-[Linux 工作区](../../examples/web/src/LinuxWorkspace.tsx)将「基础启动文件」「自定义 initramfs（可选）」「可写数据盘（可选）」分开。默认仍需要四个原版文件；显式替换时只需要固件、内核、DTB。允许继续选择原来的四文件集合，但标明默认 cpio **不参与此次启动**，不要再读入它。用户清除替换选择后恢复四文件要求；无效选择要显示错误并禁止启动，不能静默退回默认。运行中不热换根。
+[Linux 工作区](../../examples/web/src/LinuxWorkspace.tsx)将「基础启动文件」「自定义 initramfs（可选）」「本地数据盘（可选）」分开。默认仍需要四个原版文件；显式替换时只需要固件、内核、DTB。也可继续选原来的四个，但默认 cpio **不参与此次启动**，Worker 不会读它。清除替换后恢复四文件要求；无效选择会报错，不回退默认根。运行中不热换根。
 
 沿[消息协议](../../examples/web/src/linux-messages.ts)给启动消息加可选 `File`，沿用 `sessionId`。由 [Worker](../../examples/web/src/linux.worker.ts)先判 `File.size`、再读本地字节并校验基础文件；在异步读、哈希和加载后处理取消，不让旧会话覆盖新会话。归档不上传，不放入 React 大缓冲。[Wasm 绑定](../../crates/riscv-linux-wasm/src/lib.rs)在分配或复制前核对长度，调用 U2 的同一路径，同时保留直接调用默认绑定时的严格行为。
 
-**网页验收（拟新增 `make riscv-linux-initramfs-browser`）：**生产构建、真实 Chromium 文件选择与键盘输入，以 U1 的包跑同一串口命令；`blk` 组合至少验证新程序和挂载读回。取消加载 A 并启动默认 B，B 不出现 A 的串口结果；清除替换后缺默认包、选择超限文件、基础文件损坏均不能启动。检查客体文件 HTTP 传输为零。另跑 `make wasm-browser-test`、`examples/web` 下 `bun run check` 和 `bun run build`，以及原有 `make riscv-linux-browser`、`make riscv-linux-blk-browser`。Node 结果或网页显示「已加载」都不能替代实际客体输出。
+**网页验收（`make riscv-linux-initramfs-browser`）：**生产构建、真实 Chromium 文件选择与键盘输入，以 U1 的包跑同一串口命令；`blk` 组合验证新程序和挂载读回。取消加载 A 并启动默认 B，B 不出现 A 的串口结果；清除替换后缺默认包、选择超限文件、基础文件损坏均不能启动。客体文件 HTTP 传输为零。另跑 `make wasm-browser-test`、`examples/web` 下 `bun run check` 和 `bun run build`，以及原有 `make riscv-linux-browser`、`make riscv-linux-blk-browser`。见[实测记录](../verification.md#risc-v-linux-u4生产网页启动同一替换根)。
 
 ## 证据、停线与后续决策
 

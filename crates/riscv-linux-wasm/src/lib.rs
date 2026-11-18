@@ -3,7 +3,7 @@
 use core::mem::MaybeUninit;
 use hesper_riscv_linux::{
     BootError, BootImages, DRAM_BASE, DRAM_SIZE, DataDisk, FDT_ADDRESS, INITRAMFS_ADDRESS,
-    KERNEL_ADDRESS, LoadError, Machine, dram_range,
+    KERNEL_ADDRESS, LoadError, MAX_INITRAMFS_BYTES, Machine, dram_range,
 };
 use hesper_wasm_support as js;
 use js_sys::{Array, BigInt, Function, Reflect, Uint8Array};
@@ -28,7 +28,7 @@ impl RiscvLinux {
         initramfs: &Uint8Array,
         fdt: &Uint8Array,
     ) -> Result<RiscvLinux, JsValue> {
-        boot(firmware, firmware_end, kernel, initramfs, fdt, None)
+        boot(firmware, firmware_end, kernel, initramfs, fdt, None, None)
     }
 
     /// Boot with a caller-owned raw image, copied once into the machine's private disk.
@@ -41,7 +41,43 @@ impl RiscvLinux {
         fdt: &Uint8Array,
         bytes: &Uint8Array,
     ) -> Result<RiscvLinux, JsValue> {
-        boot(firmware, firmware_end, kernel, initramfs, fdt, Some(bytes))
+        boot(
+            firmware,
+            firmware_end,
+            kernel,
+            initramfs,
+            fdt,
+            None,
+            Some(bytes),
+        )
+    }
+
+    /// Explicitly replace the initramfs, using the authenticated DTB and its locked length.
+    #[wasm_bindgen(js_name = bootWithInitramfs)]
+    pub fn boot_with_initramfs(
+        firmware: &Uint8Array,
+        firmware_end: BigInt,
+        kernel: &Uint8Array,
+        initramfs: &Uint8Array,
+        fdt: &Uint8Array,
+        locked_initramfs_len: f64,
+        disk: Option<Uint8Array>,
+    ) -> Result<RiscvLinux, JsValue> {
+        let locked_len = js::integer(
+            locked_initramfs_len,
+            1,
+            (FDT_ADDRESS - INITRAMFS_ADDRESS) as u32,
+            "locked_initramfs_len",
+        )? as usize;
+        boot(
+            firmware,
+            firmware_end,
+            kernel,
+            initramfs,
+            fdt,
+            Some(locked_len),
+            disk.as_ref(),
+        )
     }
 
     /// Load a small bare-metal probe. The hart starts at the normal DRAM reset vector.
@@ -168,6 +204,7 @@ fn boot(
     kernel: &Uint8Array,
     initramfs: &Uint8Array,
     fdt: &Uint8Array,
+    locked_initramfs_len: Option<usize>,
     disk: Option<&Uint8Array>,
 ) -> Result<RiscvLinux, JsValue> {
     let firmware_end = address(firmware_end, "firmware_end")?;
@@ -186,7 +223,26 @@ fn boot(
         64,
         INITRAMFS_ADDRESS - KERNEL_ADDRESS,
     )?;
-    let initramfs_len = image_len(initramfs, "initramfs", 6, FDT_ADDRESS - INITRAMFS_ADDRESS)?;
+    let custom = locked_initramfs_len
+        .map(|_| {
+            fixed_byte_view(initramfs, |len| {
+                if len < 1.0 || len > MAX_INITRAMFS_BYTES as f64 {
+                    return Err(js::error(
+                        "InvalidInitramfs",
+                        "custom initramfs must be non-empty and no larger than 16 MiB",
+                    ));
+                }
+                Ok(len as usize)
+            })
+        })
+        .transpose()?;
+    let (initramfs, initramfs_len) = match &custom {
+        Some((bytes, len)) => (bytes, *len),
+        None => (
+            initramfs,
+            image_len(initramfs, "initramfs", 6, FDT_ADDRESS - INITRAMFS_ADDRESS)?,
+        ),
+    };
     let fdt_len = image_len(
         fdt,
         "DTB",
@@ -195,7 +251,15 @@ fn boot(
     )?;
     let disk = disk
         .map(|bytes| {
-            let bytes = disk_view(bytes)?;
+            let (bytes, _) = fixed_byte_view(bytes, |len| {
+                if len > DataDisk::MAX_BYTES as f64 || !DataDisk::valid_size(len as usize) {
+                    return Err(js::error(
+                        "InvalidDisk",
+                        "data disk length must be a positive multiple of 512 up to 16 MiB",
+                    ));
+                }
+                Ok(len as usize)
+            })?;
             // js-sys copies directly into the owned Vec without zeroing scratch.
             DataDisk::new(bytes.to_vec()).map_err(|err| js::error("InvalidDisk", &err.to_string()))
         })
@@ -209,20 +273,24 @@ fn boot(
         initramfs: stage(initramfs, initramfs_len, "initramfs", &mut initrd_buf)?,
         fdt: stage(fdt, fdt_len, "DTB", &mut fdt_buf)?,
     };
-    let machine = match disk {
-        Some(disk) => Machine::boot_with_disk(images, disk),
-        None => Machine::boot(images),
+    let machine = match (locked_initramfs_len, disk) {
+        (Some(locked_len), disk) => Machine::boot_with_initramfs(images, locked_len, disk),
+        (None, Some(disk)) => Machine::boot_with_disk(images, disk),
+        (None, None) => Machine::boot(images),
     }
     .map_err(boot_error)?;
     Ok(RiscvLinux { machine })
 }
 
-fn disk_view(bytes: &Uint8Array) -> Result<Uint8Array, JsValue> {
+fn fixed_byte_view(
+    bytes: &Uint8Array,
+    validate: impl FnOnce(f64) -> Result<usize, JsValue>,
+) -> Result<(Uint8Array, usize), JsValue> {
     if !bytes.is_instance_of::<Uint8Array>() {
         return Err(js::error("InvalidArgument", "expected a Uint8Array"));
     }
     // Read the actual view extent rather than caller-shadowable properties.
-    // to_vec reads length again, so pass it a plain, fixed-length view.
+    // Copy helpers read length again, so pass them a plain, fixed-length view.
     let key = JsValue::from_str("Uint8Array");
     let constructor = Reflect::get(js_sys::global().as_ref(), &key)?.dyn_into::<Function>()?;
     let prototype = Reflect::get(&constructor, &JsValue::from_str("prototype"))?;
@@ -233,16 +301,13 @@ fn disk_view(bytes: &Uint8Array) -> Result<Uint8Array, JsValue> {
             .dyn_into::<Function>()?
             .call0(bytes)
     };
-    let length = get("length")?;
-    let len = length.as_f64().unwrap_or_default();
-    if len > DataDisk::MAX_BYTES as f64 || !DataDisk::valid_size(len as usize) {
-        return Err(js::error(
-            "InvalidDisk",
-            "data disk length must be a positive multiple of 512 up to 16 MiB",
-        ));
-    }
-    let args = Array::of3(&get("buffer")?, &get("byteOffset")?, &length);
-    Reflect::construct(&constructor, &args)?.dyn_into()
+    let len = validate(get("length")?.as_f64().unwrap_or_default())?;
+    let args = Array::of3(
+        &get("buffer")?,
+        &get("byteOffset")?,
+        &JsValue::from(len as u32),
+    );
+    Ok((Reflect::construct(&constructor, &args)?.dyn_into()?, len))
 }
 
 fn address(value: BigInt, name: &str) -> Result<u64, JsValue> {
@@ -294,6 +359,7 @@ fn stage<'a>(
 fn boot_error(error: BootError) -> JsValue {
     let code = match error {
         BootError::Allocation => "AllocationFailed",
+        BootError::Format("custom initramfs") | BootError::InitramfsTooLarge => "InvalidInitramfs",
         _ => "InvalidBootImage",
     };
     js::error(code, &error.to_string())

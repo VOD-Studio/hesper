@@ -57,6 +57,23 @@ export function riscvCases(RiscvLinux, { integer, uart }) {
         equal(code, "InvalidDisk", "invalid raw disk size");
       }
     }],
+    ["custom initramfs boot bounds the actual byte view and validates the optional disk", () => {
+      const firmware = Uint8Array.of(0), kernel = new Uint8Array(64), fdt = new Uint8Array(40);
+      const oversized = new Uint8Array(16 * 1024 * 1024 + 1);
+      const narrow = oversized.subarray(1, 2);
+      Object.defineProperty(oversized, "length", { value: 1 });
+      Object.defineProperty(narrow, "length", { value: 16 * 1024 * 1024 + 1 });
+      function rejection(initramfs, disk, length = 932864) {
+        try { RiscvLinux.bootWithInitramfs(firmware, DRAM + 1n, kernel, initramfs, fdt, length, disk).free(); }
+        catch (error) { return error.code; }
+        return undefined;
+      }
+      equal(rejection(oversized), "InvalidInitramfs", "oversized view with shadowed length");
+      equal(rejection(new Uint8Array(0)), "InvalidInitramfs", "empty custom archive");
+      equal(rejection(narrow, new Uint8Array(1)), "InvalidDisk", "bounded subview reaches disk validation");
+      equal(rejection(narrow), "InvalidBootImage", "bounded subview reaches kernel validation");
+      equal(rejection(narrow, undefined, 2 ** 32 + 1), "InvalidArgument", "locked length must not wrap");
+    }],
     ["queued UART bytes at the same virtual tick are invariant across Wasm batch sizes", () => {
       for (const batch of [1, 37, 4096]) {
         const machine = RiscvLinux.bare(DRAM, program(uart.program));
