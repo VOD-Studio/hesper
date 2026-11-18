@@ -14,9 +14,10 @@ def proof(marker):
     return f'echo "{marker}:$((6 * 7))"\n'.encode("ascii")
 
 
-def commands(write, marker):
+def commands(write, marker, *, busybox=False):
     script = proof(marker).rstrip(b"\n")
-    mount = b"mkdir -p /mnt/data && mount -t ext2 "
+    prefix = b"/bin/busybox " if busybox else b""
+    mount = prefix + b"mkdir -p /mnt/data && mount -t ext2 "
     target = b"/dev/vda /mnt/data && "
     if write:
         command = (mount + target + b"printf '%s\\n' '" + script + b"' > /mnt/data/proof.sh && sync && "
@@ -25,16 +26,19 @@ def commands(write, marker):
     else:
         command = mount + b"-o ro " + target + b"sh /mnt/data/proof.sh && umount /mnt/data && echo DISK_UNMOUNTED\n"
         expected = (f"{marker}:42".encode("ascii"), b"DISK_UNMOUNTED")
-    return ((CAPACITY, (str(SECTORS).encode("ascii"),)), (command, expected))
+    return ((prefix + CAPACITY, (str(SECTORS).encode("ascii"),)), (command, expected))
 
 
-def drive_disk(receive, send, write, marker, *, boot_seconds):
+def disk_states(write, marker, *, busybox=False):
     def require(lines):
         return lambda output: all(result_line(output, line) for line in lines)
 
-    states = [(name, command, require(lines)) for name, (command, lines) in
-              zip(("capacity", "write" if write else "read"), commands(write, marker))]
-    return session(receive, send, states, boot_seconds)
+    return tuple((name, command, require(lines)) for name, (command, lines) in
+                 zip(("capacity", "write" if write else "read"), commands(write, marker, busybox=busybox)))
+
+
+def drive_disk(receive, send, write, marker, *, boot_seconds):
+    return session(receive, send, disk_states(write, marker), boot_seconds)
 
 
 def make_seed(path):

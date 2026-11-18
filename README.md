@@ -146,6 +146,22 @@ cargo run --locked --release -p hesper -- linux --images .cache/riscv-linux/imag
 `make riscv-linux-blk-native` 在管道与真实 PTY 各做两次冷启动；
 见[数据盘契约](docs/plan/riscv-linux-data-disk.md)。
 
+### RISC-V Linux 自定义启动根（本机）
+
+```sh
+hesper linux --images .cache/riscv-linux/images --initramfs ./my-root.cpio
+```
+
+`--initramfs` 只替换开机时的 RAM 根文件系统。固件、内核、设备树及
+`manifest.json` 仍须匹配内置锁；替换时目录内无需原版 `initramfs.cpio`。
+传入单个未压缩的 `newc` 归档（含填充最多 16 MiB），自行提供可执行的
+`/init` 及其依赖，例如小端 RV64IMAC、`lp64` 软浮点静态程序。只运行可信归档；
+结构合法不代表客体一定能启动。去掉该选项并用完整的锁定目录冷启动即可恢复原版根。
+
+可与数据盘选项合用；此时用 `images-blk` 的基础文件，`/dev/vda` 仍不自动挂为根。
+`make riscv-linux-initramfs-reference` 生成可运行的示例归档，
+`make riscv-linux-initramfs-native` 验收；准备步骤见[替换根方案](docs/plan/riscv-linux-initramfs.md)。
+
 ## Workspace 结构
 
 ```text

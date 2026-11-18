@@ -1,12 +1,12 @@
 # RISC-V Linux 下一步：在固定内核上启动自己的 `/init`
 
-**状态：U1 参考机与 U2 共用装载器已在本地验收，U3–U4 待验收。** [固定板启动](riscv-linux.md)和[数据盘 D1–D5](riscv-linux-data-disk.md)已在本地验收。下一步只换启动链的最后一件东西：用户提供 `initramfs.cpio`，不用重编 Hesper、OpenSBI 或内核，就能在串口运行自己的程序。第一个可交付入口是 U3 的原生 CLI。
+**状态：U1–U3 已在本地验收；CLI 可更换启动根，U4 浏览器门禁尚未全部完成。** [固定板启动](riscv-linux.md)和[数据盘 D1–D5](riscv-linux-data-disk.md)已在本地验收。这一轮只换启动链的最后一件东西：用户提供 `initramfs.cpio`，不用重编 Hesper、OpenSBI 或内核，就能在串口运行自己的程序。
 
 不先加 hart：多核既不能改变镜像锁，也不能让现有 RV64IMAC 核心执行发行版常见的 `lp64d` 程序。这一轮不开放任意内核、DTB、bootargs、压缩归档、分区系统盘、UEFI 或网络；不发布镜像，不部署 Pages。
 
 ## 用户契约：只替换根文件系统的初始内容
 
-下面是**拟新增**的入口，不是当前可运行的命令。`--images` 仍选择原有板配置；`--initramfs` 指向另一个本地普通文件（文件名不限），不修改 `--images` 目录。
+`--images` 仍选择原有板配置；`--initramfs` 指向另一个本地普通文件（文件名不限），不修改 `--images` 目录。
 
 ```sh
 hesper linux --images .cache/riscv-linux/images --initramfs ./my-root.cpio
@@ -52,7 +52,7 @@ hesper linux --images .cache/riscv-linux/images-blk --initramfs ./my-root.cpio \
 
 在[原生宿主](../../crates/cli/src/linux.rs)增加 `--initramfs` 和帮助文字。保持按有无盘选锁；不需要新的板型、第三份锁或 `--no-verify`。文件打开后检查是普通文件，复用有界读取，再按实际读到的字节数校验；拒绝缺值、重复参数、空包、超限。不按文件扩展名决定模式。诊断区分基础文件的哈希错误、自定义包格式/大小错误、装载冲突、执行中无提示或耗尽预算。自定义 `/init` 可以不启动 shell，产品本身不能等待特定提示符才允许运行。
 
-**原生验收（拟新增 `make riscv-linux-initramfs-native`）：**
+**原生验收（`make riscv-linux-initramfs-native`）：**使用 U1 的缓存以及按锁准备的 `images-blk`。若块设备镜像存于另一缓存，可通过 `RISCV_LINUX_BLK_IMAGES` 指定该 `images-blk` 目录。见[实测记录](../verification.md#risc-v-linux-u3原生-cli-启动替换根)。
 
 - 用 U1 的包通过管道和真实 PTY 冷启动，复验 `root-proof` 和内核版本。至少一次从**没有默认 cpio**、仍有原版 manifest 和另外三文件的目录启动。退出后不带参数从完整默认目录冷启，证明没有自定义程序残留。
 - `blk` 也走一次组合验收：新根内运行 `root-proof`，挂载 `/dev/vda` 写脚本，成功 `sync`、卸载、Ctrl+] 导出；第二个进程用默认 `blk` 根挂载输出盘并执行脚本。由此区分“换启动根”和“保存数据”；输入种子哈希不变。

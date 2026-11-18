@@ -35,8 +35,10 @@ def reap(guest, options):
     return None
 
 
-def linux_command(binary, *, images=IMAGE_DIR, disk=None):
+def linux_command(binary, *, images=IMAGE_DIR, disk=None, initramfs=None):
     argv = [str(binary), "linux", "--images", str(images), "--diagnostics"]
+    if initramfs is not None:
+        argv += ["--initramfs", str(initramfs)]
     if disk is not None:
         source, target = disk
         argv += ["--disk-in", str(source), "--disk-out", str(target)]
@@ -62,7 +64,8 @@ def run_serial(binary, manifest, transport, *, disk=None, write=False, marker="D
     return run
 
 
-def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termination="quit"):
+def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termination="quit",
+                   exit_seconds=EXIT_SECONDS):
     """Record a real CLI process; exchange runs before stdin is terminated."""
     logs = Path(logs)
     logs.mkdir(parents=True, exist_ok=True)
@@ -139,7 +142,7 @@ def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termina
                 send(QUIT)
             elif termination == "eof":
                 guest.stdin.close()
-            deadline = time.monotonic() + EXIT_SECONDS
+            deadline = time.monotonic() + exit_seconds
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:

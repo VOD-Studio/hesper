@@ -25,6 +25,7 @@
 #   make riscv-linux-blk-data / riscv-linux-blk-reference  构建固定块配置 / QEMU 两次冷启动读写
 #   make riscv-linux-firmware  用已验固件交接 S 态探针，验证 SBI TIME 与 UART 中断
 #   make riscv-linux-native   验收实际固件、CLI 的 Linux shell、PTY 与管道
+#   make riscv-linux-initramfs-native  CLI 的替换根、默认根与数据盘冷启动
 #   make riscv-linux-wasm     用已验镜像重放实际 Bun / Node.js Wasm 串口
 #   make riscv-linux-browser  构建生产站点，用 Chrome 交互验收已验本地镜像
 #   make riscv-linux-blk-native  管道与 PTY 两次数据盘冷启动
@@ -134,10 +135,10 @@ riscv-linux-reference:
 riscv-linux-blk-reference:
 	python3 tools/riscv-linux/reference.py --profile blk
 
-
 .PHONY: riscv-linux-initramfs-reference
 riscv-linux-initramfs-reference:
 	python3 tools/riscv-linux/initramfs_reference.py
+
 riscv-linux-firmware:
 	python3 tools/riscv-linux/firmware_probe.py
 
@@ -149,6 +150,12 @@ riscv-linux-native: riscv-linux-firmware
 riscv-linux-blk-native:
 	cargo build --locked --release -p hesper
 	python3 tools/riscv-linux/native_disk.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
+
+.PHONY: riscv-linux-initramfs-native
+riscv-linux-initramfs-native:
+	cargo build --locked --release -p hesper
+	python3 tools/riscv-linux/native_initramfs.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper" \
+		$(if $(RISCV_LINUX_BLK_IMAGES),--blk-images "$(RISCV_LINUX_BLK_IMAGES)")
 
 riscv-linux-wasm: wasm-build
 	python3 tools/riscv-linux/wasm_serial.py

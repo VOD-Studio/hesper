@@ -1,6 +1,7 @@
 """Literal commands and reference-fixture checks shared by the Linux gates."""
 
 import json
+import re
 
 from serial_acceptance import result_line
 from sources import sha256
@@ -25,6 +26,19 @@ def default_states(kernelrelease):
                 and not any(line.startswith(b"ROOT_OK:") for line in lines))
 
     return (("default-no-proof", b"/bin/root-proof 6 7\n", missing), release_state(kernelrelease))
+
+
+def initrd_end_state(expected_end, record):
+    def check(output):
+        lines = [line for line in output.splitlines() if re.fullmatch(rb"[0-9a-f]{16}", line)]
+        if len(lines) != 1 or int(lines[0], 16) != int(expected_end, 16):
+            return False
+        record(hex(int(lines[0], 16)))
+        return True
+
+    command = (b"/bin/busybox hexdump -v -e '8/1 \"%02x\" \"\\n\"' "
+               b"/sys/firmware/devicetree/base/chosen/linux,initrd-end\n")
+    return "initrd-end", command, check
 
 
 def fixture_info(directory):

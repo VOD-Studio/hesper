@@ -1634,3 +1634,24 @@ initrd 跨 DTB 检查仍独立执行。畸形 `newc`、原树尾址不符和重�
 未更改原运行的 CPU、RAM、UART 或盘。不需要准备 Linux 镜像即可运行这组测试。
 
 `make verify` 的格式、全目标检查、debug/release 测试、Clippy 和演示均通过。
+
+## RISC-V Linux U3：原生 CLI 启动替换根
+
+Arch Linux x86-64、Cargo 1.100.0、Python 3.14.8、mke2fs/debugfs 1.47.4。
+用 `repro-c` 串口缓存和 `RISCV_LINUX_BLK_IMAGES` 指向 `blk-a/images-blk`，
+执行 `make riscv-linux-initramfs-native`。原锁 `serial` SHA-256 同 U1，
+`blk` 为 `4d8f8a91ec7b518eef57816e85b25cc5728366a9015a305d56ee9e3d0d815c99`。
+使用同一份 886904 字节的 U1 归档和指纹，目录只留未改动的三件基础文件
+与 manifest；管道及真实 PTY 分别在 32.47 / 28.01 秒到首提示。
+两回均得到 `ROOT_OK:custom-v1:42`、`ROOT_OK:custom-v1:15`、`6.12.0-hesper`。
+客体设备树读回预期尾址 `0x840d8878`，原版冷启动读回 `0x840e3c00`，
+同一路径报告 `not found`。含盘的替换根写入、卸载并以 Ctrl+] 导出后，
+原版 `blk` 冷启动从 `/dev/vda` 执行脚本，读回 `INITRAMFS_DISK_OK:42`。
+两轮导出相同，输入种子 SHA-256 不变；这五次进程都因 Ctrl+] 正常退出。
+
+单字节 DTB 损坏、混用锁、篡改 manifest 或坏归档均在固件前拒绝。
+124 字节的合法空根进入真实 Linux 后报告 `Kernel panic - not syncing: VFS:
+Unable to mount root fs on unknown-block(0,0)`，耗尽 450000000 fuel 退出，
+没有请求保存或生成目标盘。门限为启动 90 秒、每条命令 20 秒 / 256 KiB。
+报告、原始串口和盘在 `.cache/riscv-linux/repro-c/logs-initramfs/native-5g4_q6j2/`。
+原有 `make riscv-linux-native` 和 `make riscv-linux-blk-native` 仍通过。

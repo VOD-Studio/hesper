@@ -15,7 +15,7 @@ use std::{
 
 use hesper_riscv_linux::{
     BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS,
-    Machine,
+    MAX_INITRAMFS_BYTES, Machine,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -56,6 +56,8 @@ enum LinuxError {
     NotRegular(PathBuf),
     #[error("{}: output already exists", .0.display())]
     OutputExists(PathBuf),
+    #[error("{}: custom initramfs length must be 1..={MAX_INITRAMFS_BYTES} bytes (found {bytes})", .path.display())]
+    InitramfsSize { path: PathBuf, bytes: u64 },
     #[error("{}: data disk length must be a positive multiple of 512 up to 16 MiB (found {bytes})", .path.display())]
     DiskSize { path: PathBuf, bytes: u64 },
     #[error("Linux data disk: {0}")]
@@ -74,6 +76,8 @@ enum LinuxError {
     },
     #[error("loading Linux guest: {0}")]
     Boot(#[from] BootError),
+    #[error("loading Linux guest with custom initramfs {}: {source}", .path.display())]
+    InitramfsBoot { path: PathBuf, source: BootError },
     #[error("{operation}: {source}")]
     HostIo {
         operation: &'static str,
@@ -104,6 +108,7 @@ impl std::fmt::Display for FuelLimit {
 
 struct Options {
     images: PathBuf,
+    initramfs: Option<PathBuf>,
     disk: Option<(PathBuf, PathBuf)>,
     fuel_limit: FuelLimit,
     diagnostics: bool,
@@ -112,6 +117,7 @@ struct Options {
 impl Options {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Self>, LinuxError> {
         let mut images = None;
+        let mut initramfs = None;
         let (mut disk_in, mut disk_out) = (None, None);
         let mut max_fuel = None;
         let mut unlimited = false;
@@ -123,6 +129,18 @@ impl Options {
                         .next()
                         .ok_or_else(|| LinuxError::Usage("--images requires a directory".into()))?;
                     images = Some(PathBuf::from(dir));
+                }
+                "--initramfs" => {
+                    if initramfs.is_some() {
+                        return Err(LinuxError::Usage(
+                            "--initramfs specified more than once".into(),
+                        ));
+                    }
+                    let path = args
+                        .next()
+                        .filter(|path| !path.is_empty() && !path.starts_with('-'))
+                        .ok_or_else(|| LinuxError::Usage("--initramfs requires a file".into()))?;
+                    initramfs = Some(PathBuf::from(path));
                 }
                 "--disk-in" | "--disk-out" => {
                     let path = args
@@ -173,6 +191,7 @@ impl Options {
         };
         Ok(Some(Self {
             images: images.ok_or_else(|| LinuxError::Usage("--images is required".into()))?,
+            initramfs,
             disk,
             fuel_limit,
             diagnostics,
@@ -194,7 +213,11 @@ struct Image {
     end: String,
 }
 
-fn boot(directory: &Path, disk: Option<DataDisk>) -> Result<Machine, LinuxError> {
+fn boot(
+    directory: &Path,
+    replacement: Option<&Path>,
+    disk: Option<DataDisk>,
+) -> Result<Machine, LinuxError> {
     let path = directory.join("manifest.json");
     let actual = serde_json::from_slice::<Value>(&read_bounded(&path, MAX_MANIFEST_BYTES, false)?)
         .map_err(|source| LinuxError::ManifestJson {
@@ -228,13 +251,35 @@ fn boot(directory: &Path, disk: Option<DataDisk>) -> Result<Machine, LinuxError>
     }
     let firmware_end = hex_address(&firmware.end)
         .ok_or_else(|| LinuxError::ImageLock("invalid fw_jump.bin end address".into()))?;
-    let images = BootImages {
-        firmware: &verified_image(directory, firmware)?,
-        firmware_end,
-        kernel: &verified_image(directory, kernel)?,
-        initramfs: &verified_image(directory, initramfs)?,
-        fdt: &verified_image(directory, fdt)?,
+    let firmware = verified_image(directory, firmware)?;
+    let kernel = verified_image(directory, kernel)?;
+    let locked_initramfs_len = initramfs.bytes;
+    let (initramfs, fdt) = if let Some(path) = replacement {
+        let fdt = verified_image(directory, fdt)?;
+        (read_initramfs(path)?, fdt)
+    } else {
+        (
+            verified_image(directory, initramfs)?,
+            verified_image(directory, fdt)?,
+        )
     };
+    let images = BootImages {
+        firmware: &firmware,
+        firmware_end,
+        kernel: &kernel,
+        initramfs: &initramfs,
+        fdt: &fdt,
+    };
+    if let Some(path) = replacement {
+        let locked_initramfs_len = usize::try_from(locked_initramfs_len)
+            .map_err(|_| LinuxError::ImageLock("invalid initramfs length".into()))?;
+        return Machine::boot_with_initramfs(images, locked_initramfs_len, disk).map_err(
+            |source| LinuxError::InitramfsBoot {
+                path: path.into(),
+                source,
+            },
+        );
+    }
     Ok(match disk {
         Some(disk) => Machine::boot_with_disk(images, disk)?,
         None => Machine::boot(images)?,
@@ -290,6 +335,16 @@ fn read_bounded(path: &Path, limit: u64, exact: bool) -> Result<Vec<u8>, LinuxEr
                 format!("at most {limit} bytes")
             },
             actual,
+        })
+    })
+}
+
+fn read_initramfs(path: &Path) -> Result<Vec<u8>, LinuxError> {
+    let limit = MAX_INITRAMFS_BYTES as u64;
+    read_file(path, limit, |bytes| {
+        (bytes == 0 || bytes > limit).then(|| LinuxError::InitramfsSize {
+            path: path.into(),
+            bytes,
         })
     })
 }
@@ -638,7 +693,7 @@ impl Session {
 pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let Some(options) = Options::parse(args)? else {
         println!(
-            "Usage: hesper linux --images <dir> [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout. With paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nDefault fuel: {DEFAULT_MAX_FUEL} guest transitions."
+            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs to boot an uncompressed newc archive (up to 16 MiB) instead of the pinned root. The firmware, kernel and source DTB stay locked.\nWith paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nDefault fuel: {DEFAULT_MAX_FUEL} guest transitions."
         );
         println!("Use --no-fuel-limit instead of --max-fuel N to remove the total session limit.");
         return Ok(());
@@ -649,7 +704,7 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
         .map(|(input, output)| load_disk(input, output))
         .transpose()?;
     let mut session = Session {
-        machine: boot(&options.images, disk)?,
+        machine: boot(&options.images, options.initramfs.as_deref(), disk)?,
         spent: 0,
         tail: SerialTail::new(),
     };
