@@ -25,7 +25,9 @@ use crate::terminal::{TerminalGuard, TerminalMode};
 
 const IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images.lock.json");
 const BLK_IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images-blk.lock.json");
-const ALPINE_IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images-alpine.lock.json");
+const ALPINE_IMAGE_LOCK: &str =
+    include_str!("../../../tools/riscv-linux/images-alpine-lts.lock.json");
+const ALPINE_LEGACY_LOCK: &str = include_str!("../../../tools/riscv-linux/images-alpine.lock.json");
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 const BATCH: u32 = 16_384;
 const STALLED_TRAP_LIMIT: u32 = 32;
@@ -225,7 +227,9 @@ fn boot(
     };
     let isa = if actual == parse_lock(standard_lock)? {
         HartIsa::Imac
-    } else if disk.is_none() && actual == parse_lock(ALPINE_IMAGE_LOCK)? {
+    } else if disk.is_none()
+        && (actual == parse_lock(ALPINE_IMAGE_LOCK)? || actual == parse_lock(ALPINE_LEGACY_LOCK)?)
+    {
         if replacement.is_some() {
             return Err(LinuxError::AlpineInitramfs);
         }

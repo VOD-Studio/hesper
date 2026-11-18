@@ -9,8 +9,9 @@ import sys
 import tempfile
 import time
 
-from alpine_acceptance import cold_states, states
-from build_guest import ALPINE_IMAGE_DIR, ALPINE_LOGS, BLK_IMAGE_DIR, ENV, IMAGE_DIR, IMAGE_NAMES, verified_manifest
+from alpine_acceptance import cold_states, kernel_states, states
+from build_guest import (ALPINE_IMAGE_DIR, ALPINE_LEGACY_DIR, ALPINE_LOGS, BLK_IMAGE_DIR, ENV, IMAGE_DIR,
+                         IMAGE_NAMES, verified_manifest)
 from disk_acceptance import check_proof, disk_states, make_seed
 from native import ACCEPTANCE_MAX_FUEL, BOOT_SECONDS, EXIT_SECONDS, capture_serial, linux_command, require_exit, run_serial
 from native_disk import expect_entries, require_boot_fuel
@@ -60,7 +61,8 @@ def reject(name, argv, logs, *expected):
                 serial_log=str(serial_log), diagnostics_log=str(diagnostics_log))
 
 
-def negative_controls(binary, alpine_images, manifests, seed, logs):
+def negative_controls(binary, directories, manifests, seed, logs):
+    alpine_images = directories["alpine"]
     logs.mkdir()
     corrupt = logs / "corrupt-dtb"
     mixed = logs / "mixed-manifest"
@@ -84,10 +86,27 @@ def negative_controls(binary, alpine_images, manifests, seed, logs):
     forged["images"][kernel] = manifests["serial"]["images"][kernel]
     (mixed / "manifest.json").write_text(json.dumps(forged, indent=2) + "\n")
 
+    old_root = logs / "old-root"
+    corrupt_kernel = logs / "corrupt-kernel"
+    old_root.mkdir()
+    corrupt_kernel.mkdir()
+    for name in ("manifest.json", *IMAGE_NAMES):
+        source = directories["legacy"] if name == "initramfs.cpio" else alpine_images
+        (old_root / name).symlink_to(source / name)
+        if name != "Image":
+            (corrupt_kernel / name).symlink_to(alpine_images / name)
+    kernel_bytes = bytearray((alpine_images / "Image").read_bytes())
+    kernel_bytes[-1] ^= 1
+    (corrupt_kernel / "Image").write_bytes(kernel_bytes)
+
     publish = logs / "publish"
     publish.mkdir()
     archive = IMAGE_DIR / "initramfs.cpio"
     result = {
+        "old_root": reject("old-root", linux_command(binary, images=old_root), logs,
+                           str(old_root / "initramfs.cpio"), "size"),
+        "corrupt_kernel": reject("corrupt-kernel", linux_command(binary, images=corrupt_kernel), logs,
+                                 str(corrupt_kernel / "Image"), "SHA-256 mismatch"),
         "corrupt_dtb": reject("corrupt-dtb", linux_command(binary, images=corrupt), logs,
                               str(corrupt / "board.dtb"), "SHA-256 mismatch"),
         "forged_mixed_manifest": reject("mixed-manifest", linux_command(binary, images=mixed), logs,
@@ -121,8 +140,10 @@ def main():
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError(f"not an executable Hesper binary: {binary}")
     require_tools("mke2fs", "debugfs")
-    directories = dict(alpine=ALPINE_IMAGE_DIR.resolve(), serial=IMAGE_DIR.resolve(), blk=args.blk_images.resolve())
+    directories = dict(alpine=ALPINE_IMAGE_DIR.resolve(), legacy=ALPINE_LEGACY_DIR.resolve(),
+                       serial=IMAGE_DIR.resolve(), blk=args.blk_images.resolve())
     manifests = dict(alpine=verified_manifest(alpine=True, directory=directories["alpine"]),
+                     legacy=verified_manifest(alpine=True, legacy=True, directory=directories["legacy"]),
                      serial=verified_manifest(directory=directories["serial"]),
                      blk=verified_manifest(blk=True, directory=directories["blk"]))
     image_hashes = {profile: {image["path"]: image["sha256"] for image in manifest["images"]}
@@ -133,16 +154,19 @@ def main():
     logs = Path(tempfile.mkdtemp(prefix="native-", dir=ALPINE_LOGS))
     seed = logs / "seed.raw"
     seed_info = make_seed(seed)
-    negative = negative_controls(binary, directories["alpine"], manifests, seed, logs / "preflight")
+    negative = negative_controls(binary, directories, manifests, seed, logs / "preflight")
 
     alpine = linux_command(binary, images=directories["alpine"], max_fuel=ALPINE_MAX_FUEL)
-    protocol = states()
+    protocol = states(manifests["alpine"])
     transports = {mode: boot_session(alpine, mode, logs / "install", protocol,
                                      boot_seconds=ALPINE_BOOT_SECONDS, step_seconds=ALPINE_STEP_SECONDS, alpine=True)
                   for mode in ("pipe", "pty")}
-    cold = boot_session(alpine, "pipe", logs / "cold", cold_states(),
+    cold = boot_session(alpine, "pipe", logs / "cold", cold_states(manifests["alpine"]),
                         boot_seconds=ALPINE_BOOT_SECONDS, step_seconds=ALPINE_STEP_SECONDS, alpine=True)
 
+    legacy = boot_session(linux_command(binary, images=directories["legacy"]), "pipe", logs / "legacy",
+                          tuple(kernel_states(manifests["legacy"])), boot_seconds=ALPINE_BOOT_SECONDS,
+                          step_seconds=ALPINE_STEP_SECONDS, alpine=True)
     serial = run_serial(binary, manifests["serial"], "pipe", logs=logs / "serial")
     require_boot_fuel(serial)
     disk_output = logs / "blk-output.raw"
@@ -167,7 +191,7 @@ def main():
                   exit_deadline_seconds=EXIT_SECONDS, byte_budget_per_state=STEP_BYTES, max_fuel=ALPINE_MAX_FUEL,
                   legacy_limits=dict(boot_deadline_seconds=BOOT_SECONDS, deadline_per_state_seconds=STEP_SECONDS,
                                      max_fuel=ACCEPTANCE_MAX_FUEL),
-                  transports=transports, cold=cold, legacy_controls=dict(serial=serial, blk=blk, seed=seed_info),
+                  transports=transports, cold=cold, legacy_controls=dict(alpine=legacy, serial=serial, blk=blk, seed=seed_info),
                   negative_controls=negative, recommended_browser_fuel=recommendation,
                   runtime_seconds=time.monotonic() - started)
     path = logs / "report.json"

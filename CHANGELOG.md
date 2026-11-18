@@ -4,6 +4,7 @@
 
 ## [Unreleased]
 
+- **CLI / RISC-V Linux**：`hesper linux --images` 接受官方内核镜像 `images-alpine-lts` 和原有 `images-alpine`，在运行固件前拒绝混用或损坏的镜像。
 - **RISC-V 参考板**：Alpine 默认镜像直接使用验签的官方 riscv64 `linux-lts` 内核 `6.18.63-0-lts` 和配套 `configs.ko`，固定 QEMU 对照验证模块加载及内核配置哈希。
 
 - **RISC-V 机器库**：`hesper-riscv-linux` 提供 128 MiB DRAM、有界 `Machine::run(fuel)`、寄存器/内存观察，以及裸机 RV64IMAC，包含原子预约和 16/32 位混合取指。范围见[实施计划](docs/plan/riscv-linux.md)。

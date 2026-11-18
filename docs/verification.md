@@ -1782,3 +1782,22 @@ Buildroot 工具链，无单独的 Linux 源码归档或内核构建目录。旧
 查到模块，并核对 `/proc/config.gz` 解压后的 SHA-256 与官方配置一致。
 同一会话验证 `FP_CTX_OK:8`、离线验签安装 `mawk` 与结果 `7.500`。
 锁定镜像串口和报告在 `.cache/riscv-linux/repro-c/logs-alpine/reference-0m208hsg/`。
+
+## RISC-V Linux Alpine 官方内核：原生管道与 PTY
+
+`make riscv-linux-alpine-native` 在 Arch Linux x86-64 的 release CLI 中
+重放 QEMU 的同一串口验收。原生管道、真实 PTY 和另一次冷启动都报告
+`6.18.63-0-lts`，成功加载 `configs` 并读回官方配置哈希。两个安装会话均
+通过浮点上下文检查、离线验签和安装，输出独立的 `7.500` 结果行。
+
+| 会话 | 到首提示 (s) | 到配置哈希 (s) | 已用 transitions |
+| --- | ---: | ---: | ---: |
+| 管道安装 | 90.17 | 103.32 | 1764753408 |
+| PTY 安装 | 73.07 | 83.46 | 1764261888 |
+| 冷启动验证 | 70.14 | 79.94 | 1180024832 |
+| 旧版 Alpine | 29.28 | — | 361660416 |
+
+新旧 initramfs 混搭、内核或 DTB 单字节损坏及重写 manifest 均在固件启动前被拒，
+串口输出为零。标准和带盘配置也通过原生对照，后者用 `debugfs` 读回。
+`cargo test --locked -p hesper` 与 `make verify` 通过。报告和原始串口在
+`.cache/riscv-linux/repro-c/logs-alpine/native-tn9ommhe/`。
