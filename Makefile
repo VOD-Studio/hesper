@@ -22,6 +22,7 @@
 #   make riscv-linux-data     构建并校验固定的四份参考板镜像（需要 Linux 构建宿主）
 #   make riscv-linux-qemu     从固定源码构建 TCG 参考模拟器
 #   make riscv-linux-reference 用已准备的 QEMU 和锁定镜像做实际串口验收（离线）
+#   make riscv-linux-firmware  用已验固件交接 S 态探针，验证 SBI TIME 与 UART 中断
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -36,6 +37,7 @@
 .PHONY: verify fmt fix check test test-release clippy demo diff build build-release \
         wasm wasm-setup wasm-build wasm-test wasm-browser-test wasm-typecheck \
         tools-test riscv-linux-sources riscv-linux-data riscv-linux-qemu riscv-linux-reference \
+        riscv-linux-firmware \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -115,6 +117,9 @@ riscv-linux-qemu: riscv-linux-sources
 
 riscv-linux-reference:
 	python3 tools/riscv-linux/reference.py
+
+riscv-linux-firmware:
+	python3 tools/riscv-linux/firmware_probe.py
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

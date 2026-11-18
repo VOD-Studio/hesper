@@ -1408,3 +1408,16 @@ RAM 与 tick 清零。用有效 Image 头但越过 initramfs 起点的 `image_si
 另用 `Machine::boot` 装载 L1c 锁定的四份原始镜像（含真实 DTB），观察
 同一复位寄存器及 DTB 字节，见 `repro-c/logs/l5b-locked-loader.log`。
 这一步未执行固件，不是 Linux 或 OpenSBI 启动证明。
+
+## RISC-V Linux L5c：真实 OpenSBI 与 S 态探针
+
+`RISCV_LINUX_CACHE="$PWD/.cache/riscv-linux/repro-c" make riscv-linux-firmware`
+先校验 L1c 清单和四份镜像，再用同一 Buildroot 工具链链接单独的探针。
+装载真实镜像后，仅在此门禁将探针写到 Linux 入口；OpenSBI 不修改。
+实际交接为 `pc=0x80200000`、S 态、`satp=0`、hart 0、`a1=0x87800000`。
+探针读取 SBI 2.0，经 SBI TIME 唤醒 WFI；宿主等到客体开启 PLIC S 上下文
+且等待输入才送 `K`，客体 claim UART 源 10，读取、变换并经 THR 回传 `L`。
+完成时退休 `7700491` 条指令、虚拟时间 `7702897` tick；固件入口限
+2500 万 fuel，交接后限 256 批各 128 fuel。原始输出为
+`repro-c/logs/l5c-opensbi-probe.log`。`make verify` 通过；本节不是 Linux
+内核启动的验收。

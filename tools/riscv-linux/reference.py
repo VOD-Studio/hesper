@@ -8,32 +8,10 @@ import struct
 import subprocess
 import sys
 
-from build_guest import (
-    CACHE, CPU_PROFILE, DRAM, ENV, FDT, FDT_GROWTH, IMAGE_LOCK, IMAGE_NAMES, INITRD, ISA, LOCK, LOGS, capture, logged,
-)
+from build_guest import CACHE, DRAM, ENV, FDT, FDT_GROWTH, IMAGE_DIR, INITRD, LOGS, capture, logged, verified_manifest
 from build_qemu import QEMU, version
 from serial_acceptance import STEP_SECONDS, STEP_BYTES, drive
-from sources import check_archive, require_tools, sha256
-
-IMAGE_DIR = CACHE / "images"
-
-
-def verified_manifest():
-    manifest = json.loads(IMAGE_LOCK.read_bytes())
-    actual = json.loads((IMAGE_DIR / "manifest.json").read_bytes())
-    if actual != manifest or sha256(LOCK) != manifest["source_lock_sha256"]:
-        raise ValueError("prepared manifest differs from the source or image lock")
-    cpu = CPU_PROFILE.read_text().strip()
-    if manifest["qemu_cpu"] != cpu or manifest["isa"] != ISA:
-        raise ValueError("prepared manifest differs from the CPU profile")
-    if [image["path"] for image in manifest["images"]] != list(IMAGE_NAMES):
-        raise ValueError("expected the four fixed image names in the image lock")
-    for image in manifest["images"]:
-        path = IMAGE_DIR / image["path"]
-        if path.stat().st_size != image["bytes"]:
-            raise ValueError(f"{path}: size mismatch")
-        check_archive(path, image["sha256"])
-    return manifest
+from sources import require_tools, sha256
 
 
 def qmp(channel):

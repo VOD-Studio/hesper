@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 
-from sources import CACHE, LOCK, PROFILE, archives, require_tools, sha256
+from sources import CACHE, LOCK, PROFILE, archives, check_archive, require_tools, sha256
 
 DRAM = 0x80000000
 KERNEL = 0x80200000
@@ -27,6 +27,7 @@ FW_ISA = "rv64imac_zicsr_zifencei"
 FDT_GROWTH = 0x10000  # Space beyond totalsize for OpenSBI's in-place fixups.
 IMAGE_NAMES = ("fw_jump.bin", "Image", "initramfs.cpio", "board.dtb")
 IMAGE_LOCK = PROFILE / "images.lock.json"
+IMAGE_DIR = CACHE / "images"
 CPU_PROFILE = PROFILE / "qemu-cpu.txt"
 LOGS = CACHE / "logs"
 ENV = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
@@ -241,6 +242,30 @@ def board_dtb(directory, initrd_end):
     return dtb, FDT + total + FDT_GROWTH
 
 
+def verified_manifest():
+    manifest = json.loads(IMAGE_LOCK.read_bytes())
+    actual = json.loads((IMAGE_DIR / "manifest.json").read_bytes())
+    if actual != manifest or sha256(LOCK) != manifest["source_lock_sha256"]:
+        raise ValueError("prepared manifest differs from the source or image lock")
+    if manifest["qemu_cpu"] != CPU_PROFILE.read_text().strip() or manifest["isa"] != ISA:
+        raise ValueError("prepared manifest differs from the CPU profile")
+    if [image["path"] for image in manifest["images"]] != list(IMAGE_NAMES):
+        raise ValueError("expected the four fixed image names in the image lock")
+    for image in manifest["images"]:
+        path = IMAGE_DIR / image["path"]
+        if path.stat().st_size != image["bytes"]:
+            raise ValueError(f"{path}: size mismatch")
+        check_archive(path, image["sha256"])
+    return manifest
+
+
+def guest_build_dir():
+    inputs = [LOCK, PROFILE / "buildroot.defconfig", PROFILE / "linux.fragment", PROFILE / "rootfs/init",
+              PROFILE / "board.dts"]
+    stamp = hashlib.sha256("".join(sha256(path) for path in inputs).encode()).hexdigest()[:16]
+    return CACHE / "build" / "guest" / stamp
+
+
 def main():
     require_tools("make", "gcc", "g++", "git", "perl", "tar", "wget", "cpio", "unzip", "rsync", "patch",
                   "file", "bzip2", "xz", "bc", "bison", "flex", "dtc", "fdtget")
@@ -250,10 +275,7 @@ def main():
         raise ValueError("run as a non-root user and set RISCV_LINUX_JOBS to a positive count")
     start = time.monotonic()
     LOGS.mkdir(parents=True, exist_ok=True)
-    inputs = [LOCK, PROFILE / "buildroot.defconfig", PROFILE / "linux.fragment", PROFILE / "rootfs/init",
-              PROFILE / "board.dts"]
-    stamp = hashlib.sha256("".join(sha256(path) for path in inputs).encode()).hexdigest()[:16]
-    build = CACHE / "build" / "guest" / stamp
+    build = guest_build_dir()
     build.mkdir(parents=True, exist_ok=True)
     br_out = build / "buildroot"
     k_out = build / "linux"
