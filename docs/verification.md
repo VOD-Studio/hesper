@@ -1965,3 +1965,78 @@ SHA-256。所用种子为 `.cache/riscv-linux/alpine-bench-pvofb4ic/seed.raw`。
 启用的数据盘镜像在进入串口 shell 前加载八个模块。表中的数据包含整段客体
 启动，设备实现的成本需要函数级测量。报告包含首提示批次的推进量及虚拟时间，
 见 `.cache/riscv-linux/alpine-bench-hnn7zx1i/report.json`。
+
+## RISC-V Linux PMP 地址区间预解码
+
+Samply 0.13.1 受本机 `perf_event_paranoid=2` 限制。带符号的 release
+诊断构建改为每 256 次 `Machine::run` 测一次批次，在同一份官方带盘镜像
+上独立启动两次。两次到首提示都采到 299 批、4,898,816 次推进。
+每次都有 20,231,807 次 `Pmp::allows` 调用，相当于每次推进 4.13 次。
+扣除空计时开销后，每次检查约为 5.54 和 5.77 ns。Sv39 页表遍历的计时
+包含其 PMP 检查，译码、UART 推进和中断观察的独立计时均低于 PMP。
+探针补丁在 `.cache/riscv-linux/alpine-builds-9UtNMp/`，两次原始计数在
+`.cache/riscv-linux/alpine-bench-gb_8biuc/` 下的 `hesper-pty-stderr.log`。
+
+PMP 写入 CSR 时预解码 TOR、NA4、NAPOT 的地址区间。访存检查按 PMP 槽位
+优先级遍历已解码区间，执行完整访问范围和权限检查。写入相邻的
+`PMPADDR` 会重建受影响的 TOR 边界，包括前一槽为 OFF 和跨 CSR 组的情形。
+
+定值重放用同一份 `alpine_replay.rs` 分别构建基线和候选的 release 示例。
+每批推进预算为 16,384，第 80,000 批后送入固定的 `printf` 命令，再推进
+1,024 批。对两个官方镜像配置分别重放，带盘使用基准报告中的同一份种子。
+下面以带盘配置为例，两个输出文件用 `cmp` 逐字节比较。无盘配置改用
+`images-alpine-lts` 并省去末尾的种子参数。
+
+```sh
+"$BASELINE_REPLAY" "$RISCV_LINUX_CACHE/images-alpine-lts-blk" 0x80058000 \
+  baseline.raw 80000 1024 "$ALPINE_BENCH_SEED" > baseline.txt
+"$CANDIDATE_REPLAY" "$RISCV_LINUX_CACHE/images-alpine-lts-blk" 0x80058000 \
+  candidate.raw 80000 1024 "$ALPINE_BENCH_SEED" > candidate.txt
+cmp baseline.raw candidate.raw
+cmp baseline.txt candidate.txt
+```
+
+### 同机交替对照
+
+普通 release 基线为 `d8e9c80`。同一台 Ryzen 7 5800、同一组锁定镜像及同一
+8 MiB 种子，交替运行两版 CLI 与 Chromium 155 生产站点。八次预热和
+24 次正式启动均通过完整提示符及独立命令结果检查。下表以秒计。
+
+| 宿主 | 镜像 | 基线三次 | 候选三次 | 基线中位数 | 候选中位数 | 节省（s） | 缩短 |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: |
+| CLI | 无盘 | 70.80 / 70.84 / 70.85 | 41.58 / 41.57 / 42.28 | 70.84 | 41.58 | 29.27 | 41.31% |
+| CLI | 带盘 | 97.14 / 96.43 / 96.30 | 56.64 / 56.70 / 56.77 | 96.43 | 56.70 | 39.73 | 41.20% |
+| Chromium | 无盘 | 94.16 / 98.36 / 92.87 | 52.82 / 52.50 / 52.78 | 94.16 | 52.78 | 41.38 | 43.95% |
+| Chromium | 带盘 | 135.59 / 135.76 / 131.72 | 72.63 / 74.15 / 71.65 | 135.59 | 72.63 | 62.95 | 46.43% |
+
+两个带盘宿主均超过 10% 的合入门槛。普通构建的哈希、每轮数据和串口在
+`.cache/riscv-linux/alpine-bench-m6nppmwu/report.json`。
+
+### 正确性和门禁
+
+两个镜像配置的 81,024 批记录分别逐字节一致，涵盖整数寄存器、PC、
+特权模式、SATP、最后异常、推进量、退休数、虚拟时间和每批串口字节数。
+两版的每份串口原始字节也完全一致，均有独立的 `HESPER_REPLAY:42` 行和
+两次提示符。重放记录在 `.cache/riscv-linux/alpine-builds-9UtNMp/replay/`。
+
+PMP、Sv39 和压缩取指定向测试通过，覆盖 PMP 优先级及访问范围、锁定 TOR、
+页表读写权限、跨页取指和异常重试，并新增了跨 CSR 组的 TOR 边界失效回归。
+`make verify`、`make wasm-browser-test`、`bun run check` 和
+`bun run build` 均在本机通过。
+
+四个官方 Alpine 实机门禁均通过。无盘在管道、PTY 和 Chromium 中
+离线验签、安装并运行 `mawk`，冷启动再次验证 RAM 根。带盘在原生两种
+传输上写入、导出并读回，Chromium 和 CLI 在两个方向交换完整的 8 MiB
+磁盘。浏览器验收也通过了继续后再导出、未保存停止确认和导出竞态检查。
+实机门禁的 CLI 和生产站点与上表候选产物的 SHA-256 一致。
+
+| 命令 | 本地报告 |
+| --- | --- |
+| `make riscv-linux-alpine-native` | `logs-alpine/native-ajbqlej5/report.json` |
+| `make riscv-linux-alpine-browser` | `logs-alpine/browser-ig3iny8s/report.json` |
+| `make riscv-linux-alpine-blk-native` | `logs-alpine-blk/native-7oyva1zh/report.json` |
+| `make riscv-linux-alpine-blk-browser` | `logs-alpine-blk/hesper-blk-browser.json` |
+
+报告相对于本次的 `RISCV_LINUX_CACHE=.cache/riscv-linux/repro-c`。
+无盘原生门禁通过 `RISCV_LINUX_BLK_IMAGES=.cache/riscv-linux/blk-a/images-blk`
+指定单独缓存的标准数据盘控制镜像。浏览器使用 `CHROME_BIN=chromium`。

@@ -14,11 +14,19 @@ pub(crate) enum Access {
     Execute = 4,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct Region {
+    start: u64,
+    end: u64,
+    cfg: u8,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Pmp {
     cfg: [u8; SLOTS],
     addr: [u64; SLOTS],
-    active: u16,
+    regions: [Region; SLOTS],
+    region_count: usize,
 }
 
 impl Pmp {
@@ -43,8 +51,6 @@ impl Pmp {
                             cfg &= !2; // Reserved R=0/W=1 coerces to no access.
                         }
                         self.cfg[index] = cfg;
-                        let bit = 1 << index;
-                        self.active = (self.active & !bit) | if cfg & MODE != 0 { bit } else { 0 };
                     }
                 }
             }
@@ -60,7 +66,36 @@ impl Pmp {
             }
             _ => return None,
         }
+        // TOR can depend on the preceding PMPADDR, even across CSR banks
+        // and when the preceding entry itself is OFF.
+        self.update_regions();
         Some(())
+    }
+
+    fn update_regions(&mut self) {
+        self.region_count = 0;
+        for (index, cfg) in self.cfg.iter().copied().enumerate() {
+            let encoded = self.addr[index];
+            let (start, end) = match cfg & MODE {
+                0 => continue,
+                TOR => (
+                    index.checked_sub(1).map_or(0, |i| self.addr[i] << 2),
+                    encoded << 2,
+                ),
+                0x10 => (encoded << 2, (encoded + 1) << 2),
+                _ => {
+                    let bits = encoded.trailing_ones();
+                    let mask = (1 << bits) - 1;
+                    let start = (encoded & !mask) << 2;
+                    (start, start + (8 << bits))
+                }
+            };
+            // Keep enabled, empty TOR entries in the list for the overflow
+            // check on the requested span.
+            let end = if start < end { end } else { 0 };
+            self.regions[self.region_count] = Region { start, end, cfg };
+            self.region_count += 1;
+        }
     }
 
     pub(crate) fn allows(
@@ -71,37 +106,49 @@ impl Pmp {
         access: Access,
     ) -> bool {
         let machine = mode == PrivilegeMode::Machine;
-        if self.active == 0 {
+        if self.region_count == 0 {
             return machine;
         }
         let Some(end) = address.checked_add(bytes as u64) else {
             return false;
         };
-        let mut active = self.active;
-        while active != 0 {
-            let index = active.trailing_zeros() as usize;
-            active &= active - 1;
-            let cfg = self.cfg[index];
-            let encoded = self.addr[index];
-            let (lo, hi) = match cfg & MODE {
-                TOR => (
-                    index.checked_sub(1).map_or(0, |i| self.addr[i] << 2),
-                    encoded << 2,
-                ),
-                0x10 => (encoded << 2, (encoded + 1) << 2),
-                _ => {
-                    let bits = encoded.trailing_ones();
-                    let mask = (1 << bits) - 1;
-                    let lo = (encoded & !mask) << 2;
-                    (lo, lo + (8 << bits))
-                }
-            };
-            if lo < hi && address < hi && lo < end {
-                return lo <= address
-                    && end <= hi
-                    && (machine && cfg & LOCK == 0 || cfg & access as u8 == access as u8);
+        for region in &self.regions[..self.region_count] {
+            if address < region.end && region.start < end {
+                return region.start <= address
+                    && end <= region.end
+                    && (machine && region.cfg & LOCK == 0
+                        || region.cfg & access as u8 == access as u8);
             }
         }
         machine
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tor_tracks_predecessor_and_config_writes_across_csr_banks() {
+        let mut pmp = Pmp::default();
+        let supervisor = PrivilegeMode::Supervisor;
+        pmp.write(0x3b7, 0x1000 >> 2).unwrap();
+        pmp.write(0x3b8, 0x1010 >> 2).unwrap();
+        pmp.write(0x3a2, u64::from(TOR | Access::Read as u8))
+            .unwrap();
+
+        assert!(pmp.allows(0x1000, 8, supervisor, Access::Read));
+        assert!(!pmp.allows(0x1000, 8, supervisor, Access::Write));
+        pmp.write(0x3b7, 0x1004 >> 2).unwrap();
+        assert!(!pmp.allows(0x1000, 8, supervisor, Access::Read));
+        assert!(pmp.allows(0x1004, 8, supervisor, Access::Read));
+        pmp.write(0x3b8, 0x1004 >> 2).unwrap();
+        assert!(!pmp.allows(0x1004, 4, supervisor, Access::Read));
+
+        pmp.write(0x3a2, 0x10 | Access::Execute as u64).unwrap();
+        assert!(pmp.allows(0x1004, 4, supervisor, Access::Execute));
+        assert!(!pmp.allows(0x1004, 4, supervisor, Access::Read));
+        pmp.write(0x3a2, 0).unwrap();
+        assert!(!pmp.allows(0x1004, 4, supervisor, Access::Execute));
     }
 }
