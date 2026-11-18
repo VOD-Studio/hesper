@@ -87,10 +87,25 @@ enum LinuxError {
     IdleWithPendingSerial,
 }
 
+#[derive(Clone, Copy)]
+enum FuelLimit {
+    Bounded(u64),
+    Unlimited,
+}
+
+impl std::fmt::Display for FuelLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bounded(limit) => write!(f, "{limit}"),
+            Self::Unlimited => f.write_str("unlimited"),
+        }
+    }
+}
+
 struct Options {
     images: PathBuf,
     disk: Option<(PathBuf, PathBuf)>,
-    max_fuel: u64,
+    fuel_limit: FuelLimit,
     diagnostics: bool,
 }
 
@@ -98,7 +113,8 @@ impl Options {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Self>, LinuxError> {
         let mut images = None;
         let (mut disk_in, mut disk_out) = (None, None);
-        let mut max_fuel = DEFAULT_MAX_FUEL;
+        let mut max_fuel = None;
+        let mut unlimited = false;
         let mut diagnostics = false;
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -122,19 +138,30 @@ impl Options {
                     }
                 }
                 "--max-fuel" => {
-                    max_fuel = args
-                        .next()
-                        .and_then(|n| n.parse().ok())
-                        .filter(|&n| n > 0)
-                        .ok_or_else(|| {
-                            LinuxError::Usage("--max-fuel requires a positive integer".into())
-                        })?;
+                    max_fuel = Some(
+                        args.next()
+                            .and_then(|n| n.parse().ok())
+                            .filter(|&n| n > 0)
+                            .ok_or_else(|| {
+                                LinuxError::Usage("--max-fuel requires a positive integer".into())
+                            })?,
+                    );
                 }
+                "--no-fuel-limit" => unlimited = true,
                 "--diagnostics" => diagnostics = true,
                 "--help" | "-h" => return Ok(None),
                 _ => return Err(LinuxError::Usage(format!("unknown linux argument: {arg}"))),
             }
         }
+        let fuel_limit = match (max_fuel, unlimited) {
+            (Some(_), true) => {
+                return Err(LinuxError::Usage(
+                    "--max-fuel and --no-fuel-limit are mutually exclusive".into(),
+                ));
+            }
+            (None, true) => FuelLimit::Unlimited,
+            (limit, false) => FuelLimit::Bounded(limit.unwrap_or(DEFAULT_MAX_FUEL)),
+        };
         let disk = match (disk_in, disk_out) {
             (None, None) => None,
             (Some(input), Some(output)) => Some((input, output)),
@@ -147,7 +174,7 @@ impl Options {
         Ok(Some(Self {
             images: images.ok_or_else(|| LinuxError::Usage("--images is required".into()))?,
             disk,
-            max_fuel,
+            fuel_limit,
             diagnostics,
         }))
     }
@@ -479,7 +506,7 @@ struct Session {
 }
 
 impl Session {
-    fn run(&mut self, max_fuel: u64) -> Result<Exit, LinuxError> {
+    fn run(&mut self, fuel_limit: FuelLimit) -> Result<Exit, LinuxError> {
         let terminated = io::stdin()
             .is_terminal()
             .then(|| Arc::new(AtomicBool::new(false)));
@@ -534,9 +561,12 @@ impl Session {
                 return Ok(Exit::Quit);
             }
 
-            let fuel = (max_fuel - self.spent).min(u64::from(BATCH)) as u32;
+            let fuel = match fuel_limit {
+                FuelLimit::Bounded(limit) => (limit - self.spent).min(u64::from(BATCH)) as u32,
+                FuelLimit::Unlimited => BATCH,
+            };
             let progress = self.machine.run(fuel);
-            self.spent += u64::from(progress.spent);
+            self.spent = self.spent.saturating_add(u64::from(progress.spent));
             let output = self
                 .drain(&mut stdout)
                 .map_err(|source| LinuxError::HostIo {
@@ -560,13 +590,15 @@ impl Session {
             {
                 return Ok(Exit::Eof);
             }
-            if self.spent == max_fuel {
-                return Err(LinuxError::FuelExhausted(max_fuel));
+            if let FuelLimit::Bounded(limit) = fuel_limit
+                && self.spent == limit
+            {
+                return Err(LinuxError::FuelExhausted(limit));
             }
             if idle && (input_end.is_some() || !pending.is_empty()) {
                 // No device event can make progress, and there is no new host
                 // input to wait for while an old chunk is blocked or at EOF.
-                // Preserve the finite budget/error contract rather than spin.
+                // Fail rather than spin, even if there is no total fuel limit.
                 return Err(LinuxError::IdleWithPendingSerial);
             }
         }
@@ -591,11 +623,11 @@ impl Session {
         Ok(wrote)
     }
 
-    fn report(&self, exit: &str, max_fuel: u64) {
+    fn report(&self, exit: &str, fuel_limit: FuelLimit) {
         let diagnostics = self.machine.diagnostics();
         eprintln!(
-            "linux: exit={exit} fuel={}/{} retired={} time={}",
-            self.spent, max_fuel, diagnostics.cpu.retired, diagnostics.cpu.time
+            "linux: exit={exit} fuel={}/{fuel_limit} retired={} time={}",
+            self.spent, diagnostics.cpu.retired, diagnostics.cpu.time
         );
         eprintln!("linux: snapshot={diagnostics:#x?}");
         self.tail.report();
@@ -608,6 +640,7 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
         println!(
             "Usage: hesper linux --images <dir> [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout. With paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nDefault fuel: {DEFAULT_MAX_FUEL} guest transitions."
         );
+        println!("Use --no-fuel-limit instead of --max-fuel N to remove the total session limit.");
         return Ok(());
     };
     let disk = options
@@ -620,22 +653,22 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
         spent: 0,
         tail: SerialTail::new(),
     };
-    let result = session.run(options.max_fuel);
+    let result = session.run(options.fuel_limit);
     if let (Ok(Exit::Quit), Some((_, output))) = (&result, &options.disk) {
         let bytes = session
             .machine
             .data_disk()
             .expect("booted with a data disk");
         if let Err(error) = save_disk(output, bytes) {
-            session.report("export-error", options.max_fuel);
+            session.report("export-error", options.fuel_limit);
             return Err(error.into());
         }
     }
     match &result {
-        Ok(exit) if options.diagnostics => session.report(exit.name(), options.max_fuel),
-        Err(LinuxError::FuelExhausted(_)) => session.report("fuel", options.max_fuel),
-        Err(LinuxError::TrapLoop(_)) => session.report("trap-loop", options.max_fuel),
-        Err(_) => session.report("error", options.max_fuel),
+        Ok(exit) if options.diagnostics => session.report(exit.name(), options.fuel_limit),
+        Err(LinuxError::FuelExhausted(_)) => session.report("fuel", options.fuel_limit),
+        Err(LinuxError::TrapLoop(_)) => session.report("trap-loop", options.fuel_limit),
+        Err(_) => session.report("error", options.fuel_limit),
         Ok(_) => {}
     }
     result?;

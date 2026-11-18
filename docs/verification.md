@@ -1574,6 +1574,15 @@ Chrome 155.0.8059.84 打开生产页面，使用原生文件选取、键盘输�
 串口、下载原件、截图和哈希见 `.cache/riscv-linux/blk-a/logs-blk/`
 的 `hesper-blk-browser.json`、`browser-rv_z5kgl/`。
 
+## RISC-V Linux CLI：不限额串口会话
+
+用 `cargo build --locked --release -p hesper` 构建 CLI，以与镜像锁一致的
+`repro-d/images` 在真实 PTY 冷启动。默认模式执行客体命令并以 Ctrl+] 正常
+退出，报告 `fuel=336855040/450000000`。不限额模式在客体执行 `sleep 4000`
+（虚拟秒）后得到独立结果行和完整提示符，以 Ctrl+] 正常退出，报告
+`fuel=516554752/unlimited`，超过原默认上限。两次退出均恢复 PTY 原设置。
+`--max-fuel 1` 仍以 `fuel=1/1` 报错；两个预算选项的两种顺序均在装载前拒绝。
+
 ## RISC-V Linux 数据盘：独立启动成本采样
 
 同一 Arch Linux x86-64 宿主、同一 release 量测构建、管道输入、每种配置

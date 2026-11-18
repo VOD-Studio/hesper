@@ -10,6 +10,7 @@
 - **RISC-V 装载器**：新增固定板的 `Machine::boot` / `reboot`，在写 RAM 前校验 OpenSBI 驻留范围、Linux Image 头、initramfs 与 DTB；无效重启保留原会话。
 - **CLI**：新增独立 `hesper linux --images <dir>`，校验锁定镜像，在本机串口启动 RV64IMAC Linux 和 BusyBox；支持管道、PTY、Ctrl+] 退出及有界推进诊断。
 - **CLI / RISC-V Linux**：独立锁定的 `blk` 配置支持在 `/dev/vda` 挂载 raw 数据盘。`--disk-in` 保持只读，卸载后用 Ctrl+] 原子导出到新的 `--disk-out`，供下次冷启动使用。
+- **CLI / RISC-V Linux**：`--no-fuel-limit` 可取消串口会话的推进总上限；默认预算、分批执行和 Ctrl+] 退出不变。
 - **Wasm**：新增可独立加载的 `RiscvLinux` 绑定，分块推进和收发原始 UART 字节；RV64 地址、寄存器和累计计数使用 `bigint`，不捆绑客体镜像。
 - **Web**：新增独立 RISC-V Linux 串口工作区。选择锁定的本地镜像后可启动、暂停、继续和停止真实 Linux；不上传镜像，不影响 Apple-1 或 CPU 6502 的启动。
 - **Wasm / Web**：RISC-V Linux 可单独选用本地 raw 数据盘。先在客体卸载，再暂停并下载；同一份盘可在原生 CLI 与浏览器之间往返，未导出的写入不会自动保存。
