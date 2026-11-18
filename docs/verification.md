@@ -1369,3 +1369,16 @@ TOR/NA4/NAPOT；低索引优先，命中条目覆盖全访问方可放行。探�
 fuel。QEMU 在 `write_tohost+16` 停止并以 GDB 读取同一 RAM，五项均为
 `01 00 00 00 00 00 00 00`。ELF、反汇编、镜像 SHA-256 和原始结果在
 `.cache/riscv-linux/repro-c/logs/full-isa/`；`tohost` 不是产品 MMIO 设备。
+
+## RISC-V Linux L4：Sv39 与跨页重试
+
+`cargo test --locked -p hesper-riscv-linux --test sv39 --test pmp` 12 项通过；
+`make verify` 通过。手工构造 4 KiB、2 MiB 和 1 GiB 叶后读取同一物理签名，
+验证错误 PTE、超页对齐、U/S、SUM/MXR、隐式页表访问 PMP、A/D 更新和
+`satp.MODE` 不支持时保持旧值。PMP 拒绝页表读写时，客体得到原访问类的
+access fault 而不是 page fault，目标数据和 PTE 均未改写。
+
+跨页探针以 1 fuel 触发缺第二页的取指故障；`mepc=VA+0xffe`、
+`mtval=VA+0x1000`、`mcause=12`。补 PTE 后，5 fuel 执行处理器和 MRET，
+随后 1 fuel 重试并只退休一次，目的寄存器只更新一次。日志在
+`.cache/riscv-linux/logs/l4-*.log`。本卡仍不证明设备时序或真实 OpenSBI。

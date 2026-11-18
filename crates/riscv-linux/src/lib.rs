@@ -7,6 +7,7 @@ mod compressed;
 mod decode;
 mod hart;
 mod machine;
+mod mmu;
 mod pmp;
 mod privilege;
 

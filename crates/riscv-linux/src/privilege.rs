@@ -258,9 +258,9 @@ impl State {
                 self.mip_software = (self.mip_software & !writable) | (value & writable);
             }
             SATP => match value >> 60 {
-                0 => self.satp = 0,     // Bare has no ASID or PPN.
-                8 => self.satp = value, // Sv39 encoding only; no page walk yet.
-                _ => {}                 // An unsupported MODE leaves the entire CSR unchanged.
+                0 => self.satp = 0, // Bare has no ASID or PPN.
+                8 => self.satp = value,
+                _ => {} // An unsupported MODE leaves the entire CSR unchanged.
             },
             MSTATUS => {
                 self.mstatus = (value & MSTATUS_WRITABLE) | SXL_64 | UXL_64;

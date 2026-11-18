@@ -1,5 +1,6 @@
 use crate::{
-    DRAM_BASE, atomic, compressed, decode::alu, dram_range, machine::Trap, pmp::Access, privilege,
+    DRAM_BASE, PrivilegeMode, atomic, compressed, decode::alu, dram_range, machine::Trap, mmu,
+    pmp::Access, privilege,
 };
 use core::ops::Range;
 
@@ -63,15 +64,9 @@ impl Hart {
         if pc & 1 != 0 {
             return Err(self.trap(0, pc));
         }
-        if !self
-            .privilege
-            .pmp
-            .allows(pc, 2, self.privilege.mode, Access::Execute)
-        {
-            return Err(self.trap(1, pc));
-        }
-        let range = dram_range(pc, 2).ok_or_else(|| self.trap(1, pc))?;
-        let start = range.start;
+        let (translated, range) = self.map_ram(ram, pc, 2, Access::Execute)?;
+        let physical = translated.address;
+        translated.commit(ram);
         let low = u16::from_le_bytes(ram[range].try_into().expect("two-byte fetch"));
         let (instruction, length) = if low & 3 != 3 {
             (
@@ -79,17 +74,25 @@ impl Hart {
                 2,
             )
         } else {
-            if !self
-                .privilege
-                .pmp
-                .allows(pc, 4, self.privilege.mode, Access::Execute)
-            {
-                return Err(self.trap(1, pc + 2));
-            }
-            let high = ram
-                .get(start + 2..start + 4)
-                .ok_or_else(|| self.trap(1, pc + 2))?;
-            let high = u16::from_le_bytes(high.try_into().expect("two-byte fetch"));
+            let next_half = pc.wrapping_add(2);
+            let range = if pc & 0xfff == 0xffe {
+                let (translated, range) = self.map_ram(ram, next_half, 2, Access::Execute)?;
+                translated.commit(ram);
+                range
+            } else {
+                // Translation is shared within the page, but a four-byte
+                // instruction at a halfword boundary can straddle a PMP entry.
+                if pc & 3 != 0
+                    && !self
+                        .privilege
+                        .pmp
+                        .allows(physical, 4, self.privilege.mode, Access::Execute)
+                {
+                    return Err(self.trap(1, next_half));
+                }
+                dram_range(physical + 2, 2).ok_or_else(|| self.trap(1, next_half))?
+            };
+            let high = u16::from_le_bytes(ram[range].try_into().expect("two-byte fetch"));
             (u32::from(low) | (u32::from(high) << 16), 4)
         };
 
@@ -113,7 +116,7 @@ impl Hart {
             (0x03, 0..=6) => {
                 let bytes = 1 << (funct3 & 3);
                 let address = lhs.wrapping_add_signed(immediate);
-                let raw = self.read_ram(ram, address, bytes)?;
+                let (_, raw) = self.read_ram(ram, address, bytes)?;
                 let value = if funct3 < 4 {
                     sign_extend(raw, bytes * 8) as u64
                 } else {
@@ -175,6 +178,13 @@ impl Hart {
                         .ok_or(invalid)?;
                 }
                 0x1050_0073 if self.privilege.can_wfi() => self.waiting = true,
+                _ if instruction & 0xfe00_7fff == 0x1200_0073
+                    && self.privilege.mode != PrivilegeMode::User
+                    && (self.privilege.mode == PrivilegeMode::Machine
+                        || self.privilege.mstatus & privilege::MSTATUS_TVM == 0) =>
+                {
+                    // SFENCE.VMA: this implementation keeps no translations.
+                }
                 _ => return Err(illegal()),
             },
             (0x73, 1..=3 | 5..=7) => {
@@ -196,26 +206,22 @@ impl Hart {
         Ok(())
     }
 
-    fn read_ram(&self, ram: &[u8], address: u64, bytes: usize) -> Result<u64, Trap> {
+    fn read_ram(&self, ram: &mut [u8], address: u64, bytes: usize) -> Result<(u64, u64), Trap> {
         if address & (bytes as u64 - 1) != 0 {
             return Err(self.trap(4, address));
         }
-        if !self
-            .privilege
-            .pmp
-            .allows(address, bytes, self.privilege.data_mode(), Access::Read)
-        {
-            return Err(self.trap(5, address));
-        }
-        let range = dram_range(address, bytes).ok_or_else(|| self.trap(5, address))?;
+        let (translation, range) = self.map_ram(ram, address, bytes, Access::Read)?;
+        let physical = translation.address;
+        translation.commit(ram);
         let value = &ram[range];
-        Ok(match bytes {
+        let value = match bytes {
             1 => u64::from(value[0]),
             2 => u64::from(u16::from_le_bytes(value.try_into().expect("halfword"))),
             4 => u64::from(u32::from_le_bytes(value.try_into().expect("word"))),
             8 => u64::from_le_bytes(value.try_into().expect("doubleword")),
             _ => unreachable!("decoded load width"),
-        })
+        };
+        Ok((physical, value))
     }
 
     fn write_ram(
@@ -225,9 +231,11 @@ impl Hart {
         bytes: usize,
         value: u64,
     ) -> Result<(), Trap> {
-        let range = self.store_range(address, bytes, Access::Write)?;
+        let (translation, range) = self.store_range(ram, address, bytes, Access::Write)?;
+        let physical = translation.address;
+        translation.commit(ram);
         ram[range].copy_from_slice(&value.to_le_bytes()[..bytes]);
-        self.invalidate_reservation(address, bytes);
+        self.invalidate_reservation(physical, bytes);
         Ok(())
     }
 
@@ -254,20 +262,24 @@ impl Hart {
 
         let value = match op {
             LoadReserved => {
-                let old = self.read_ram(ram, address, bytes)?;
-                self.reservation = Some((address, bytes));
+                let (physical, old) = self.read_ram(ram, address, bytes)?;
+                self.reservation = Some((physical, bytes));
                 sign_extend(old, bytes * 8) as u64
             }
             StoreConditional => {
-                let reserved = self.reservation.take() == Some((address, bytes));
-                let range = self.store_range(address, bytes, Access::Write)?;
+                let reservation = self.reservation.take();
+                let (translation, range) = self.store_range(ram, address, bytes, Access::Write)?;
+                let reserved = reservation == Some((translation.address, bytes));
                 if reserved {
+                    translation.commit(ram);
                     ram[range].copy_from_slice(&rhs.to_le_bytes()[..bytes]);
                 }
                 u64::from(!reserved)
             }
             _ => {
-                let range = self.store_range(address, bytes, Access::Atomic)?;
+                let (translation, range) = self.store_range(ram, address, bytes, Access::Atomic)?;
+                let physical = translation.address;
+                translation.commit(ram);
                 let old = if bytes == 4 {
                     u64::from(u32::from_le_bytes(
                         ram[range.clone()].try_into().expect("word"),
@@ -277,7 +289,7 @@ impl Hart {
                 };
                 let new = op.apply(bytes, old, rhs);
                 ram[range].copy_from_slice(&new.to_le_bytes()[..bytes]);
-                self.invalidate_reservation(address, bytes);
+                self.invalidate_reservation(physical, bytes);
                 sign_extend(old, bytes * 8) as u64
             }
         };
@@ -287,21 +299,45 @@ impl Hart {
 
     fn store_range(
         &self,
+        ram: &[u8],
         address: u64,
         bytes: usize,
         access: Access,
-    ) -> Result<Range<usize>, Trap> {
+    ) -> Result<(mmu::Translation, Range<usize>), Trap> {
         if address & (bytes as u64 - 1) != 0 {
             return Err(self.trap(6, address));
         }
-        if !self
-            .privilege
-            .pmp
-            .allows(address, bytes, self.privilege.data_mode(), access)
-        {
-            return Err(self.trap(7, address));
+        self.map_ram(ram, address, bytes, access)
+    }
+
+    fn map_ram(
+        &self,
+        ram: &[u8],
+        address: u64,
+        bytes: usize,
+        access: Access,
+    ) -> Result<(mmu::Translation, Range<usize>), Trap> {
+        let (mode, access_fault, page_fault) = match access {
+            Access::Execute => (self.privilege.mode, 1, 12),
+            Access::Read => (self.privilege.data_mode(), 5, 13),
+            Access::Write | Access::Atomic => (self.privilege.data_mode(), 7, 15),
+        };
+        let translation =
+            mmu::translate(&self.privilege, ram, address, access).map_err(|fault| {
+                self.trap(
+                    match fault {
+                        mmu::Fault::Access => access_fault,
+                        mmu::Fault::Page => page_fault,
+                    },
+                    address,
+                )
+            })?;
+        let physical = translation.address;
+        if !self.privilege.pmp.allows(physical, bytes, mode, access) {
+            return Err(self.trap(access_fault, address));
         }
-        dram_range(address, bytes).ok_or_else(|| self.trap(7, address))
+        let range = dram_range(physical, bytes).ok_or_else(|| self.trap(access_fault, address))?;
+        Ok((translation, range))
     }
 
     fn write(&mut self, rd: usize, value: u64) {
