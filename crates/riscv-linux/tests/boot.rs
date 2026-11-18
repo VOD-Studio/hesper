@@ -1,6 +1,6 @@
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS,
-    MAX_INITRAMFS_BYTES, Machine, PrivilegeMode,
+    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, HartIsa, INITRAMFS_ADDRESS,
+    KERNEL_ADDRESS, MAX_INITRAMFS_BYTES, Machine, PrivilegeMode,
 };
 use std::ops::Range;
 
@@ -343,6 +343,23 @@ fn newc_archive(data: &[u8]) -> Vec<u8> {
     newc_entry(&mut archive, b"init\0\0\0", data);
     newc_entry(&mut archive, b"TRAILER!!!\0\0", b"");
     archive
+}
+
+#[test]
+fn imafdc_cold_boot_with_disk_exposes_f_and_d_and_owns_the_disk() {
+    let mut fixture = Fixture::new(7, FIRMWARE_END);
+    fixture.firmware = 0x3010_22f3u32.to_le_bytes(); // csrr x5, misa
+    let contents = [0xab; 512];
+    let mut machine = Machine::boot_with_isa_and_disk(
+        fixture.images(),
+        HartIsa::Imafdc,
+        DataDisk::new(contents.to_vec()).unwrap(),
+    )
+    .unwrap();
+    let fp_bits = (1 << (b'F' - b'A')) | (1 << (b'D' - b'A'));
+    assert_eq!(machine.run(1).retired, 1);
+    assert_eq!(machine.debug_state().x[5] & fp_bits, fp_bits);
+    assert_eq!(machine.data_disk(), Some(contents.as_slice()));
 }
 
 #[test]

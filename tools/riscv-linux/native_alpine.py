@@ -13,14 +13,12 @@ from alpine_acceptance import cold_states, kernel_states, states
 from build_guest import (ALPINE_IMAGE_DIR, ALPINE_LEGACY_DIR, ALPINE_LOGS, BLK_IMAGE_DIR, ENV, IMAGE_DIR,
                          IMAGE_NAMES, verified_manifest)
 from disk_acceptance import check_proof, disk_states, make_seed
-from native import ACCEPTANCE_MAX_FUEL, BOOT_SECONDS, EXIT_SECONDS, capture_serial, linux_command, require_exit, run_serial
+from native import (ACCEPTANCE_MAX_FUEL, ALPINE_BOOT_SECONDS, ALPINE_MAX_FUEL, ALPINE_STEP_SECONDS,
+                    BOOT_SECONDS, EXIT_SECONDS, capture_serial, linux_command, require_exit, run_serial)
 from native_disk import expect_entries, require_boot_fuel
 from serial_acceptance import STEP_BYTES, STEP_SECONDS, session
 from sources import require_tools, sha256
 
-ALPINE_MAX_FUEL = 2_000_000_000
-ALPINE_BOOT_SECONDS = 180
-ALPINE_STEP_SECONDS = 60
 MANIFEST_MISMATCH = "manifest differs from the embedded image lock"
 DISK_MARKER = "ALPINE_BLK_CONTROL_OK"
 

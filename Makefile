@@ -180,10 +180,14 @@ riscv-linux-native: riscv-linux-firmware
 	cargo build --locked --release -p hesper
 	python3 tools/riscv-linux/native.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
 
-.PHONY: riscv-linux-blk-native
+.PHONY: riscv-linux-blk-native riscv-linux-alpine-blk-native
 riscv-linux-blk-native:
 	cargo build --locked --release -p hesper
 	python3 tools/riscv-linux/native_disk.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
+
+riscv-linux-alpine-blk-native:
+	cargo build --locked --release -p hesper
+	python3 tools/riscv-linux/native_disk.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper" --alpine
 
 .PHONY: riscv-linux-initramfs-native
 riscv-linux-initramfs-native:

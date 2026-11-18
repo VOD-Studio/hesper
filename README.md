@@ -187,19 +187,34 @@ apk --no-network verify "$PKG" &&
 mawk -v n=12 'BEGIN {print sprintf("%.3f", n*1.25/2)}'  # 7.500
 ```
 
-只写入当前 RAM 根；下次冷启动需重新安装。Alpine 不支持换根、数据盘或网络。
+软件包装入当前 RAM 根。下次冷启动需重新安装。Alpine 使用固定的启动根。
 网页工作区选择「Alpine」后加载同目录四个镜像，无需 `manifest.json`。
 构建工具和容器见[参考板构建说明](docs/plan/riscv-linux.md)；
 Alpine 准备阶段另需 `gpg`、`gpgv` 和 `openssl`。首次构建交叉工具链时，
 Buildroot 会下载依赖。CLI 和网页也接受原来的 `images-alpine` 四件套。
 
 `make riscv-linux-alpine-reference` 需要先执行 `make riscv-linux-qemu`。
-数据盘参考镜像由 `make riscv-linux-alpine-blk-data` 生成，使用同一官方内核
-和 OpenSBI。`make riscv-linux-alpine-blk-reference` 用固定 QEMU 重放
-`/dev/vda` 的写入和只读冷启动。
 重放原生和网页的整机验收时，也准备标准镜像和旧版 Alpine 镜像
 （`make riscv-linux-data riscv-linux-alpine-legacy-data`）。
 原生验收同时需要 `make riscv-linux-blk-data` 生成数据盘配置。
+
+#### Alpine 数据盘
+
+使用上文创建的 8 MiB ext2 种子 `seed.raw`，也可接着使用已导出的 raw 盘。
+
+```sh
+make riscv-linux-alpine-blk-data
+hesper linux --images .cache/riscv-linux/images-alpine-lts-blk \
+  --disk-in seed.raw --disk-out alpine-data.raw
+```
+
+在客体里运行 `mkdir -p /mnt/data && mount -t ext4 /dev/vda /mnt/data`。
+写入后先执行 `sync && umount /mnt/data`，再按 Ctrl+] 导出。将导出的
+raw 文件作为下次冷启动的输入，重新挂载后可读回。`images-alpine-lts-blk`
+使用官方内核和固定 RAM 根，并要求成对提供盘选项。
+
+`make riscv-linux-alpine-blk-reference` 在固定 QEMU 验收，
+`make riscv-linux-alpine-blk-native` 用 Hesper 管道和真实 PTY 验收。
 
 ## Workspace 结构
 

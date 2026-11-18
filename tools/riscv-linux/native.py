@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 
-from build_guest import BLK_IMAGE_DIR, DRAM, DRAM_END, ENV, IMAGE_DIR, LOGS, verified_manifest
+from build_guest import ALPINE_BLK_IMAGE_DIR, BLK_IMAGE_DIR, DRAM, DRAM_END, ENV, IMAGE_DIR, LOGS, verified_manifest
 from disk_acceptance import commands as disk_commands, drive_disk
 from serial_acceptance import COMMANDS, STEP_BYTES, STEP_SECONDS, drive
 
@@ -24,6 +24,9 @@ INPUT_BUDGET = sum(map(len, COMMANDS)) + len(QUIT)
 BOOT_SECONDS = 90
 EXIT_SECONDS = 5
 ACCEPTANCE_MAX_FUEL = 450_000_000
+ALPINE_MAX_FUEL = 2_000_000_000
+ALPINE_BOOT_SECONDS = 180
+ALPINE_STEP_SECONDS = 60
 SUMMARY = re.compile(r"^linux: exit=(\S+) fuel=(\d+)/(\d+) retired=(\d+) time=(\d+)(?:\s|$)", re.M)
 
 
@@ -46,7 +49,7 @@ def linux_command(binary, *, images=IMAGE_DIR, disk=None, initramfs=None, max_fu
     return argv
 
 
-def run_serial(binary, manifest, transport, *, disk=None, write=False, marker="DISK_OK", logs=LOGS):
+def run_serial(binary, manifest, transport, *, disk=None, write=False, marker="DISK_OK", logs=LOGS, alpine=False):
     if disk is None:
         argv = linux_command(binary)
         commands = COMMANDS
@@ -54,11 +57,14 @@ def run_serial(binary, manifest, transport, *, disk=None, write=False, marker="D
         def exchange(receive, send):
             return drive(receive, send, manifest["kernelrelease"], manifest["isa"], boot_seconds=BOOT_SECONDS)
     else:
-        argv = linux_command(binary, images=BLK_IMAGE_DIR, disk=disk)
-        commands = tuple(command for command, _ in disk_commands(write, marker))
+        argv = linux_command(binary, images=ALPINE_BLK_IMAGE_DIR if alpine else BLK_IMAGE_DIR, disk=disk,
+                             max_fuel=ALPINE_MAX_FUEL if alpine else ACCEPTANCE_MAX_FUEL)
+        commands = tuple(command for command, _ in disk_commands(write, marker, alpine=alpine))
 
         def exchange(receive, send):
-            return drive_disk(receive, send, write, marker, boot_seconds=BOOT_SECONDS)
+            return drive_disk(receive, send, write, marker, alpine=alpine,
+                              boot_seconds=ALPINE_BOOT_SECONDS if alpine else BOOT_SECONDS,
+                              step_seconds=ALPINE_STEP_SECONDS if alpine else STEP_SECONDS)
 
     run = capture_serial(argv, transport, logs=logs, commands=commands, exchange=exchange)
     require_exit(run, "quit")
@@ -76,8 +82,10 @@ def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termina
     error_path = logs / f"{prefix}-stderr.log"
     input_budget = sum(map(len, commands)) + (len(QUIT) if termination == "quit" else 0)
     output_budget = (len(commands) + 2) * STEP_BYTES
-    # Allow only the documented end-of-session controls. The fuel probe leaves stdin open.
-    if termination not in ("quit", "eof", None) or (termination == "eof" and transport != "pipe"):
+    # EOF is a pipe control. The signal probe uses the CLI's PTY handler.
+    if (termination not in ("quit", "eof", "signal", None)
+            or (termination == "eof" and transport != "pipe")
+            or (termination == "signal" and transport != "pty")):
         raise ValueError(f"unsupported serial termination: {transport}/{termination}")
     if transport not in ("pipe", "pty"):
         raise ValueError(f"unsupported serial transport: {transport}")
@@ -143,6 +151,8 @@ def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termina
                 send(QUIT)
             elif termination == "eof":
                 guest.stdin.close()
+            elif termination == "signal":
+                guest.send_signal(signal.SIGTERM)
             deadline = time.monotonic() + exit_seconds
             while True:
                 remaining = deadline - time.monotonic()

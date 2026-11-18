@@ -1855,3 +1855,19 @@ manifest 逐字节一致。`make riscv-linux-alpine-data` 也通过原无盘锁�
 两次均从新的 RAM 根启动。`debugfs` 核对脚本字节，原种子和只读挂载
 前后的磁盘哈希均一致。串口、QMP 与报告在
 `.cache/riscv-linux/repro-c/logs-alpine-blk/reference-40wx7fat/`。
+
+## RISC-V Linux Alpine 数据盘：原生管道与 PTY
+
+Arch Linux x86-64 上用 `make riscv-linux-alpine-blk-native` 验收 release CLI。
+管道和真实 PTY 各写入、卸载并用 Ctrl+] 导出，再由独立进程只读挂载，
+两次均输出独立的 `DISK_OK:42`。四场首提示为 99.12–101.86 秒。
+`debugfs` 核对脚本，输入盘及只读复导出逐字节一致。
+
+缺盘、混搭设备树、自定义根、固件损坏和输出重名均在启动固件前拒绝。
+写盘后 SIGTERM、推进预算耗尽、导出前目标被占用或目录消失均通过控制测试。
+Alpine 的后台计时器可让管道在 EOF 后继续推进，因此异常退出采用 PTY 信号。
+验收用 `dmesg -n 4` 避免 ext4 的信息级消息切断串口结果行。
+
+定向 Rust 测试和 `make verify` 通过。官方与旧版无盘 Alpine 均通过原生
+冷启动，标准数据盘也通过 `make riscv-linux-blk-native` 回归。
+Alpine 报告在 `.cache/riscv-linux/repro-c/logs-alpine-blk/native-p2w0ydoa/`。

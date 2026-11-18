@@ -30,7 +30,9 @@ def commands(write, marker, *, busybox=False, alpine=False):
     capacity = prefix + CAPACITY
     if alpine:
         # Both cold boots must begin with a fresh RAM root.
-        capacity = b"test ! -e /tmp/hesper-disk-proof && touch /tmp/hesper-disk-proof && " + capacity
+        # Keep informational ext4 messages from splitting shell result lines.
+        capacity = (b"test ! -e /tmp/hesper-disk-proof && touch /tmp/hesper-disk-proof && dmesg -n 4 && "
+                    + capacity)
     return ((capacity, (str(SECTORS).encode("ascii"),)), (command, expected))
 
 

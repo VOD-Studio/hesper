@@ -27,6 +27,8 @@ const IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images.lock.js
 const BLK_IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images-blk.lock.json");
 const ALPINE_IMAGE_LOCK: &str =
     include_str!("../../../tools/riscv-linux/images-alpine-lts.lock.json");
+const ALPINE_BLK_IMAGE_LOCK: &str =
+    include_str!("../../../tools/riscv-linux/images-alpine-lts-blk.lock.json");
 const ALPINE_LEGACY_LOCK: &str = include_str!("../../../tools/riscv-linux/images-alpine.lock.json");
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 const BATCH: u32 = 16_384;
@@ -50,6 +52,8 @@ enum LinuxError {
     ManifestMismatch(PathBuf),
     #[error("Alpine images do not support a custom initramfs")]
     AlpineInitramfs,
+    #[error("images-alpine-lts-blk requires --disk-in and --disk-out")]
+    AlpineDiskRequired,
     #[error("{operation} {}: {source}", .path.display())]
     File {
         operation: &'static str,
@@ -227,16 +231,21 @@ fn boot(
     };
     let isa = if actual == parse_lock(standard_lock)? {
         HartIsa::Imac
+    } else if actual == parse_lock(ALPINE_BLK_IMAGE_LOCK)? {
+        if disk.is_none() {
+            return Err(LinuxError::AlpineDiskRequired);
+        }
+        HartIsa::Imafdc
     } else if disk.is_none()
         && (actual == parse_lock(ALPINE_IMAGE_LOCK)? || actual == parse_lock(ALPINE_LEGACY_LOCK)?)
     {
-        if replacement.is_some() {
-            return Err(LinuxError::AlpineInitramfs);
-        }
         HartIsa::Imafdc
     } else {
         return Err(LinuxError::ManifestMismatch(path));
     };
+    if isa == HartIsa::Imafdc && replacement.is_some() {
+        return Err(LinuxError::AlpineInitramfs);
+    }
     let pinned: ImageLock =
         serde_json::from_value(actual).map_err(|err| LinuxError::ImageLock(err.to_string()))?;
     let [firmware, kernel, initramfs, fdt] = pinned.images;
@@ -284,7 +293,7 @@ fn boot(
         );
     }
     Ok(match disk {
-        Some(disk) => Machine::boot_with_disk(images, disk)?,
+        Some(disk) => Machine::boot_with_isa_and_disk(images, isa, disk)?,
         None => Machine::boot_with_isa(images, isa)?,
     })
 }
@@ -696,7 +705,7 @@ impl Session {
 pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let Some(options) = Options::parse(args)? else {
         println!(
-            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs to boot an uncompressed newc archive (up to 16 MiB) instead of the pinned root. The firmware, kernel and source DTB stay locked.\nWith paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nThe Alpine images have a locked RAM root and do not accept either option.\nThere is no total fuel limit by default. Use --max-fuel N to limit guest transitions."
+            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs to boot an uncompressed newc archive (up to 16 MiB) instead of the pinned root. The firmware, kernel and source DTB stay locked.\nWith paired disk options, use images-blk or images-alpine-lts-blk and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nAlpine uses a locked RAM root. Only images-alpine-lts-blk accepts and requires paired disk options.\nThere is no total fuel limit by default. Use --max-fuel N to limit guest transitions."
         );
         return Ok(());
     };

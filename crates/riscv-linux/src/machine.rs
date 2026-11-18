@@ -136,7 +136,16 @@ impl Machine {
 
     /// Validate boot images and start a cold board owning the supplied disk.
     pub fn boot_with_disk(images: BootImages<'_>, disk: DataDisk) -> Result<Self, BootError> {
-        Self::boot_board(Validated::new(images, None)?, Some(disk), HartIsa::Imac)
+        Self::boot_with_isa_and_disk(images, HartIsa::Imac, disk)
+    }
+
+    /// Cold boot the authenticated default images with the given ISA and disk.
+    pub fn boot_with_isa_and_disk(
+        images: BootImages<'_>,
+        isa: HartIsa,
+        disk: DataDisk,
+    ) -> Result<Self, BootError> {
+        Self::boot_board(Validated::new(images, None)?, Some(disk), isa)
     }
 
     /// Cold boot with a replacement `images.initramfs` and an optional disk.
