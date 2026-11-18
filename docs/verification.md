@@ -1382,3 +1382,16 @@ access fault 而不是 page fault，目标数据和 PTE 均未改写。
 `mtval=VA+0x1000`、`mcause=12`。补 PTE 后，5 fuel 执行处理器和 MRET，
 随后 1 fuel 重试并只退休一次，目的寄存器只更新一次。日志在
 `.cache/riscv-linux/logs/l4-*.log`。本卡仍不证明设备时序或真实 OpenSBI。
+
+## RISC-V Linux L5a：设备寄存器、串口和虚拟时间
+
+`cargo test --locked -p hesper-riscv-linux --test devices` 两个总线级探针通过；
+`make verify` 通过（含 4 项 UART FIFO/回环/背压检查）。`run(15)` 与 15 次
+`run(1)` 的 CLINT 结果一致：14 条退休、一次 WFI 快进，`time=1000` 时 MTIP
+置位，`mtime` MMIO 从同一计数源读取，重编程 compare 后 MTIP 撤销。
+
+UART 探针用 DLAB 配置除数且不产生输出，给 14 字节触发水位的 FIFO 发送
+单字节 `K`；接收超时得到 `IIR=0xcc`，仅 PLIC S context 通知。阈值屏蔽、
+claim 清 pending、complete 后电平重报和 RBR 消费后撤销均有断言；最后由
+客体写 THR 返回该字节，等待队列清空后没有忙转。每批最多 100 fuel。
+证据在 `.cache/riscv-linux/logs/l5a-*.log`；尚未执行真实 OpenSBI。

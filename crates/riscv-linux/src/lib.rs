@@ -3,13 +3,16 @@
 use core::ops::Range;
 
 mod atomic;
+mod board;
 mod compressed;
 mod decode;
 mod hart;
+mod interrupt_devices;
 mod machine;
 mod mmu;
 mod pmp;
 mod privilege;
+mod uart;
 
 pub use machine::{DebugState, LoadError, Machine, Progress, Trap};
 pub use privilege::PrivilegeMode;

@@ -1,4 +1,4 @@
-use crate::{DRAM_SIZE, PrivilegeMode, dram_range, hart::Hart};
+use crate::{PrivilegeMode, board::Board, dram_range, hart::Hart};
 use core::fmt;
 
 /// Failure to load a host byte span into the board's DRAM.
@@ -50,9 +50,10 @@ pub struct Progress {
 /// A single hart and one contiguous DRAM allocation. Starts in M-mode, Bare.
 pub struct Machine {
     hart: Hart,
-    ram: Box<[u8]>,
+    board: Board,
     retired: u64,
-    time: u64,
+    cycle: u64,
+    external_lines: u64,
 }
 
 impl Machine {
@@ -60,9 +61,10 @@ impl Machine {
     pub fn new() -> Self {
         Self {
             hart: Hart::new(),
-            ram: vec![0; DRAM_SIZE].into_boxed_slice(),
+            board: Board::new(),
             retired: 0,
-            time: 0,
+            cycle: 0,
+            external_lines: 0,
         }
     }
 
@@ -72,14 +74,14 @@ impl Machine {
             address,
             bytes: data.len(),
         })?;
-        self.ram[range].copy_from_slice(data);
+        self.board.ram[range].copy_from_slice(data);
         self.hart.invalidate_reservation(address, data.len());
         Ok(())
     }
 
     /// Observe DRAM bytes without making a guest bus access.
     pub fn inspect(&self, address: u64, bytes: usize) -> Option<&[u8]> {
-        self.ram.get(dram_range(address, bytes)?)
+        self.board.ram.get(dram_range(address, bytes)?)
     }
 
     /// Observe integer architectural state and cumulative counters.
@@ -90,34 +92,51 @@ impl Machine {
             mode: self.hart.privilege.mode,
             last_trap: self.hart.last_trap,
             retired: self.retired,
-            time: self.time,
+            time: self.board.time(),
         }
     }
 
-    /// Drive the board's local and external interrupt lines. Set one bit per cause.
+    /// Add externally driven interrupt lines to the board's device levels.
     pub fn set_interrupt_lines(&mut self, asserted: u64) {
-        self.hart.privilege.set_interrupt_lines(asserted);
+        self.external_lines = asserted;
+    }
+
+    /// Queue host serial bytes for arrival at the UART; returns bytes accepted.
+    pub fn serial_input(&mut self, bytes: &[u8]) -> usize {
+        self.board.uart.queue_input(bytes, self.board.ticks)
+    }
+
+    /// Remove completed UART output bytes, in order, into the caller's buffer.
+    pub fn serial_output(&mut self, bytes: &mut [u8]) -> usize {
+        self.board.uart.drain_output(bytes)
     }
 
     /// Execute at most `fuel` transitions. A trap consumes a tick but does not
-    /// retire. WFI with no enabled pending interrupt returns without busy-waiting.
+    /// retire. WFI jumps to the next device event or returns when none exists.
+    /// A full serial output queue also stops the batch until the host drains it.
     pub fn run(&mut self, fuel: u32) -> Progress {
         let (mut spent, mut retired) = (0, 0);
-        while spent < fuel {
-            let Some(did_retire) = self.hart.step(&mut self.ram, self.time, self.retired) else {
+        while spent < fuel && !self.board.uart.output_full() {
+            let lines = self.external_lines | self.board.pending();
+            self.hart.privilege.set_interrupt_lines(lines);
+            if let Some(did_retire) = self.hart.step(&mut self.board, self.cycle, self.retired) {
+                self.cycle = self.cycle.wrapping_add(1);
+                self.board.advance(self.board.ticks.wrapping_add(1));
+                if did_retire {
+                    retired += 1;
+                    self.retired = self.retired.wrapping_add(1);
+                }
+            } else if let Some(ticks) = self.board.next_event() {
+                self.board.advance(ticks);
+            } else {
                 break;
-            };
-            spent += 1;
-            self.time = self.time.wrapping_add(1);
-            if did_retire {
-                retired += 1;
-                self.retired = self.retired.wrapping_add(1);
             }
+            spent += 1;
         }
         Progress {
             spent,
             retired,
-            time: self.time,
+            time: self.board.time(),
         }
     }
 }

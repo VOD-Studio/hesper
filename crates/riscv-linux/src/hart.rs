@@ -1,6 +1,13 @@
 use crate::{
-    DRAM_BASE, PrivilegeMode, atomic, compressed, decode::alu, dram_range, machine::Trap, mmu,
-    pmp::Access, privilege,
+    DRAM_BASE, PrivilegeMode, atomic,
+    board::{Board, read_le},
+    compressed,
+    decode::alu,
+    dram_range,
+    machine::Trap,
+    mmu,
+    pmp::Access,
+    privilege,
 };
 use core::ops::Range;
 
@@ -26,7 +33,7 @@ impl Hart {
         }
     }
 
-    pub(crate) fn step(&mut self, ram: &mut [u8], time: u64, retired: u64) -> Option<bool> {
+    pub(crate) fn step(&mut self, board: &mut Board, cycle: u64, retired: u64) -> Option<bool> {
         if self.waiting {
             if !self.privilege.locally_pending() {
                 return None;
@@ -37,7 +44,7 @@ impl Hart {
             self.enter_trap(self.trap(cause, 0));
             return Some(false);
         }
-        Some(match self.execute(ram, [time, time, retired]) {
+        Some(match self.execute(board, [cycle, board.time(), retired]) {
             Ok(()) => true,
             Err(trap) => {
                 self.enter_trap(trap);
@@ -59,15 +66,15 @@ impl Hart {
         }
     }
 
-    fn execute(&mut self, ram: &mut [u8], counters: [u64; 3]) -> Result<(), Trap> {
+    fn execute(&mut self, board: &mut Board, counters: [u64; 3]) -> Result<(), Trap> {
         let pc = self.pc;
         if pc & 1 != 0 {
             return Err(self.trap(0, pc));
         }
-        let (translated, range) = self.map_ram(ram, pc, 2, Access::Execute)?;
+        let (translated, range) = self.map_ram(&board.ram, pc, 2, Access::Execute)?;
         let physical = translated.address;
-        translated.commit(ram);
-        let low = u16::from_le_bytes(ram[range].try_into().expect("two-byte fetch"));
+        translated.commit(&mut board.ram);
+        let low = u16::from_le_bytes(board.ram[range].try_into().expect("two-byte fetch"));
         let (instruction, length) = if low & 3 != 3 {
             (
                 compressed::expand(low).ok_or_else(|| self.trap(2, u64::from(low)))?,
@@ -76,8 +83,9 @@ impl Hart {
         } else {
             let next_half = pc.wrapping_add(2);
             let range = if pc & 0xfff == 0xffe {
-                let (translated, range) = self.map_ram(ram, next_half, 2, Access::Execute)?;
-                translated.commit(ram);
+                let (translated, range) =
+                    self.map_ram(&board.ram, next_half, 2, Access::Execute)?;
+                translated.commit(&mut board.ram);
                 range
             } else {
                 // Translation is shared within the page, but a four-byte
@@ -92,7 +100,7 @@ impl Hart {
                 }
                 dram_range(physical + 2, 2).ok_or_else(|| self.trap(1, next_half))?
             };
-            let high = u16::from_le_bytes(ram[range].try_into().expect("two-byte fetch"));
+            let high = u16::from_le_bytes(board.ram[range].try_into().expect("two-byte fetch"));
             (u32::from(low) | (u32::from(high) << 16), 4)
         };
 
@@ -116,7 +124,7 @@ impl Hart {
             (0x03, 0..=6) => {
                 let bytes = 1 << (funct3 & 3);
                 let address = lhs.wrapping_add_signed(immediate);
-                let (_, raw) = self.read_ram(ram, address, bytes)?;
+                let raw = self.read_data(board, address, bytes)?;
                 let value = if funct3 < 4 {
                     sign_extend(raw, bytes * 8) as u64
                 } else {
@@ -127,7 +135,7 @@ impl Hart {
             (0x23, 0..=3) => {
                 let offset = (instruction & 0xfe00_0000) | ((instruction & 0x0f80) << 13);
                 let address = lhs.wrapping_add_signed(i64::from((offset as i32) >> 20));
-                self.write_ram(ram, address, 1 << funct3, rhs)?;
+                self.write_data(board, address, 1 << funct3, rhs)?;
             }
             (0x6f, _) => {
                 let offset = ((instruction >> 31) << 20)
@@ -161,7 +169,7 @@ impl Hart {
             }
             (0x2f, _) => {
                 let (bytes, op) = atomic::decode(instruction).ok_or_else(illegal)?;
-                self.execute_atomic(ram, lhs, bytes, rhs, rd, op)?;
+                self.execute_atomic(&mut board.ram, lhs, bytes, rhs, rd, op)?;
             }
             // FENCE orders an already in-order bus; FENCE.I has no cached
             // instructions to discard. The ISA requires ignoring reserved
@@ -206,6 +214,24 @@ impl Hart {
         Ok(())
     }
 
+    fn read_data(&self, board: &mut Board, address: u64, bytes: usize) -> Result<u64, Trap> {
+        if address & (bytes as u64 - 1) != 0 {
+            return Err(self.trap(4, address));
+        }
+        let translation = self.translate(&board.ram, address, bytes, Access::Read)?;
+        let physical = translation.address;
+        if let Some(range) = dram_range(physical, bytes) {
+            translation.commit(&mut board.ram);
+            Ok(read_le(&board.ram[range]))
+        } else {
+            let value = board
+                .read_mmio(physical, bytes)
+                .ok_or_else(|| self.trap(5, address))?;
+            translation.commit(&mut board.ram);
+            Ok(value)
+        }
+    }
+
     fn read_ram(&self, ram: &mut [u8], address: u64, bytes: usize) -> Result<(u64, u64), Trap> {
         if address & (bytes as u64 - 1) != 0 {
             return Err(self.trap(4, address));
@@ -213,29 +239,31 @@ impl Hart {
         let (translation, range) = self.map_ram(ram, address, bytes, Access::Read)?;
         let physical = translation.address;
         translation.commit(ram);
-        let value = &ram[range];
-        let value = match bytes {
-            1 => u64::from(value[0]),
-            2 => u64::from(u16::from_le_bytes(value.try_into().expect("halfword"))),
-            4 => u64::from(u32::from_le_bytes(value.try_into().expect("word"))),
-            8 => u64::from_le_bytes(value.try_into().expect("doubleword")),
-            _ => unreachable!("decoded load width"),
-        };
-        Ok((physical, value))
+        Ok((physical, read_le(&ram[range])))
     }
 
-    fn write_ram(
+    fn write_data(
         &mut self,
-        ram: &mut [u8],
+        board: &mut Board,
         address: u64,
         bytes: usize,
         value: u64,
     ) -> Result<(), Trap> {
-        let (translation, range) = self.store_range(ram, address, bytes, Access::Write)?;
+        if address & (bytes as u64 - 1) != 0 {
+            return Err(self.trap(6, address));
+        }
+        let translation = self.translate(&board.ram, address, bytes, Access::Write)?;
         let physical = translation.address;
-        translation.commit(ram);
-        ram[range].copy_from_slice(&value.to_le_bytes()[..bytes]);
-        self.invalidate_reservation(physical, bytes);
+        if let Some(range) = dram_range(physical, bytes) {
+            translation.commit(&mut board.ram);
+            board.ram[range].copy_from_slice(&value.to_le_bytes()[..bytes]);
+            self.invalidate_reservation(physical, bytes);
+        } else {
+            board
+                .write_mmio(physical, bytes, value)
+                .ok_or_else(|| self.trap(7, address))?;
+            translation.commit(&mut board.ram);
+        }
         Ok(())
     }
 
@@ -280,13 +308,7 @@ impl Hart {
                 let (translation, range) = self.store_range(ram, address, bytes, Access::Atomic)?;
                 let physical = translation.address;
                 translation.commit(ram);
-                let old = if bytes == 4 {
-                    u64::from(u32::from_le_bytes(
-                        ram[range.clone()].try_into().expect("word"),
-                    ))
-                } else {
-                    u64::from_le_bytes(ram[range.clone()].try_into().expect("doubleword"))
-                };
+                let old = read_le(&ram[range.clone()]);
                 let new = op.apply(bytes, old, rhs);
                 ram[range].copy_from_slice(&new.to_le_bytes()[..bytes]);
                 self.invalidate_reservation(physical, bytes);
@@ -317,16 +339,29 @@ impl Hart {
         bytes: usize,
         access: Access,
     ) -> Result<(mmu::Translation, Range<usize>), Trap> {
-        let (mode, access_fault, page_fault) = match access {
-            Access::Execute => (self.privilege.mode, 1, 12),
-            Access::Read => (self.privilege.data_mode(), 5, 13),
-            Access::Write | Access::Atomic => (self.privilege.data_mode(), 7, 15),
+        let translation = self.translate(ram, address, bytes, access)?;
+        let range = dram_range(translation.address, bytes)
+            .ok_or_else(|| self.trap(access_fault(access), address))?;
+        Ok((translation, range))
+    }
+
+    fn translate(
+        &self,
+        ram: &[u8],
+        address: u64,
+        bytes: usize,
+        access: Access,
+    ) -> Result<mmu::Translation, Trap> {
+        let (mode, page_fault) = match access {
+            Access::Execute => (self.privilege.mode, 12),
+            Access::Read => (self.privilege.data_mode(), 13),
+            Access::Write | Access::Atomic => (self.privilege.data_mode(), 15),
         };
         let translation =
             mmu::translate(&self.privilege, ram, address, access).map_err(|fault| {
                 self.trap(
                     match fault {
-                        mmu::Fault::Access => access_fault,
+                        mmu::Fault::Access => access_fault(access),
                         mmu::Fault::Page => page_fault,
                     },
                     address,
@@ -334,10 +369,9 @@ impl Hart {
             })?;
         let physical = translation.address;
         if !self.privilege.pmp.allows(physical, bytes, mode, access) {
-            return Err(self.trap(access_fault, address));
+            return Err(self.trap(access_fault(access), address));
         }
-        let range = dram_range(physical, bytes).ok_or_else(|| self.trap(access_fault, address))?;
-        Ok((translation, range))
+        Ok(translation)
     }
 
     fn write(&mut self, rd: usize, value: u64) {
@@ -350,4 +384,12 @@ impl Hart {
 fn sign_extend(value: u64, width: usize) -> i64 {
     let shift = 64 - width;
     ((value << shift) as i64) >> shift
+}
+
+fn access_fault(access: Access) -> u64 {
+    match access {
+        Access::Execute => 1,
+        Access::Read => 5,
+        Access::Write | Access::Atomic => 7,
+    }
 }
