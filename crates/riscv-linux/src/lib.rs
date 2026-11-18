@@ -9,6 +9,7 @@ mod compressed;
 mod cpio;
 mod decode;
 mod fdt;
+mod fp;
 mod hart;
 mod interrupt_devices;
 mod machine;
@@ -21,7 +22,7 @@ mod virtio_blk;
 pub use boot::{
     BootError, BootImages, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS, MAX_INITRAMFS_BYTES,
 };
-pub use machine::{DebugState, Diagnostics, LoadError, Machine, Progress, Trap};
+pub use machine::{DebugState, Diagnostics, HartIsa, LoadError, Machine, Progress, Trap};
 pub use privilege::PrivilegeMode;
 pub use uart::UartDiagnostics;
 pub use virtio_blk::{DataDisk, DiskFault, DiskSizeError};

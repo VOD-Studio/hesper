@@ -1,5 +1,5 @@
 // Build the standalone Wasm packages. Bun is a host tool, not a runtime dependency.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
@@ -35,6 +35,9 @@ if (mode === "setup") {
       mkdirSync(out, { recursive: true });
       run([bindgen, `target/wasm32-unknown-unknown/release/${module}_wasm.wasm`,
         "--target", target, "--out-dir", out, "--out-name", module]);
+      if (library === "riscv-linux") {
+        copyFileSync(resolve(root, "crates/riscv-linux/src/softfloat.LICENSE"), resolve(out, "softfloat.LICENSE"));
+      }
       writeFileSync(resolve(out, "README.md"),
         `# hesper-${library} (${target})\n\nVersion: ${packageVersion}. Built with wasm-bindgen ${version}.\n\n` +
         "Usage and interface contract: docs/wasm.md in the Hesper source repository.\n" +

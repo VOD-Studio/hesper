@@ -66,6 +66,15 @@ pub struct Progress {
     pub time: u64,
 }
 
+/// Fixed hardware capabilities for the board's RV64 hart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HartIsa {
+    /// The original integer, multiplication, atomic and compressed extensions.
+    Imac,
+    /// IMAC plus single- and double-precision floating point.
+    Imafdc,
+}
+
 /// A single hart and one contiguous DRAM allocation. Starts in M-mode, Bare.
 pub struct Machine {
     hart: Hart,
@@ -79,28 +88,33 @@ pub struct Machine {
 impl Machine {
     /// Create an empty board with the hart at the DRAM base.
     pub fn new() -> Self {
-        Self::with_board(Board::new())
+        Self::with_board(Board::new(), HartIsa::Imac)
     }
 
     /// Create an empty board, returning an error if DRAM cannot be allocated.
     pub fn try_new() -> Result<Self, BootError> {
-        Self::try_new_board(None)
+        Self::try_with_isa(HartIsa::Imac)
+    }
+
+    /// Create an empty board with the specified fixed hart capabilities.
+    pub fn try_with_isa(isa: HartIsa) -> Result<Self, BootError> {
+        Self::try_new_board(None, isa)
     }
 
     /// Create an empty board with a data disk attached at the modern MMIO slot.
     pub fn try_with_disk(disk: DataDisk) -> Result<Self, BootError> {
-        Self::try_new_board(Some(disk))
+        Self::try_new_board(Some(disk), HartIsa::Imac)
     }
 
-    fn try_new_board(disk: Option<DataDisk>) -> Result<Self, BootError> {
+    fn try_new_board(disk: Option<DataDisk>, isa: HartIsa) -> Result<Self, BootError> {
         Board::try_new(disk)
-            .map(Self::with_board)
+            .map(|board| Self::with_board(board, isa))
             .map_err(|_| BootError::Allocation)
     }
 
-    fn with_board(board: Board) -> Self {
+    fn with_board(board: Board, isa: HartIsa) -> Self {
         Self {
-            hart: Hart::new(),
+            hart: Hart::new(isa),
             board,
             retired: 0,
             cycle: 0,
@@ -111,12 +125,18 @@ impl Machine {
 
     /// Validate every image and boot a new board in M-mode at the OpenSBI entry.
     pub fn boot(images: BootImages<'_>) -> Result<Self, BootError> {
-        Self::boot_board(Validated::new(images, None)?, None)
+        Self::boot_with_isa(images, HartIsa::Imac)
+    }
+
+    /// Validate and cold boot the default images with the specified hart ISA.
+    /// The host authenticates the images and chooses the matching hardware.
+    pub fn boot_with_isa(images: BootImages<'_>, isa: HartIsa) -> Result<Self, BootError> {
+        Self::boot_board(Validated::new(images, None)?, None, isa)
     }
 
     /// Validate boot images and start a cold board owning the supplied disk.
     pub fn boot_with_disk(images: BootImages<'_>, disk: DataDisk) -> Result<Self, BootError> {
-        Self::boot_board(Validated::new(images, None)?, Some(disk))
+        Self::boot_board(Validated::new(images, None)?, Some(disk), HartIsa::Imac)
     }
 
     /// Cold boot with a replacement `images.initramfs` and an optional disk.
@@ -127,11 +147,19 @@ impl Machine {
         locked_initramfs_len: usize,
         disk: Option<DataDisk>,
     ) -> Result<Self, BootError> {
-        Self::boot_board(Validated::new(images, Some(locked_initramfs_len))?, disk)
+        Self::boot_board(
+            Validated::new(images, Some(locked_initramfs_len))?,
+            disk,
+            HartIsa::Imac,
+        )
     }
 
-    fn boot_board(images: Validated<'_>, disk: Option<DataDisk>) -> Result<Self, BootError> {
-        let mut machine = Self::try_new_board(disk)?;
+    fn boot_board(
+        images: Validated<'_>,
+        disk: Option<DataDisk>,
+        isa: HartIsa,
+    ) -> Result<Self, BootError> {
+        let mut machine = Self::try_new_board(disk, isa)?;
         machine.install_boot(images);
         Ok(machine)
     }
@@ -157,7 +185,7 @@ impl Machine {
 
     fn reboot_board(&mut self, images: Validated<'_>) {
         self.board.reset();
-        self.hart = Hart::new();
+        self.hart = Hart::new(self.hart.privilege.isa());
         self.retired = 0;
         self.cycle = 0;
         self.external_lines = 0;
@@ -231,7 +259,7 @@ impl Machine {
         let state = &self.hart.privilege;
         Diagnostics {
             cpu: self.debug_state(),
-            mstatus: state.mstatus,
+            mstatus: state.status(),
             mie: state.mie,
             mip: state.observe_pending(self.external_lines | self.board.pending()),
             machine_trap: state.machine.observation(),

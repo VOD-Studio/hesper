@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 - **RISC-V 机器库**：`hesper-riscv-linux` 提供 128 MiB DRAM、有界 `Machine::run(fuel)`、寄存器/内存观察，以及裸机 RV64IMAC，包含原子预约和 16/32 位混合取指。范围见[实施计划](docs/plan/riscv-linux.md)。
+- **RISC-V 机器库**：新增显式 RV64IMAFDC 配置，含单/双精度、舍入与异常标志、NaN-boxing 和 Linux 浮点上下文所需 CSR；原有默认构造器仍为 RV64IMAC。
 - **RISC-V 特权架构**：新增 M/S/U、Zicsr、陷入委派与返回、计数器读取、中断门控、WFI、16 槽 PMP 和 Sv39 地址翻译。
 - **RISC-V 设备**：接入 CLINT、PLIC、NS16550A 串口与确定性虚拟时钟；WFI 可快进到下一设备事件。
 - **RISC-V 装载器**：新增固定板的 `Machine::boot` / `reboot`，在写 RAM 前校验 OpenSBI 驻留范围、Linux Image 头、initramfs 与 DTB；无效重启保留原会话。

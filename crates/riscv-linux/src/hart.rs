@@ -1,9 +1,9 @@
 use crate::{
-    DRAM_BASE, PrivilegeMode, atomic,
+    DRAM_BASE, HartIsa, PrivilegeMode, atomic,
     board::{Board, read_le},
     compressed,
     decode::alu,
-    dram_range,
+    dram_range, fp,
     machine::Trap,
     mmu,
     pmp::Access,
@@ -15,6 +15,7 @@ use core::ops::Range;
 pub(crate) struct Hart {
     pub(crate) pc: u64,
     pub(crate) x: [u64; 32],
+    f: [u64; 32],
     pub(crate) last_trap: Option<Trap>,
     pub(crate) privilege: privilege::State,
     pub(crate) waiting: bool,
@@ -22,12 +23,13 @@ pub(crate) struct Hart {
 }
 
 impl Hart {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(isa: HartIsa) -> Self {
         Self {
             pc: DRAM_BASE,
             x: [0; 32],
+            f: [0; 32],
             last_trap: None,
-            privilege: privilege::State::new(),
+            privilege: privilege::State::new(isa),
             waiting: false,
             reservation: None,
         }
@@ -108,10 +110,18 @@ impl Hart {
         let funct3 = (instruction >> 12) & 7;
         let rd = ((instruction >> 7) & 31) as usize;
         let lhs = self.x[((instruction >> 15) & 31) as usize];
-        let rhs = self.x[((instruction >> 20) & 31) as usize];
+        let rs2 = ((instruction >> 20) & 31) as usize;
+        let rhs = self.x[rs2];
         let immediate = i64::from((instruction as i32) >> 20);
         let mut next = pc.wrapping_add(length);
-        let illegal = || self.trap(2, u64::from(instruction));
+        let illegal = || Trap {
+            epc: pc,
+            cause: 2,
+            value: match length {
+                2 => u64::from(low),
+                _ => u64::from(instruction),
+            },
+        };
         match (opcode, funct3) {
             (0x13 | 0x1b | 0x33 | 0x3b, _) => {
                 self.write(rd, alu(instruction, lhs, rhs).ok_or_else(illegal)?);
@@ -136,6 +146,30 @@ impl Hart {
                 let offset = (instruction & 0xfe00_0000) | ((instruction & 0x0f80) << 13);
                 let address = lhs.wrapping_add_signed(i64::from((offset as i32) >> 20));
                 self.write_data(board, address, 1 << funct3, rhs)?;
+            }
+            (0x07, 2 | 3) if self.privilege.fp_enabled() => {
+                let address = lhs.wrapping_add_signed(immediate);
+                let raw = self.read_data(board, address, 1 << funct3)?;
+                let value = if funct3 == 2 {
+                    fp::box_single(raw as u32)
+                } else {
+                    raw
+                };
+                self.write_fp(rd, value);
+            }
+            (0x27, 2 | 3) if self.privilege.fp_enabled() => {
+                let offset = (instruction & 0xfe00_0000) | ((instruction & 0x0f80) << 13);
+                let address = lhs.wrapping_add_signed(i64::from((offset as i32) >> 20));
+                self.write_data(board, address, 1 << funct3, self.f[rs2])?;
+            }
+            (0x43 | 0x47 | 0x4b | 0x4f | 0x53, _) if self.privilege.fp_enabled() => {
+                let (result, flags) = fp::execute(instruction, &self.f, lhs, self.privilege.frm())
+                    .ok_or_else(illegal)?;
+                match result {
+                    fp::Value::Float(value) => self.write_fp(rd, value),
+                    fp::Value::Integer(value) => self.write(rd, value),
+                }
+                self.privilege.accrue_fp_flags(flags);
             }
             (0x6f, _) => {
                 let offset = ((instruction >> 31) << 20)
@@ -383,6 +417,11 @@ impl Hart {
         if rd != 0 {
             self.x[rd] = value;
         }
+    }
+
+    fn write_fp(&mut self, rd: usize, value: u64) {
+        self.f[rd] = value;
+        self.privilege.fp_dirty();
     }
 }
 

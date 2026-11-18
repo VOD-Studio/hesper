@@ -99,7 +99,8 @@ jobs:
           stage = Path('stage') / name
           stage.mkdir(parents=True)
           shutil.copy2(source, stage / binary)
-          for file in ['README.md', 'CHANGELOG.md', 'crates/cli/assets/README.md', 'crates/apple1/tests/data/README.md']:
+          for file in ['README.md', 'CHANGELOG.md', 'crates/cli/assets/README.md', 'crates/apple1/tests/data/README.md',
+                       'crates/riscv-linux/src/softfloat.LICENSE']:
               dest = stage / file
               dest.parent.mkdir(parents=True, exist_ok=True)
               shutil.copy2(file, dest)

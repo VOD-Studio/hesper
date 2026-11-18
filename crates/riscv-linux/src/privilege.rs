@@ -1,5 +1,4 @@
-use crate::Trap;
-use crate::pmp::Pmp;
+use crate::{HartIsa, Trap, pmp::Pmp};
 
 /// Current RISC-V hart privilege, encoded as in `mstatus.MPP`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +16,7 @@ const MPIE: u64 = 1 << 7;
 const SPP: u64 = 1 << 8;
 const MPP_SHIFT: u32 = 11;
 const MPP: u64 = 3 << MPP_SHIFT;
+const FS: u64 = 3 << 13;
 const MPRV: u64 = 1 << 17;
 const SUM: u64 = 1 << 18;
 const MXR: u64 = 1 << 19;
@@ -25,11 +25,14 @@ const TW: u64 = 1 << 21;
 const TSR: u64 = 1 << 22;
 const UXL_64: u64 = 2 << 32;
 const SXL_64: u64 = 2 << 34;
-// Both lower modes stay RV64 and little endian; no floating-point, vector or
-// other extension state is tracked (FS, VS, XS and SD are hardwired zero).
+// Both lower modes stay RV64 and little endian; VS and XS read as zero.
+const SD: u64 = 1 << 63;
 const SSTATUS_WRITABLE: u64 = SIE | SPIE | SPP | SUM | MXR;
 const MSTATUS_WRITABLE: u64 = SSTATUS_WRITABLE | MIE | MPIE | MPP | MPRV | MSTATUS_TVM | TW | TSR;
 const MISA: u64 = (2 << 62) | (1 << 20) | (1 << 18) | (1 << 12) | (1 << 8) | (1 << 2) | 1;
+const MISA_FD: u64 = (1 << 5) | (1 << 3);
+const FFLAGS_MASK: u8 = 0x1f;
+const FRM_SHIFT: u32 = 5;
 
 const INTERRUPT: u64 = 1 << 63;
 const SSIP: u64 = 1 << 1;
@@ -51,6 +54,9 @@ const COUNTER_MASK: u64 = 0b111;
 // configuration for absent extensions (e.g. Sstc, Svadu, Svpbmt and CMO) reads zero.
 const FIOM: u64 = 1;
 
+const FFLAGS: u32 = 0x001;
+const FRM: u32 = 0x002;
+const FCSR: u32 = 0x003;
 const SSTATUS: u32 = 0x100;
 const SIE_CSR: u32 = 0x104;
 const STVEC: u32 = 0x105;
@@ -122,6 +128,8 @@ pub(crate) struct State {
     pub(crate) pmp: Pmp,
     pub(crate) supervisor: TrapCsrs,
     pub(crate) machine: TrapCsrs,
+    isa: HartIsa,
+    fcsr: u8,
     medeleg: u64,
     mideleg: u64,
     pub(crate) mie: u64,
@@ -136,7 +144,7 @@ pub(crate) struct State {
 }
 
 impl State {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(isa: HartIsa) -> Self {
         Self {
             mode: PrivilegeMode::Machine,
             mstatus: SXL_64 | UXL_64,
@@ -144,6 +152,8 @@ impl State {
             pmp: Pmp::default(),
             supervisor: TrapCsrs::default(),
             machine: TrapCsrs::default(),
+            isa,
+            fcsr: 0,
             medeleg: 0,
             mideleg: 0,
             mie: 0,
@@ -155,6 +165,41 @@ impl State {
             senvcfg: 0,
             cycle_offset: 0,
             instret_offset: 0,
+        }
+    }
+
+    pub(crate) fn isa(&self) -> HartIsa {
+        self.isa
+    }
+
+    fn fs_mask(&self) -> u64 {
+        match self.isa {
+            HartIsa::Imac => 0,
+            HartIsa::Imafdc => FS,
+        }
+    }
+
+    pub(crate) fn fp_enabled(&self) -> bool {
+        self.mstatus & FS != 0
+    }
+
+    pub(crate) fn status(&self) -> u64 {
+        self.mstatus | if self.mstatus & FS == FS { SD } else { 0 }
+    }
+
+    pub(crate) fn fp_dirty(&mut self) {
+        self.mstatus |= FS;
+    }
+
+    pub(crate) fn frm(&self) -> u8 {
+        self.fcsr >> FRM_SHIFT
+    }
+
+    pub(crate) fn accrue_fp_flags(&mut self, flags: u8) {
+        let fcsr = self.fcsr | (flags & FFLAGS_MASK);
+        if fcsr != self.fcsr {
+            self.fcsr = fcsr;
+            self.fp_dirty();
         }
     }
 
@@ -173,6 +218,7 @@ impl State {
         let write = operation == 1 || (instruction >> 15) & 31 != 0;
         if (csr >> 8) & 3 > self.mode as u32
             || (write && csr >> 10 == 3)
+            || (matches!(csr, FFLAGS..=FCSR) && !self.fp_enabled())
             || (csr == SATP
                 && self.mode == PrivilegeMode::Supervisor
                 && self.mstatus & MSTATUS_TVM != 0)
@@ -201,7 +247,10 @@ impl State {
 
     fn read_csr(&self, csr: u32, counters: [u64; 3]) -> Option<u64> {
         Some(match csr {
-            SSTATUS => self.mstatus & (SSTATUS_WRITABLE | UXL_64),
+            FFLAGS => u64::from(self.fcsr & FFLAGS_MASK),
+            FRM => u64::from(self.frm()),
+            FCSR => u64::from(self.fcsr),
+            SSTATUS => self.status() & (SSTATUS_WRITABLE | FS | SD | UXL_64),
             SIE_CSR => self.mie & self.mideleg,
             STVEC => self.supervisor.vector,
             SCOUNTEREN => self.scounteren,
@@ -212,8 +261,14 @@ impl State {
             STVAL => self.supervisor.value,
             SIP => self.pending() & self.mideleg,
             SATP => self.satp,
-            MSTATUS => self.mstatus,
-            MISA_CSR => MISA,
+            MSTATUS => self.status(),
+            MISA_CSR => {
+                MISA | if self.isa == HartIsa::Imafdc {
+                    MISA_FD
+                } else {
+                    0
+                }
+            }
             MEDELEG => self.medeleg,
             MIDELEG => self.mideleg,
             MIE_CSR => self.mie,
@@ -250,8 +305,17 @@ impl State {
 
     fn write_csr(&mut self, csr: u32, value: u64, counters: [u64; 3]) -> Option<()> {
         match csr {
+            FFLAGS..=FCSR => {
+                self.fcsr = match csr {
+                    FFLAGS => (self.fcsr & !FFLAGS_MASK) | (value as u8 & FFLAGS_MASK),
+                    FRM => (self.fcsr & FFLAGS_MASK) | ((value as u8) << FRM_SHIFT),
+                    _ => value as u8,
+                };
+                self.fp_dirty();
+            }
             SSTATUS => {
-                self.mstatus = (self.mstatus & !SSTATUS_WRITABLE) | (value & SSTATUS_WRITABLE)
+                let writable = SSTATUS_WRITABLE | self.fs_mask();
+                self.mstatus = (self.mstatus & !writable) | (value & writable);
             }
             SIE_CSR => self.mie = (self.mie & !self.mideleg) | (value & self.mideleg),
             STVEC => self.supervisor.vector = trap_vector(value),
@@ -271,12 +335,12 @@ impl State {
                 _ => {} // An unsupported MODE leaves the entire CSR unchanged.
             },
             MSTATUS => {
-                self.mstatus = (value & MSTATUS_WRITABLE) | SXL_64 | UXL_64;
+                self.mstatus = (value & (MSTATUS_WRITABLE | self.fs_mask())) | SXL_64 | UXL_64;
                 if self.mstatus & MPP == 2 << MPP_SHIFT {
                     self.mstatus &= !MPP; // Reserved encoding coerces to U-mode.
                 }
             }
-            MISA_CSR => {} // Fixed RV64IMACSU is the only legal configuration.
+            MISA_CSR => {} // Hardware capabilities are fixed for this hart.
             MEDELEG => self.medeleg = value & DELEGATABLE_EXCEPTIONS,
             MIDELEG => self.mideleg = value & SUPERVISOR_INTERRUPTS,
             MIE_CSR => self.mie = value & IMPLEMENTED_INTERRUPTS,

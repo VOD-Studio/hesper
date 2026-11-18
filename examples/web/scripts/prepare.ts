@@ -68,6 +68,10 @@ for (const name of ["apple1", "cpu6502", "riscv-linux"]) {
     resolve(web, `public/machine/${name}-wasm-notes.md`),
   );
 }
+cpSync(
+  resolve(root, "target/wasm-packages/riscv-linux/web/softfloat.LICENSE"),
+  resolve(web, "public/machine/softfloat.LICENSE"),
+);
 console.log(
   `Prepared ${catalogue.presets.length} presets, bundled Woz Monitor, CPU demo and all Wasm packages.`,
 );

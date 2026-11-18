@@ -1,6 +1,6 @@
 const NOP: u32 = 0x0000_0013;
 
-/// Expands an RV64C integer instruction (or HINT) to its RV64I equivalent.
+/// Expands an RV64 compressed instruction (or HINT) to its full-width equivalent.
 /// The caller retains the original two-byte instruction length.
 pub(crate) fn expand(bits: u16) -> Option<u32> {
     let bits = u32::from(bits);
@@ -22,9 +22,10 @@ pub(crate) fn expand(bits: u16) -> Option<u32> {
             }
             encode_i(0x13, 0, rd_prime, 2, imm)
         }
-        (0, 2 | 3 | 6 | 7) => {
-            // C.LW/C.LD and C.SW/C.SD share the CL/CS offset layout.
-            let width = funct3 & 3;
+        (0, 1..=3 | 5..=7) => {
+            // The compact floating-point doubleword forms use the LD/SD offsets.
+            let float = funct3 & 3 == 1;
+            let width = if float { 3 } else { funct3 & 3 };
             let offset = field(10, 3) << 3
                 | if width == 2 {
                     field(5, 1) << 6 | field(6, 1) << 2
@@ -32,9 +33,11 @@ pub(crate) fn expand(bits: u16) -> Option<u32> {
                     field(5, 2) << 6
                 };
             if funct3 < 4 {
-                encode_i(0x03, width, rd_prime, rs1_prime, offset)
+                let opcode = if float { 0x07 } else { 0x03 };
+                encode_i(opcode, width, rd_prime, rs1_prime, offset)
             } else {
-                encode_store(width, rs1_prime, rd_prime, offset)
+                let opcode = if float { 0x27 } else { 0x23 };
+                encode_store(opcode, width, rs1_prime, rd_prime, offset)
             }
         }
         (1, 0) => {
@@ -131,15 +134,19 @@ pub(crate) fn expand(bits: u16) -> Option<u32> {
                 encode_i(0x13, 1, rd, rd, ci)
             }
         }
-        (2, 2 | 3) if rd != 0 => {
-            // C.LWSP/C.LDSP
+        (2, 1..=3) if rd != 0 || funct3 == 1 => {
+            // C.FLDSP/C.LWSP/C.LDSP. Unlike x0, f0 is a writable destination.
             let offset = high << 5
                 | if funct3 == 2 {
                     field(2, 2) << 6 | field(4, 3) << 2
                 } else {
                     field(2, 3) << 6 | field(5, 2) << 3
                 };
-            encode_i(0x03, funct3, rd, 2, offset)
+            if funct3 == 1 {
+                encode_i(0x07, 3, rd, 2, offset)
+            } else {
+                encode_i(0x03, funct3, rd, 2, offset)
+            }
         }
         (2, 4) => match (rd, rs2, high) {
             (0, 0, 0) => return None,
@@ -149,16 +156,20 @@ pub(crate) fn expand(bits: u16) -> Option<u32> {
             (_, _, 0) => encode_r(0x33, 0, 0, rd, 0, rs2), // C.MV
             _ => encode_r(0x33, 0, 0, rd, rd, rs2),        // C.ADD
         },
-        (2, 6 | 7) => {
-            // C.SWSP/C.SDSP
+        (2, 5..=7) => {
+            // C.FSDSP/C.SWSP/C.SDSP.
             let offset = if funct3 == 6 {
                 field(7, 2) << 6 | field(9, 4) << 2
             } else {
                 field(7, 3) << 6 | field(10, 3) << 3
             };
-            encode_store(funct3 & 3, 2, rs2, offset)
+            if funct3 == 5 {
+                encode_store(0x27, 3, 2, rs2, offset)
+            } else {
+                encode_store(0x23, funct3 & 3, 2, rs2, offset)
+            }
         }
-        // Reserved encodings, floating-point instructions, and wider instructions.
+        // Reserved encodings and wider instructions.
         _ => return None,
     })
 }
@@ -176,6 +187,6 @@ fn encode_r(opcode: u32, funct3: u32, funct7: u32, rd: u32, rs1: u32, rs2: u32) 
     encode_i(opcode, funct3, rd, rs1, funct7 << 5 | rs2)
 }
 
-fn encode_store(funct3: u32, rs1: u32, rs2: u32, imm: u32) -> u32 {
-    (imm & 0xfe0) << 20 | rs2 << 20 | rs1 << 15 | funct3 << 12 | (imm & 0x1f) << 7 | 0x23
+fn encode_store(opcode: u32, funct3: u32, rs1: u32, rs2: u32, imm: u32) -> u32 {
+    (imm & 0xfe0) << 20 | rs2 << 20 | rs1 << 15 | funct3 << 12 | (imm & 0x1f) << 7 | opcode
 }

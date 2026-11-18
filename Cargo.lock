@@ -415,6 +415,9 @@ dependencies = [
 [[package]]
 name = "hesper-riscv-linux"
 version = "0.2.1"
+dependencies = [
+ "softfloat_pure",
+]
 
 [[package]]
 name = "hesper-riscv-linux-wasm"
@@ -965,6 +968,14 @@ name = "smallvec"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
+
+[[package]]
+name = "softfloat_pure"
+version = "0.3.4"
+source = "git+https://github.com/HarryR/softfloat-pure.git?rev=f655f4c3119f6e8b05cf4790df705c6e54520611#f655f4c3119f6e8b05cf4790df705c6e54520611"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "static_assertions"

@@ -1706,3 +1706,14 @@ QMP CPU 属性、自动树及原版 OpenSBI 交接树读回 F/D；客体探针�
 均为 0，mawk 打印 `4.375`、`7.500`；冷启动未安装 mawk，原 APK 仍可验签。
 两次以 QMP `quit` 正常退出。原始输入、串口、CPU/树读回与报告：
 `.cache/riscv-linux/repro-c/logs-alpine/reference-_m1jpujf/`。
+
+## RISC-V Linux Alpine：RV64F/D 独立对照
+
+五个定向 Rust 目标（`floating_point`、`privilege`、`sv39`、
+`atomic_compressed`、`boot`）共 32 项通过，`make verify` 通过。
+`make riscv-linux-fd-reference` 的 170 例（8,160 字节）在 QEMU 9.2.0、
+Hesper release 单步和批处理完全一致。对照覆盖 F/D 指令族、压缩访存、
+五种舍入、动态舍入、NaN、符号零及一次舍入 FMA；对照曾发现依赖的负无穷
+分类错误，修正 `FCLASS` 的架构位判定后与原 QEMU 输出相同。原 IM / AC
+探针仍运行。三份位签名、反汇编与报告在
+`.cache/riscv-linux/repro-c/logs-alpine/fd-reference-r_9frin3/`。

@@ -34,6 +34,7 @@
 #   make riscv-linux-initramfs-browser  生产 Chrome 的替换根、默认根与数据盘启动
 #   make riscv-linux-alpine-sources / riscv-linux-alpine-data  验签发行版输入 / 复建 Alpine 镜像
 #   make riscv-linux-alpine-reference  固定 QEMU 验收 Alpine 客体
+#   make riscv-linux-fd-reference  对照 QEMU 与 Hesper 的浮点位签名
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -51,6 +52,7 @@
         riscv-linux-firmware riscv-linux-native riscv-linux-wasm riscv-linux-browser \
         riscv-linux-blk-data riscv-linux-blk-reference \
         riscv-linux-alpine-sources riscv-linux-alpine-data riscv-linux-alpine-reference \
+        riscv-linux-fd-reference \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -147,6 +149,12 @@ riscv-linux-alpine-data:
 
 riscv-linux-alpine-reference:
 	python3 tools/riscv-linux/reference.py --profile alpine
+
+riscv-linux-fd-reference:
+	cargo build --locked --release -p hesper-riscv-linux --example isa_probe
+	prefix=$$(PYTHONPATH=tools/riscv-linux python3 -c 'from build_guest import guest_build_dir, guest_compiler; print(str(guest_compiler(guest_build_dir() / "buildroot")).removesuffix("gcc"))') && \
+		python3 tools/riscv-linux/isa_reference.py --probe fd \
+			--hesper "$(or $(CARGO_TARGET_DIR),target)/release/examples/isa_probe" "$$prefix"
 
 .PHONY: riscv-linux-initramfs-reference
 riscv-linux-initramfs-reference:
