@@ -224,6 +224,19 @@ fn rejected_reboots_preserve_existing_ram_and_execution_state() {
         BootError::Overlap("Linux Image", "initramfs"),
     );
 
+    {
+        let mut initramfs = vec![0; (FDT_ADDRESS - INITRAMFS_ADDRESS) as usize + 1];
+        initramfs[..6].copy_from_slice(b"070701");
+        reject(
+            "initramfs extends into DTB",
+            BootImages {
+                initramfs: &initramfs,
+                ..next.images()
+            },
+            BootError::Overlap("initramfs", "DTB"),
+        );
+    }
+
     for size in [next.fdt.len() as u32 - 1, next.fdt.len() as u32 + 1] {
         let mut fdt = next.fdt.clone();
         fdt[4..8].copy_from_slice(&size.to_be_bytes());
