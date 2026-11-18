@@ -13,7 +13,7 @@ COMMANDS = (
 )
 
 
-def session(receive, send, states, boot_seconds):
+def session(receive, send, states, boot_seconds, *, step_seconds=STEP_SECONDS):
     """receive(seconds) returns bytes or raises on timeout; send writes literal bytes."""
     started = time.monotonic()
     timings = {}
@@ -40,7 +40,7 @@ def session(receive, send, states, boot_seconds):
     timings["boot"] = time.monotonic() - started
     for state, command, check in states:
         send(command)
-        output = wait_prompt(state, STEP_SECONDS)
+        output = wait_prompt(state, step_seconds)
         if not check(output):
             raise ValueError(f"{state}: result mismatch; completed={list(timings)}; serial tail={output[-2048:]!r}")
         timings[state] = time.monotonic() - started

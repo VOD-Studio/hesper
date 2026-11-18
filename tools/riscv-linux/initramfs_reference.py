@@ -13,23 +13,11 @@ from build_guest import (IMAGE_DIR, IMAGE_LOCK, INITRD, board_dtb, capture, chec
                          guest_build_dir, guest_compiler, logged, verified_manifest)
 from build_qemu import QEMU, version
 from initramfs_acceptance import custom_states, default_states
+from newc import write_newc
 from reference import run
 from sources import CACHE, PROFILE, require_tools, sha256
 
 OVERLAY = PROFILE / "custom-root"
-
-
-def write_newc(path, entries):
-    with path.open("wb") as stream:
-        for ino, (name, mode, data, major, minor) in enumerate(entries, 1):
-            name = name.encode("ascii") + b"\0"
-            # Fixed inode order and metadata; no host ownership, clock or mknod.
-            fields = (ino, mode, 0, 0, 1, 0, len(data), 0, 0, major, minor, len(name), 0)
-            stream.write(b"070701" + "".join(f"{field:08x}" for field in fields).encode("ascii"))
-            stream.write(name)
-            stream.write(b"\0" * (-stream.tell() % 4))
-            stream.write(data)
-            stream.write(b"\0" * (-stream.tell() % 4))
 
 
 def build_root(directory, gcc, locked_cpio):

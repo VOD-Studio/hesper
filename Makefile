@@ -32,6 +32,8 @@
 #   make riscv-linux-blk-browser  生产 Chrome 与 CLI 双向互换数据盘
 #   make riscv-linux-initramfs-reference  复建替换根并在固定 QEMU 验证
 #   make riscv-linux-initramfs-browser  生产 Chrome 的替换根、默认根与数据盘启动
+#   make riscv-linux-alpine-sources / riscv-linux-alpine-data  验签发行版输入 / 复建 Alpine 镜像
+#   make riscv-linux-alpine-reference  固定 QEMU 验收 Alpine 客体
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -48,6 +50,7 @@
         tools-test riscv-linux-sources riscv-linux-data riscv-linux-qemu riscv-linux-reference \
         riscv-linux-firmware riscv-linux-native riscv-linux-wasm riscv-linux-browser \
         riscv-linux-blk-data riscv-linux-blk-reference \
+        riscv-linux-alpine-sources riscv-linux-alpine-data riscv-linux-alpine-reference \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -135,6 +138,15 @@ riscv-linux-reference:
 
 riscv-linux-blk-reference:
 	python3 tools/riscv-linux/reference.py --profile blk
+
+riscv-linux-alpine-sources:
+	python3 tools/riscv-linux/alpine_root.py
+
+riscv-linux-alpine-data:
+	python3 tools/riscv-linux/build_guest.py --profile alpine
+
+riscv-linux-alpine-reference:
+	python3 tools/riscv-linux/reference.py --profile alpine
 
 .PHONY: riscv-linux-initramfs-reference
 riscv-linux-initramfs-reference:

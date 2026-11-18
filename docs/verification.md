@@ -1687,3 +1687,22 @@ Arch Linux x86-64，Chromium 155.0.8059.84、Bun 1.4.4、Node.js 26.13.1。
 `fuel=516030464/unlimited`，越过原先的 450000000 上限。管道下显式
 `--max-fuel 1` 以 `fuel=1/1` 和非零状态退出。原始串口和诊断：
 `.cache/riscv-linux/fuel-default.RqwtY0/`。
+
+## RISC-V Linux Alpine：签名来源与固定 QEMU 客体
+
+Alpine 3.24.4 riscv64 minirootfs 的分离签名在独立临时 keyring 验证，
+主指纹为 `0482D84022F52DF1C4E7CD43293ACD0907D9495A`。归档的 97 个目录、
+335 个链接和 83 个普通文件逐项对照生成的 `newc`；交叉 `readelf` 核对
+BusyBox、apk、musl 与四个依赖库的双精度 ABI 和链接。U1 替换根字节不变。
+Debian 12、DTC 1.6.1 下 `repro-c` / `repro-d` 两套构建的四件与 manifest
+逐字节一致，指纹见 [Alpine 镜像锁](../tools/riscv-linux/images-alpine.lock.json)。
+复用原版 IMAC OpenSBI，Linux `CONFIG_FPU=y`；归档为 7,293,000 字节。
+
+固定 QEMU 9.2.0 在断网容器通过候选和锁定两次重放。
+`make riscv-linux-alpine-data riscv-linux-alpine-reference` 的锁定重放在
+0.562 秒到首提示，1.323 秒得到 `7.500`；另一个冷启动在 0.556 秒到提示。
+QMP CPU 属性、自动树及原版 OpenSBI 交接树读回 F/D；客体探针检查 HWCAP
+并打印 `FP_CTX_OK:8`。空 apk keys 验签状态为 1，默认 keys 验签与离线安装
+均为 0，mawk 打印 `4.375`、`7.500`；冷启动未安装 mawk，原 APK 仍可验签。
+两次以 QMP `quit` 正常退出。原始输入、串口、CPU/树读回与报告：
+`.cache/riscv-linux/repro-c/logs-alpine/reference-_m1jpujf/`。

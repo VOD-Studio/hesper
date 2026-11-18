@@ -58,9 +58,11 @@ def download(entry, archive):
         subprocess.run([
             "curl", "--fail", "--silent", "--show-error", "--location",
             "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "20",
-            "--max-time", "300", "--max-filesize", str(512 * 1024 * 1024),
+            "--max-time", "300", "--max-filesize", str(entry.get("bytes", 512 * 1024 * 1024)),
             "--output", partial, entry["url"],
         ], check=True)
+        if "bytes" in entry and partial.stat().st_size != entry["bytes"]:
+            raise ValueError(f"{archive}: size mismatch")
         check_archive(partial, entry["sha256"])
         partial.replace(archive)
 

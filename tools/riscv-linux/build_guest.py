@@ -1,4 +1,4 @@
-"""Build the pinned soft-float guest and verify its images before recording a manifest."""
+"""Build the pinned Linux guests and verify their images before recording a manifest."""
 
 import argparse
 import hashlib
@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 
+import alpine_root
 from sources import CACHE, LOCK, PROFILE, archives, check_archive, require_tools, sha256
 
 DRAM = 0x80000000
@@ -34,6 +35,12 @@ BLK_IMAGE_DIR = CACHE / "images-blk"
 BLK_LOGS = CACHE / "logs-blk"
 CPU_PROFILE = PROFILE / "qemu-cpu.txt"
 LOGS = CACHE / "logs"
+ALPINE_ISA = "rv64imafdc_zicntr_zicsr_zifencei"
+ALPINE_CPU_PROFILE = PROFILE / "qemu-cpu-alpine.txt"
+ALPINE_IMAGE_LOCK = PROFILE / "images-alpine.lock.json"
+ALPINE_IMAGE_DIR = CACHE / "images-alpine"
+ALPINE_CANDIDATE_DIR = CACHE / "images-alpine-candidate"
+ALPINE_LOGS = CACHE / "logs-alpine"
 ENV = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
 ENV.update(LC_ALL="C", TZ="UTC", GIT_CEILING_DIRECTORIES=str(CACHE))
 
@@ -190,23 +197,37 @@ def firmware(source, out, prefix, jobs, logs):
     return binary, resident
 
 
-def kernel(source, out, prefix, jobs, logs, blk):
+def kernel_fragments(blk, alpine):
+    fragments = [PROFILE / "linux.fragment"]
+    if blk:
+        fragments.append(PROFILE / "linux-blk.fragment")
+    if alpine:
+        fragments.append(PROFILE / "linux-alpine.fragment")
+    return fragments
+
+
+KERNEL_OPTIONS = {"CONFIG_OF": "y", "CONFIG_RISCV_M_MODE": "n"}
+
+
+def kernel(source, out, prefix, jobs, logs, blk, *, alpine=False):
     env = ENV | dict(ARCH="riscv", CROSS_COMPILE=prefix, SOURCE_DATE_EPOCH="1731888000",
                      KBUILD_BUILD_TIMESTAMP="Mon Nov 18 00:00:00 UTC 2024",
                      KBUILD_BUILD_USER="hesper", KBUILD_BUILD_HOST="reference", KBUILD_BUILD_VERSION="1",
                      LOCALVERSION="")
     make = ("make", "-C", source, f"O={out}", f"-j{jobs}")
-    fragments = [PROFILE / "linux.fragment"]
-    if blk:
-        fragments.append(PROFILE / "linux-blk.fragment")
+    fragments = kernel_fragments(blk, alpine)
     logged("linux-defconfig", *make, "defconfig", env_override=env, logs=logs)
     logged("linux-fragment", source / "scripts/kconfig/merge_config.sh", "-m", "-O", out,
            out / ".config", *fragments, cwd=source, env_override=env, logs=logs)
     logged("linux-olddefconfig", *make, "olddefconfig", env_override=env, logs=logs)
-    check_config(out / ".config", fragments, {"CONFIG_OF": "y", "CONFIG_RISCV_M_MODE": "n"})
+    check_config(out / ".config", fragments, KERNEL_OPTIONS)
     logged("linux-build", *make, "Image", env_override=env, logs=logs)
     release = capture(*make, "-s", "kernelrelease", env_override=env)
     image = out / "arch/riscv/boot/Image"
+    return image, kernel_end(image), release
+
+
+def kernel_end(image):
     with image.open("rb") as stream:
         header = stream.read(64)
     if len(header) != 64:
@@ -214,15 +235,17 @@ def kernel(source, out, prefix, jobs, logs, blk):
     offset, size, flags, version = struct.unpack_from("<QQQI", header, 8)
     if header[56:60] != b"RSC\x05" or offset != KERNEL - DRAM or size == 0 or flags != 0 or version != 2:
         raise ValueError(f"{image}: invalid RISC-V Image header for this board")
-    return image, KERNEL + max(size, image.stat().st_size), release
+    return KERNEL + max(size, image.stat().st_size)
 
 
-def board_dtb(directory, initrd_end, logs, blk):
+def board_dtb(directory, initrd_end, logs, blk, *, alpine=False):
     dts = directory / "board.dts"
     dtb = directory / "board.dtb"
     source = (PROFILE / "board.dts").read_text().replace("@INITRD_END@", f"{initrd_end:#x}")
     if blk:
         source += (PROFILE / "board-blk.dtsi").read_text()
+    if alpine:
+        source += (PROFILE / "board-alpine.dtsi").read_text()
     dts.write_text(source)
     logged("dtc", "dtc", "-I", "dts", "-O", "dtb", "-p", "4096", "-o", dtb, dts, logs=logs)
     intc = "/cpus/cpu@0/interrupt-controller"
@@ -238,8 +261,9 @@ def board_dtb(directory, initrd_end, logs, blk):
         ("x", "/memory@80000000", "reg", "0 80000000 0 8000000"),
         ("u", "/cpus", "timebase-frequency", "10000000"),
         ("x", "/cpus/cpu@0", "reg", "0"), ("s", "/cpus/cpu@0", "mmu-type", "riscv,sv39"),
-        ("s", "/cpus/cpu@0", "riscv,isa", ISA),
-        ("s", "/cpus/cpu@0", "riscv,isa-extensions", "i m a c zicntr zicsr zifencei"),
+        ("s", "/cpus/cpu@0", "riscv,isa", ALPINE_ISA if alpine else ISA),
+        ("s", "/cpus/cpu@0", "riscv,isa-extensions",
+         "i m a f d c zicntr zicsr zifencei" if alpine else "i m a c zicntr zicsr zifencei"),
         ("x", clint, "reg", "0 2000000 0 10000"),
         ("x", clint, "interrupts-extended", f"{cpu_phandle} 3 {cpu_phandle} 7"),
         ("x", plic, "reg", "0 c000000 0 600000"),
@@ -250,6 +274,10 @@ def board_dtb(directory, initrd_end, logs, blk):
     ]
     if blk:
         expected.extend(block_tree(plic_phandle))
+    if capture("fdtget", "-l", dtb, "/cpus") != "cpu@0":
+        raise ValueError(f"{dtb}: expected a single CPU node")
+    if capture("fdtget", "-l", dtb, "/reserved-memory"):
+        raise ValueError(f"{dtb}: only OpenSBI may populate reserved-memory")
     with (logs / "fdt-readback.txt").open("w") as report:
         for kind, node, prop, value in expected:
             found = capture("fdtget", "-t", kind, dtb, node, prop)
@@ -269,16 +297,22 @@ def block_tree(plic_phandle):
             ("x", node, "interrupt-parent", plic_phandle), ("u", node, "interrupts", "1")]
 
 
-def verified_manifest(blk=False, *, directory=None):
-    lock = BLK_IMAGE_LOCK if blk else IMAGE_LOCK
-    if directory is None:
-        directory = BLK_IMAGE_DIR if blk else IMAGE_DIR
-    manifest = json.loads(lock.read_bytes())
-    actual = json.loads((directory / "manifest.json").read_bytes())
-    if actual != manifest or sha256(LOCK) != manifest["source_lock_sha256"]:
+def verified_manifest(blk=False, *, directory=None, alpine=False, candidate=False):
+    if (alpine and blk) or (candidate and not alpine):
+        raise ValueError("candidate verification requires the Alpine serial board")
+    if alpine:
+        lock, default_dir = ALPINE_IMAGE_LOCK, ALPINE_CANDIDATE_DIR if candidate else ALPINE_IMAGE_DIR
+    else:
+        lock, default_dir = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
+    directory = default_dir if directory is None else directory
+    manifest = json.loads((directory / "manifest.json").read_bytes())
+    if (not candidate and manifest != json.loads(lock.read_bytes())) or sha256(LOCK) != manifest["source_lock_sha256"]:
         raise ValueError("prepared manifest differs from the source or image lock")
-    if manifest["qemu_cpu"] != CPU_PROFILE.read_text().strip() or manifest["isa"] != ISA:
+    cpu_profile, isa = (ALPINE_CPU_PROFILE, ALPINE_ISA) if alpine else (CPU_PROFILE, ISA)
+    if manifest["qemu_cpu"] != cpu_profile.read_text().strip() or manifest["isa"] != isa:
         raise ValueError("prepared manifest differs from the CPU profile")
+    if manifest["bootargs"] != BOOTARGS:
+        raise ValueError("prepared manifest differs from the boot arguments")
     if [image["path"] for image in manifest["images"]] != list(IMAGE_NAMES):
         raise ValueError("expected the four fixed image names in the image lock")
     for image in manifest["images"]:
@@ -286,30 +320,65 @@ def verified_manifest(blk=False, *, directory=None):
         if path.stat().st_size != image["bytes"]:
             raise ValueError(f"{path}: size mismatch")
         check_archive(path, image["sha256"])
+    if alpine:
+        check_alpine_manifest(manifest, directory, candidate)
     return manifest
 
 
-def guest_build_dir(blk=False):
+def check_alpine_manifest(manifest, directory, candidate):
+    serial = json.loads(IMAGE_LOCK.read_bytes())
+    if (manifest["alpine_source_lock_sha256"] != sha256(alpine_root.ALPINE_SOURCE_LOCK)
+            or manifest["compiler"] != serial["compiler"] or manifest["kernelrelease"] != serial["kernelrelease"]
+            or manifest["config_sha256"]["buildroot"] != serial["config_sha256"]["buildroot"]
+            or not re.fullmatch(r"[0-9a-f]{64}", manifest["config_sha256"]["linux"])
+            or manifest["images"][0] != serial["images"][0]):
+        raise ValueError("Alpine manifest differs from its source lock, toolchain or serial firmware")
+    if candidate:
+        # This path is only for reference qualification, never a consumer boot lock.
+        archives()
+        alpine_root.inputs()
+        config = guest_build_dir(alpine=True) / "linux/.config"
+        check_config(config, kernel_fragments(False, True), KERNEL_OPTIONS)
+        if manifest["config_sha256"]["linux"] != sha256(config):
+            raise ValueError("Alpine candidate differs from its effective Linux config")
+        if manifest["compiler"] != capture(guest_compiler(guest_build_dir() / "buildroot"), "--version").splitlines()[0]:
+            raise ValueError("Alpine candidate differs from the serial guest compiler")
+    spans = [(KERNEL, kernel_end(directory / "Image"), INITRD),
+             (INITRD, INITRD + (directory / "initramfs.cpio").stat().st_size, FDT),
+             (FDT, FDT + (directory / "board.dtb").stat().st_size + FDT_GROWTH, DRAM_END)]
+    for artifact, (base, end, limit) in zip(manifest["images"][1:], spans):
+        if artifact["address"] != f"{base:#x}" or artifact["end"] != f"{end:#x}" or not base < end <= limit:
+            raise ValueError(f"{artifact['path']}: invalid Alpine physical span")
+
+
+def guest_build_dir(blk=False, *, alpine=False):
     inputs = [LOCK, PROFILE / "buildroot.defconfig", PROFILE / "linux.fragment", PROFILE / "rootfs/init",
               PROFILE / "board.dts"]
     if blk:
         inputs.extend((PROFILE / "linux-blk.fragment", PROFILE / "board-blk.dtsi"))
+    if alpine:
+        inputs.extend((alpine_root.ALPINE_SOURCE_LOCK, ALPINE_CPU_PROFILE, PROFILE / "linux-alpine.fragment",
+                       PROFILE / "board-alpine.dtsi"))
     stamp = hashlib.sha256("".join(sha256(path) for path in inputs).encode()).hexdigest()[:16]
     return CACHE / "build" / "guest" / stamp
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("serial", "blk"), default="serial")
-    parser.add_argument("--candidate", action="store_true", help="write an unlocked blk build to images-blk-candidate")
+    parser.add_argument("--profile", choices=("serial", "blk", "alpine"), default="serial")
+    parser.add_argument("--candidate", action="store_true", help="write an unlocked blk or Alpine build")
     args = parser.parse_args()
-    blk = args.profile == "blk"
-    if args.candidate and not blk:
-        parser.error("--candidate requires --profile blk")
-    logs = BLK_LOGS if blk else LOGS
-    lock, output = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
-    if args.candidate:
-        output = CACHE / "images-blk-candidate"
+    blk, alpine = args.profile == "blk", args.profile == "alpine"
+    if args.candidate and not (blk or alpine):
+        parser.error("--candidate requires --profile blk or alpine")
+    if alpine:
+        logs, lock = ALPINE_LOGS, ALPINE_IMAGE_LOCK
+        output = ALPINE_CANDIDATE_DIR if args.candidate else ALPINE_IMAGE_DIR
+    else:
+        logs = BLK_LOGS if blk else LOGS
+        lock, output = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
+        if args.candidate:
+            output = CACHE / "images-blk-candidate"
     require_tools("make", "gcc", "g++", "git", "perl", "tar", "wget", "cpio", "unzip", "rsync", "patch",
                   "file", "bzip2", "xz", "bc", "bison", "flex", "dtc", "fdtget")
     known = archives()
@@ -318,19 +387,30 @@ def main():
         raise ValueError("run as a non-root user and set RISCV_LINUX_JOBS to a positive count")
     start = time.monotonic()
     logs.mkdir(parents=True, exist_ok=True)
-    build = guest_build_dir(blk)
+    build = guest_build_dir(blk, alpine=alpine)
     build.mkdir(parents=True, exist_ok=True)
-    br_out = build / "buildroot"
     k_out = build / "linux"
-    cpio, prefix, compiler = rootfs(unpack(known["buildroot"]), br_out, jobs, logs, blk)
-    fw, fw_end = firmware(unpack(known["opensbi"]), build / "opensbi", prefix, jobs, logs)
-    image, image_end, release = kernel(unpack(known["linux"]), k_out, prefix, jobs, logs, blk)
+    if alpine:
+        serial = verified_manifest()
+        br_out = guest_build_dir() / "buildroot"
+        gcc = guest_compiler(br_out)
+        prefix = str(gcc).removesuffix("gcc")
+        compiler = capture(gcc, "--version").splitlines()[0]
+        if compiler != serial["compiler"]:
+            raise ValueError(f"{gcc}: compiler differs from serial image lock")
+        fw, fw_end = IMAGE_DIR / "fw_jump.bin", int(serial["images"][0]["end"], 16)
+        cpio = alpine_root.build_root(build, prefix, alpine_root.inputs(), logs)
+    else:
+        br_out = build / "buildroot"
+        cpio, prefix, compiler = rootfs(unpack(known["buildroot"]), br_out, jobs, logs, blk)
+        fw, fw_end = firmware(unpack(known["opensbi"]), build / "opensbi", prefix, jobs, logs)
+    image, image_end, release = kernel(unpack(known["linux"]), k_out, prefix, jobs, logs, blk, alpine=alpine)
     rd_end = INITRD + cpio.stat().st_size
     ranges = [(DRAM, fw_end), (KERNEL, image_end), (INITRD, rd_end)]
     for index, ((base, end), limit) in enumerate(zip(ranges, (KERNEL, INITRD, FDT))):
         if not base < end <= limit:
             raise ValueError(f"{IMAGE_NAMES[index]}: invalid or overlapping physical span [{base:#x}, {end:#x})")
-    dtb, dtb_end = board_dtb(build, rd_end, logs, blk)
+    dtb, dtb_end = board_dtb(build, rd_end, logs, blk, alpine=alpine)
     if dtb_end > DRAM_END:
         raise ValueError(f"{dtb}: FDT growth exceeds DRAM")
     ranges.append((FDT, dtb_end))
@@ -342,10 +422,15 @@ def main():
     # Kconfig stores the absolute filename used to seed Buildroot; it is not
     # an effective guest option and must not tie the lock to a checkout path.
     buildroot_config = re.sub(rb"^BR2_DEFCONFIG=.*\n", b"", (br_out / ".config").read_bytes(), flags=re.M)
-    manifest = dict(source_lock_sha256=sha256(LOCK), bootargs=BOOTARGS, isa=ISA, kernelrelease=release,
+    manifest = dict(source_lock_sha256=sha256(LOCK), bootargs=BOOTARGS, isa=ALPINE_ISA if alpine else ISA,
+                    kernelrelease=release,
                     compiler=compiler, config_sha256={"buildroot": hashlib.sha256(buildroot_config).hexdigest(),
                                                       "linux": sha256(k_out / ".config")}, images=artifacts,
-                    qemu_cpu=CPU_PROFILE.read_text().strip())
+                    qemu_cpu=(ALPINE_CPU_PROFILE if alpine else CPU_PROFILE).read_text().strip())
+    if alpine:
+        manifest["alpine_source_lock_sha256"] = sha256(alpine_root.ALPINE_SOURCE_LOCK)
+        if manifest["config_sha256"]["buildroot"] != serial["config_sha256"]["buildroot"]:
+            raise ValueError("Buildroot toolchain config differs from serial image lock")
     if not args.candidate:
         expected = json.loads(lock.read_bytes())
         if manifest != expected:
