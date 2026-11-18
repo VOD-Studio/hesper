@@ -15,11 +15,13 @@ mod mmu;
 mod pmp;
 mod privilege;
 mod uart;
+mod virtio_blk;
 
 pub use boot::{BootError, BootImages, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS};
 pub use machine::{DebugState, Diagnostics, LoadError, Machine, Progress, Trap};
 pub use privilege::PrivilegeMode;
 pub use uart::UartDiagnostics;
+pub use virtio_blk::{DataDisk, DiskFault, DiskSizeError};
 
 /// Guest physical address of the first DRAM byte.
 pub const DRAM_BASE: u64 = 0x8000_0000;

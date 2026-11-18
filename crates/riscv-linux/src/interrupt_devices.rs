@@ -88,42 +88,46 @@ fn replace_word(register: u64, value: u64, shift: u32) -> u64 {
     (register & !mask) | ((value << shift) & mask)
 }
 
-const UART_ID: u32 = 10;
-const UART_MASK: u32 = 1 << UART_ID;
+pub(crate) const BLOCK: u32 = 1 << 1;
+const UART: u32 = 1 << 10;
+const SOURCES: u32 = BLOCK | UART;
 const PRIORITY_MASK: u32 = 7;
 
 #[derive(Debug, Default)]
 struct PlicContext {
-    enabled: bool,
+    enabled: u32,
     threshold: u32,
 }
 
 #[derive(Debug)]
 pub(crate) struct Plic {
-    priority: u32,
+    block_priority: u32,
+    uart_priority: u32,
     contexts: [PlicContext; 2],
-    uart_line: bool,
-    uart_pending: bool,
-    uart_in_service: bool,
+    lines: u32,
+    pending: u32,
+    in_service: u32,
 }
 
 impl Plic {
     pub(crate) fn new() -> Self {
         Self {
-            priority: 0,
+            block_priority: 0,
+            uart_priority: 0,
             contexts: Default::default(),
-            uart_line: false,
-            uart_pending: false,
-            uart_in_service: false,
+            lines: 0,
+            pending: 0,
+            in_service: 0,
         }
     }
 
     pub(crate) fn read(&mut self, offset: u64) -> u32 {
         match offset {
-            0x28 => self.priority,
-            0x1000 => u32::from(self.uart_pending) * UART_MASK,
-            0x2000 => u32::from(self.contexts[0].enabled) * UART_MASK,
-            0x2080 => u32::from(self.contexts[1].enabled) * UART_MASK,
+            0x04 => self.block_priority,
+            0x28 => self.uart_priority,
+            0x1000 => self.pending,
+            0x2000 => self.contexts[0].enabled,
+            0x2080 => self.contexts[1].enabled,
             0x20_0000 => self.contexts[0].threshold,
             0x20_1000 => self.contexts[1].threshold,
             0x20_0004 => self.claim(0),
@@ -134,9 +138,10 @@ impl Plic {
 
     pub(crate) fn write(&mut self, offset: u64, value: u32) {
         match offset {
-            0x28 => self.priority = value & PRIORITY_MASK,
-            0x2000 => self.contexts[0].enabled = value & UART_MASK != 0,
-            0x2080 => self.contexts[1].enabled = value & UART_MASK != 0,
+            0x04 => self.block_priority = value & PRIORITY_MASK,
+            0x28 => self.uart_priority = value & PRIORITY_MASK,
+            0x2000 => self.contexts[0].enabled = value & SOURCES,
+            0x2080 => self.contexts[1].enabled = value & SOURCES,
             0x20_0000 => self.contexts[0].threshold = value & PRIORITY_MASK,
             0x20_1000 => self.contexts[1].threshold = value & PRIORITY_MASK,
             0x20_0004 => self.complete(0, value),
@@ -146,41 +151,91 @@ impl Plic {
     }
 
     pub(crate) fn set_uart_line(&mut self, asserted: bool) {
-        self.uart_line = asserted;
-        self.latch_uart();
+        self.set_line(UART, asserted);
+    }
+
+    pub(crate) fn set_line(&mut self, mask: u32, asserted: bool) {
+        // A source cannot withdraw a pending request by deasserting its line.
+        if asserted {
+            self.lines |= mask;
+            self.pending |= mask & !self.in_service;
+        } else {
+            self.lines &= !mask;
+        }
     }
 
     pub(crate) fn pending(&self) -> u64 {
-        if !self.uart_pending {
+        if self.pending == 0 {
             return 0;
         }
-        let notified = |ctx: &PlicContext| ctx.enabled && self.priority > ctx.threshold;
+        let notified = |ctx: &PlicContext| self.best(ctx.enabled, ctx.threshold) != 0;
         (if notified(&self.contexts[0]) { MEIP } else { 0 })
             | if notified(&self.contexts[1]) { SEIP } else { 0 }
     }
 
-    fn latch_uart(&mut self) {
-        // Deassertion cannot withdraw a request already forwarded to the PLIC core.
-        if self.uart_line && !self.uart_in_service {
-            self.uart_pending = true;
-        }
-    }
-
-    fn claim(&mut self, context: usize) -> u32 {
-        // The threshold gates notifications, not explicit claims.
-        if self.uart_pending && self.contexts[context].enabled && self.priority != 0 {
-            self.uart_pending = false;
-            self.uart_in_service = true;
-            UART_ID
+    fn best(&self, enabled: u32, threshold: u32) -> u32 {
+        let pending = self.pending & enabled;
+        let block = pending & BLOCK != 0 && self.block_priority > threshold;
+        let uart = pending & UART != 0 && self.uart_priority > threshold;
+        if block && (!uart || self.block_priority >= self.uart_priority) {
+            BLOCK
+        } else if uart {
+            UART
         } else {
             0
         }
     }
 
-    fn complete(&mut self, context: usize, id: u32) {
-        if id == UART_ID && self.contexts[context].enabled && self.uart_in_service {
-            self.uart_in_service = false;
-            self.latch_uart();
+    fn claim(&mut self, context: usize) -> u32 {
+        // The threshold gates notifications, not explicit claims.
+        let mask = self.best(self.contexts[context].enabled, 0);
+        if mask == 0 {
+            return 0;
         }
+        self.pending &= !mask;
+        self.in_service |= mask;
+        mask.trailing_zeros()
+    }
+
+    fn complete(&mut self, context: usize, id: u32) {
+        let mask = 1u32.checked_shl(id).unwrap_or(0);
+        if self.in_service & self.contexts[context].enabled & mask != 0 {
+            self.in_service &= !mask;
+            self.pending |= self.lines & mask;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plic_prioritizes_independent_sources_and_masks_each_context() {
+        let mut plic = Plic::new();
+        plic.write(0x04, 1);
+        plic.write(0x28, 2);
+        plic.write(0x2000, BLOCK);
+        plic.write(0x2080, BLOCK | UART);
+        plic.write(0x20_0000, 1);
+        plic.set_line(BLOCK, true);
+        plic.set_uart_line(true);
+        assert_eq!(plic.read(0x1000), BLOCK | UART);
+        assert_eq!(plic.pending(), SEIP);
+        assert_eq!(plic.read(0x20_1004), 10);
+        assert_eq!(plic.pending(), SEIP);
+        assert_eq!(plic.read(0x20_0004), 1);
+        assert_eq!(plic.pending(), 0);
+        plic.write(0x20_0004, 10); // UART wasn't enabled in M.
+        assert_eq!(plic.read(0x1000), 0);
+        plic.set_line(BLOCK, false);
+        plic.write(0x20_0004, 1);
+        plic.write(0x20_1004, 10);
+        assert_eq!(plic.read(0x1000), UART);
+        plic.set_line(BLOCK, true);
+        plic.write(0x04, 2);
+        assert_eq!(plic.pending(), MEIP | SEIP);
+        assert_eq!(plic.read(0x20_1004), 1); // Lower source ID wins the tie.
+        assert_eq!(plic.read(0x20_1004), 10);
     }
 }

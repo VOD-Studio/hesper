@@ -259,10 +259,15 @@ impl Hart {
             board.ram[range].copy_from_slice(&value.to_le_bytes()[..bytes]);
             self.invalidate_reservation(physical, bytes);
         } else {
-            board
+            let dma = board
                 .write_mmio(physical, bytes, value)
                 .ok_or_else(|| self.trap(7, address))?;
             translation.commit(&mut board.ram);
+            // A device write can invalidate an LR to a different address than
+            // the doorbell. SC may fail spuriously, so clearing is sufficient.
+            if dma {
+                self.reservation = None;
+            }
         }
         Ok(())
     }

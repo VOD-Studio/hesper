@@ -1,40 +1,44 @@
 use crate::{
-    DRAM_SIZE,
-    interrupt_devices::{Clint, Plic},
+    DRAM_SIZE, DataDisk,
+    interrupt_devices::{BLOCK, Clint, Plic},
     uart::Uart,
+    virtio_blk::VirtioBlk,
 };
 use std::collections::TryReserveError;
 
 const CLINT: u64 = 0x0200_0000;
 const PLIC: u64 = 0x0c00_0000;
 const UART: u64 = 0x1000_0000;
+const VIRTIO_BLK: u64 = 0x1000_1000;
 
 pub(crate) struct Board {
     pub(crate) ram: Vec<u8>,
     pub(crate) uart: Uart,
     clint: Clint,
     plic: Plic,
+    pub(crate) block: Option<VirtioBlk>,
     pub(crate) ticks: u64,
 }
 
 impl Board {
     pub(crate) fn new() -> Self {
-        Self::with_ram(vec![0; DRAM_SIZE])
+        Self::with_ram(vec![0; DRAM_SIZE], None)
     }
 
-    pub(crate) fn try_new() -> Result<Self, TryReserveError> {
+    pub(crate) fn try_new(disk: Option<DataDisk>) -> Result<Self, TryReserveError> {
         let mut ram = Vec::new();
         ram.try_reserve_exact(DRAM_SIZE)?;
         ram.resize(DRAM_SIZE, 0);
-        Ok(Self::with_ram(ram))
+        Ok(Self::with_ram(ram, disk))
     }
 
-    fn with_ram(ram: Vec<u8>) -> Self {
+    fn with_ram(ram: Vec<u8>, disk: Option<DataDisk>) -> Self {
         Self {
             ram,
             uart: Uart::new(),
             clint: Clint::new(),
             plic: Plic::new(),
+            block: disk.map(VirtioBlk::new),
             ticks: 0,
         }
     }
@@ -48,6 +52,9 @@ impl Board {
         self.uart = Uart::new();
         self.clint = Clint::new();
         self.plic = Plic::new();
+        if let Some(block) = &mut self.block {
+            block.reset();
+        }
         self.ticks = 0;
     }
 
@@ -83,12 +90,14 @@ impl Board {
         {
             u64::from(self.uart.read(offset, self.ticks))
         } else {
-            return None;
+            let offset = offset(address, width, VIRTIO_BLK, 0x1000)?;
+            self.block.as_ref()?.read(offset, width)?
         };
         Some(value)
     }
 
-    pub(crate) fn write_mmio(&mut self, address: u64, width: usize, value: u64) -> Option<()> {
+    /// Returns whether a device also wrote DRAM via DMA.
+    pub(crate) fn write_mmio(&mut self, address: u64, width: usize, value: u64) -> Option<bool> {
         if let Some(offset) = offset(address, width, CLINT, 0x1_0000) {
             self.clint.write(offset, width, value, self.ticks)?;
         } else if width == 4
@@ -100,9 +109,13 @@ impl Board {
         {
             self.uart.write(offset, value as u8, self.ticks);
         } else {
-            return None;
+            let offset = offset(address, width, VIRTIO_BLK, 0x1000)?;
+            let block = self.block.as_mut()?;
+            let dma = block.write(offset, width, value as u32, &mut self.ram)?;
+            self.plic.set_line(BLOCK, block.interrupt());
+            return Some(dma);
         }
-        Some(())
+        Some(false)
     }
 }
 

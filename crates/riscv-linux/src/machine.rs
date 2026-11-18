@@ -1,6 +1,6 @@
 use crate::{
-    BootError, BootImages, FDT_ADDRESS, PrivilegeMode, UartDiagnostics, board::Board,
-    boot::Validated, dram_range, hart::Hart,
+    BootError, BootImages, DataDisk, DiskFault, FDT_ADDRESS, PrivilegeMode, UartDiagnostics,
+    board::Board, boot::Validated, dram_range, hart::Hart,
 };
 use core::fmt;
 
@@ -84,7 +84,16 @@ impl Machine {
 
     /// Create an empty board, returning an error if DRAM cannot be allocated.
     pub fn try_new() -> Result<Self, BootError> {
-        Board::try_new()
+        Self::try_new_board(None)
+    }
+
+    /// Create an empty board with a data disk attached at the modern MMIO slot.
+    pub fn try_with_disk(disk: DataDisk) -> Result<Self, BootError> {
+        Self::try_new_board(Some(disk))
+    }
+
+    fn try_new_board(disk: Option<DataDisk>) -> Result<Self, BootError> {
+        Board::try_new(disk)
             .map(Self::with_board)
             .map_err(|_| BootError::Allocation)
     }
@@ -102,14 +111,23 @@ impl Machine {
 
     /// Validate every image and boot a new board in M-mode at the OpenSBI entry.
     pub fn boot(images: BootImages<'_>) -> Result<Self, BootError> {
+        Self::boot_board(images, None)
+    }
+
+    /// Validate boot images and start a cold board owning the supplied disk.
+    pub fn boot_with_disk(images: BootImages<'_>, disk: DataDisk) -> Result<Self, BootError> {
+        Self::boot_board(images, Some(disk))
+    }
+
+    fn boot_board(images: BootImages<'_>, disk: Option<DataDisk>) -> Result<Self, BootError> {
         let images = Validated::new(images)?;
-        let mut machine = Self::try_new()?;
+        let mut machine = Self::try_new_board(disk)?;
         machine.install_boot(images);
         Ok(machine)
     }
 
-    /// Cold boot on the existing allocation. Validation failure preserves the
-    /// old RAM, devices and hart observation.
+    /// Cold boot on the existing allocation, retaining data-disk sectors.
+    /// Validation failure preserves the old RAM, devices and hart observation.
     pub fn reboot(&mut self, images: BootImages<'_>) -> Result<(), BootError> {
         let images = Validated::new(images)?;
         self.board.reset();
@@ -142,6 +160,32 @@ impl Machine {
     /// Observe DRAM bytes without making a guest bus access.
     pub fn inspect(&self, address: u64, bytes: usize) -> Option<&[u8]> {
         self.board.ram.get(dram_range(address, bytes)?)
+    }
+
+    /// Borrow the current raw data disk for explicit export. This does not
+    /// promise that the guest has flushed or unmounted its filesystem.
+    pub fn data_disk(&self) -> Option<&[u8]> {
+        Some(self.board.block.as_ref()?.disk.bytes())
+    }
+
+    /// Whether the guest wrote sectors since attachment or the last export.
+    pub fn disk_dirty(&self) -> bool {
+        self.board
+            .block
+            .as_ref()
+            .is_some_and(|block| block.disk.dirty())
+    }
+
+    /// Record successful export at the host boundary, while execution is paused.
+    pub fn mark_disk_exported(&mut self) {
+        if let Some(block) = &mut self.board.block {
+            block.disk.mark_exported();
+        }
+    }
+
+    /// Observe a transport failure that requires device reset.
+    pub fn disk_fault(&self) -> Option<DiskFault> {
+        self.board.block.as_ref()?.fault()
     }
 
     /// Observe integer architectural state and cumulative counters.
