@@ -72,6 +72,7 @@ impl Machine {
             bytes: data.len(),
         })?;
         self.ram[range].copy_from_slice(data);
+        self.hart.invalidate_reservation(address, data.len());
         Ok(())
     }
 

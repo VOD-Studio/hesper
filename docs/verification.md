@@ -1313,3 +1313,21 @@ cargo run --locked -p hesper-riscv-linux --example isa_probe -- \
 和 10 秒读截止）。两者的 `0x80000050` 32 字节签名相同：
 `0080ff7fffffffff00ff00ffffffffff00000080ffffffffffffffffffffffff`。
 反汇编、QEMU JSON 原始观察和 Hesper 输出在上述 `logs/` 的 `isa-im-*`。
+
+## RISC-V Linux L2c：原子预约、压缩取指与 QEMU 对照
+
+`cargo test --locked -p hesper-riscv-linux --test atomic_compressed --test isa`
+共 12 项通过，`make verify` 通过。两次连续 SC.W 只有第一次成功；同值的
+重叠写入及宿主重叠装载也使预约失效。AMO.W 返回符号扩展的旧值并只写四字节，
+错误对齐不改 RAM 或目的寄存器。混合取指确认 C.JALR 链接 `PC+2`，末半字的
+C.NOP 可以执行而跨 DRAM 尾后的 32 位指令报告取指错误。
+
+同一上游提交的 `rv64ua-p-amoadd_w` #2/#3 和 `rv64uc-p-rvc` #6/#7
+改成同一段无特权启动的 [`isa-ac.S`](../tools/riscv-linux/isa-ac.S)。
+在 L1c 容器使用 `python3 tools/riscv-linux/isa_reference.py --probe ac "$CROSS_COMPILE"`。
+入口 `0x80000000`，fuel 24，断点 `0x80000054`，签名在 `0x80000070`；
+QEMU 与 Hesper 的 32 字节实际结果均为
+`00000080ffffffff00f8ff7f0000000099badcfeffffffff1132547699badcfe`。
+镜像 SHA-256 `684979e3db3fb5591ea2109c042bf60655673eb7c45b31d9f66be110b9d342ed`；
+反汇编和两端结果在 `.cache/riscv-linux/repro-c/logs/isa-ac-*`。同一脚本的
+I/M 签名复验也通过。这不是完整 ISA 认证，也未执行完整测试 ELF。

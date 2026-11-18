@@ -1,10 +1,12 @@
-use crate::{DRAM_BASE, decode::alu, dram_range, machine::Trap};
+use crate::{DRAM_BASE, atomic, compressed, decode::alu, dram_range, machine::Trap};
+use core::ops::Range;
 
 #[derive(Debug)]
 pub(crate) struct Hart {
     pub(crate) pc: u64,
     pub(crate) x: [u64; 32],
     pub(crate) last_trap: Option<Trap>,
+    reservation: Option<(u64, usize)>,
 }
 
 impl Hart {
@@ -13,6 +15,7 @@ impl Hart {
             pc: DRAM_BASE,
             x: [0; 32],
             last_trap: None,
+            reservation: None,
         }
     }
 
@@ -43,14 +46,18 @@ impl Hart {
         let range = dram_range(pc, 2).ok_or_else(|| self.trap(1, pc))?;
         let start = range.start;
         let low = u16::from_le_bytes(ram[range].try_into().expect("two-byte fetch"));
-        if low & 3 != 3 {
-            return Err(self.trap(2, u64::from(low)));
-        }
-        let high = ram
-            .get(start + 2..start + 4)
-            .ok_or_else(|| self.trap(1, pc + 2))?;
-        let high = u16::from_le_bytes(high.try_into().expect("two-byte fetch"));
-        let instruction = u32::from(low) | (u32::from(high) << 16);
+        let (instruction, length) = if low & 3 != 3 {
+            (
+                compressed::expand(low).ok_or_else(|| self.trap(2, u64::from(low)))?,
+                2,
+            )
+        } else {
+            let high = ram
+                .get(start + 2..start + 4)
+                .ok_or_else(|| self.trap(1, pc + 2))?;
+            let high = u16::from_le_bytes(high.try_into().expect("two-byte fetch"));
+            (u32::from(low) | (u32::from(high) << 16), 4)
+        };
 
         let opcode = instruction & 0x7f;
         let funct3 = (instruction >> 12) & 7;
@@ -58,7 +65,7 @@ impl Hart {
         let lhs = self.x[((instruction >> 15) & 31) as usize];
         let rhs = self.x[((instruction >> 20) & 31) as usize];
         let immediate = i64::from((instruction as i32) >> 20);
-        let mut next = pc.wrapping_add(4);
+        let mut next = pc.wrapping_add(length);
         let illegal = || self.trap(2, u64::from(instruction));
         match (opcode, funct3) {
             (0x13 | 0x1b | 0x33 | 0x3b, _) => {
@@ -115,6 +122,10 @@ impl Hart {
                     next = pc.wrapping_add_signed(sign_extend(u64::from(offset), 13));
                 }
             }
+            (0x2f, _) => {
+                let (bytes, op) = atomic::decode(instruction).ok_or_else(illegal)?;
+                self.execute_atomic(ram, lhs, bytes, rhs, rd, op)?;
+            }
             // FENCE orders an already in-order bus; FENCE.I has no cached
             // instructions to discard. The ISA requires ignoring reserved
             // register fields of these two forms, not other funct3 encodings.
@@ -143,18 +154,77 @@ impl Hart {
     }
 
     fn write_ram(
-        &self,
+        &mut self,
         ram: &mut [u8],
         address: u64,
         bytes: usize,
         value: u64,
     ) -> Result<(), Trap> {
+        let range = self.store_range(address, bytes)?;
+        ram[range].copy_from_slice(&value.to_le_bytes()[..bytes]);
+        self.invalidate_reservation(address, bytes);
+        Ok(())
+    }
+
+    pub(crate) fn invalidate_reservation(&mut self, address: u64, bytes: usize) {
+        if let Some((start, width)) = self.reservation
+            && bytes != 0
+            && address < start + width as u64
+            && start < address + bytes as u64
+        {
+            self.reservation = None;
+        }
+    }
+
+    fn execute_atomic(
+        &mut self,
+        ram: &mut [u8],
+        address: u64,
+        bytes: usize,
+        rhs: u64,
+        rd: usize,
+        op: atomic::Operation,
+    ) -> Result<(), Trap> {
+        use atomic::Operation::{LoadReserved, StoreConditional};
+
+        let value = match op {
+            LoadReserved => {
+                let old = self.read_ram(ram, address, bytes)?;
+                self.reservation = Some((address, bytes));
+                sign_extend(old, bytes * 8) as u64
+            }
+            StoreConditional => {
+                let reserved = self.reservation.take() == Some((address, bytes));
+                let range = self.store_range(address, bytes)?;
+                if reserved {
+                    ram[range].copy_from_slice(&rhs.to_le_bytes()[..bytes]);
+                }
+                u64::from(!reserved)
+            }
+            _ => {
+                let range = self.store_range(address, bytes)?;
+                let old = if bytes == 4 {
+                    u64::from(u32::from_le_bytes(
+                        ram[range.clone()].try_into().expect("word"),
+                    ))
+                } else {
+                    u64::from_le_bytes(ram[range.clone()].try_into().expect("doubleword"))
+                };
+                let new = op.apply(bytes, old, rhs);
+                ram[range].copy_from_slice(&new.to_le_bytes()[..bytes]);
+                self.invalidate_reservation(address, bytes);
+                sign_extend(old, bytes * 8) as u64
+            }
+        };
+        self.write(rd, value);
+        Ok(())
+    }
+
+    fn store_range(&self, address: u64, bytes: usize) -> Result<Range<usize>, Trap> {
         if address & (bytes as u64 - 1) != 0 {
             return Err(self.trap(6, address));
         }
-        let range = dram_range(address, bytes).ok_or_else(|| self.trap(7, address))?;
-        ram[range].copy_from_slice(&value.to_le_bytes()[..bytes]);
-        Ok(())
+        dram_range(address, bytes).ok_or_else(|| self.trap(7, address))
     }
 
     fn write(&mut self, rd: usize, value: u64) {

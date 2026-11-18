@@ -19,7 +19,7 @@ def qemu_signature(image, stop, signature, length):
         argv = [QEMU, "-machine", "virt,aclint=off,aia=none", "-accel", "tcg", "-cpu", CPU_PROFILE.read_text().strip(),
                 "-smp", "1", "-m", "128M", "-display", "none", "-monitor", "none", "-serial", "none",
                 "-bios", image, "-S", "-chardev", f"socket,id=rsp,fd={child.fileno()}", "-gdb", "chardev:rsp"]
-        with (LOGS / "isa-im-qemu.log").open("wb") as errors, subprocess.Popen(
+        with (LOGS / f"{image.stem}-qemu.log").open("wb") as errors, subprocess.Popen(
                 argv, env=ENV, stderr=errors, pass_fds=(child.fileno(),)) as guest, host.makefile("rb") as wire:
             child.close()
 
@@ -56,27 +56,37 @@ def qemu_signature(image, stop, signature, length):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cross_compile", help="absolute Buildroot tool prefix ending in '-'")
-    prefix = parser.parse_args().cross_compile
+    parser.add_argument("--probe", choices=("im", "ac"), default="im")
+    args = parser.parse_args()
+    prefix = args.cross_compile
+    name = f"isa-{args.probe}"
     qemu = version()
     LOGS.mkdir(parents=True, exist_ok=True)
-    obj, elf, image = [LOGS / f"isa-im.{suffix}" for suffix in ("o", "elf", "bin")]
-    command(prefix + "as", "-march=rv64imac_zicsr_zifencei", "-mabi=lp64", "-o", obj, PROFILE / "isa-im.S")
+    obj, elf, image = [LOGS / f"{name}.{suffix}" for suffix in ("o", "elf", "bin")]
+    command(prefix + "as", "-march=rv64imac_zicsr_zifencei", "-mabi=lp64", "-o", obj, PROFILE / f"{name}.S")
     command(prefix + "ld", "--no-relax", "-Ttext", f"{DRAM:#x}", "-e", "_start", "-o", elf, obj)
     command(prefix + "objcopy", "-O", "binary", "-j", ".text", elf, image)
-    logged("isa-im-disassembly", prefix + "objdump", "-d", "-M", "no-aliases,numeric", elf)
+    logged(f"{name}-disassembly", prefix + "objdump", "-d", "-M", "no-aliases,numeric", elf)
     symbols = {}
     for row in capture(prefix + "nm", "-n", elf).splitlines():
-        address, _, name = row.split()
-        symbols[name] = int(address, 16)
+        address, _, symbol = row.split()
+        symbols[symbol] = int(address, 16)
     entry, stop, signature = [symbols[name] for name in ("_start", "probe_end", "signature")]
-    if entry != DRAM or stop <= entry or (stop - entry) % 4:
-        raise ValueError("expected a straight-line uncompressed probe at the DRAM base")
-    length = 32
+    if entry != DRAM or stop <= entry or (stop - entry) % 2:
+        raise ValueError("expected an aligned probe at the DRAM base")
+    program = image.read_bytes()
+    offset = fuel = 0
+    while entry + offset < stop:
+        offset += 4 if program[offset] & 3 == 3 else 2
+        fuel += 1
+    if entry + offset != stop:
+        raise ValueError("probe breakpoint is not on an instruction boundary")
+    length = symbols["signature_end"] - signature
     result = qemu_signature(image, stop, signature, length)
     report = dict(qemu=qemu, image=image.name, sha256=sha256(image), entry=f"{entry:#x}", stop=f"{stop:#x}",
-                  fuel=(stop - entry) // 4, address=f"{signature:#x}", bytes=length, signature=result)
+                  fuel=fuel, address=f"{signature:#x}", bytes=length, signature=result)
     output = json.dumps(report, indent=2) + "\n"
-    (LOGS / "isa-im-reference.json").write_text(output)
+    (LOGS / f"{name}-reference.json").write_text(output)
     print(output, end="")
 
 

@@ -32,3 +32,4 @@ tdat4:
     .word 0xf00ff00f
 signature:
     .zero 32
+signature_end:

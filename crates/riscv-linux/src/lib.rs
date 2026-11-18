@@ -2,6 +2,8 @@
 
 use core::ops::Range;
 
+mod atomic;
+mod compressed;
 mod decode;
 mod hart;
 mod machine;
