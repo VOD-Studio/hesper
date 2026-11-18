@@ -15,7 +15,8 @@ import sys
 import tempfile
 import time
 
-from build_guest import DRAM, DRAM_END, ENV, IMAGE_DIR, LOGS, verified_manifest
+from build_guest import BLK_IMAGE_DIR, DRAM, DRAM_END, ENV, IMAGE_DIR, LOGS, verified_manifest
+from disk_acceptance import commands as disk_commands, drive_disk
 from serial_acceptance import COMMANDS, STEP_BYTES, STEP_SECONDS, drive
 
 QUIT = b"\x1d"
@@ -34,12 +35,48 @@ def reap(guest, options):
     return None
 
 
-def run_serial(binary, manifest, transport):
-    argv = [str(binary), "linux", "--images", str(IMAGE_DIR), "--diagnostics"]
+def linux_command(binary, *, images=IMAGE_DIR, disk=None):
+    argv = [str(binary), "linux", "--images", str(images), "--diagnostics"]
+    if disk is not None:
+        source, target = disk
+        argv += ["--disk-in", str(source), "--disk-out", str(target)]
+    return argv
+
+
+def run_serial(binary, manifest, transport, *, disk=None, write=False, marker="DISK_OK", logs=LOGS):
+    if disk is None:
+        argv = linux_command(binary)
+        commands = COMMANDS
+
+        def exchange(receive, send):
+            return drive(receive, send, manifest["kernelrelease"], manifest["isa"], boot_seconds=BOOT_SECONDS)
+    else:
+        argv = linux_command(binary, images=BLK_IMAGE_DIR, disk=disk)
+        commands = tuple(command for command, _ in disk_commands(write, marker))
+
+        def exchange(receive, send):
+            return drive_disk(receive, send, write, marker, boot_seconds=BOOT_SECONDS)
+
+    run = capture_serial(argv, transport, logs=logs, commands=commands, exchange=exchange)
+    require_exit(run, "quit")
+    return run
+
+
+def capture_serial(argv, transport, *, logs, commands=(), exchange=None, termination="quit"):
+    """Record a real CLI process; exchange runs before stdin is terminated."""
+    logs = Path(logs)
+    logs.mkdir(parents=True, exist_ok=True)
     prefix = f"hesper-{transport}"
-    output_path = LOGS / f"{prefix}-serial.raw"
-    input_path = LOGS / f"{prefix}-input.raw"
-    error_path = LOGS / f"{prefix}-stderr.log"
+    output_path = logs / f"{prefix}-serial.raw"
+    input_path = logs / f"{prefix}-input.raw"
+    error_path = logs / f"{prefix}-stderr.log"
+    input_budget = sum(map(len, commands)) + (len(QUIT) if termination == "quit" else 0)
+    output_budget = (len(commands) + 2) * STEP_BYTES
+    # Allow only the documented end-of-session controls. The fuel probe leaves stdin open.
+    if termination not in ("quit", "eof", None) or (termination == "eof" and transport != "pipe"):
+        raise ValueError(f"unsupported serial termination: {transport}/{termination}")
+    if transport not in ("pipe", "pty"):
+        raise ValueError(f"unsupported serial transport: {transport}")
     started = time.monotonic()
     input_bytes = output_bytes = 0
     with ExitStack() as stack:
@@ -70,14 +107,14 @@ def run_serial(binary, manifest, transport):
                     raise
                 return b""
             output_bytes += len(data)
-            if output_bytes > (len(COMMANDS) + 2) * STEP_BYTES:
+            if output_bytes > output_budget:
                 raise ValueError("serial transcript exceeded its byte budget")
             output.write(data)
             return data
 
         def send(command):
             nonlocal input_bytes
-            if input_bytes + len(command) > INPUT_BUDGET:
+            if input_bytes + len(command) > input_budget:
                 raise ValueError("input transcript exceeded its byte budget")
             pending = memoryview(command)
             deadline = time.monotonic() + EXIT_SECONDS
@@ -97,22 +134,23 @@ def run_serial(binary, manifest, transport):
 
         try:
             os.set_blocking(tx, False)
-            timings = drive(receive, send, manifest["kernelrelease"], manifest["isa"], boot_seconds=BOOT_SECONDS)
-            send(QUIT)
+            timings = exchange(receive, send) if exchange is not None else {}
+            if termination == "quit":
+                send(QUIT)
+            elif termination == "eof":
+                guest.stdin.close()
             deadline = time.monotonic() + EXIT_SECONDS
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("serial transport stayed open after Ctrl-]")
+                    raise TimeoutError("serial transport stayed open past exit deadline")
                 if not receive(remaining):
                     break
             while (rss := reap(guest, os.WNOHANG)) is None:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError("CLI stayed alive after Ctrl-]")
+                    raise TimeoutError("CLI stayed alive past exit deadline")
                 time.sleep(0.01)
             runtime = time.monotonic() - started
-            if guest.returncode != 0:
-                raise ValueError(f"Ctrl-] exit status {guest.returncode}, expected 0")
         except (OSError, ValueError) as error:
             raise ValueError(f"{transport}: {error}; see {output_path} and {error_path}") from error
         finally:
@@ -124,14 +162,24 @@ def run_serial(binary, manifest, transport):
                 reap(guest, 0)
 
     diagnostics = SUMMARY.findall(error_path.read_text(errors="replace"))
-    if len(diagnostics) != 1 or diagnostics[0][0] != "quit":
-        raise ValueError(f"{transport}: missing unambiguous Ctrl-] exit diagnostics; see {error_path}")
-    _, fuel, limit, retired, tick = diagnostics[0]
-    return dict(command=argv, exit_status=guest.returncode, serial_timing_seconds=timings,
+    if len(diagnostics) != 1:
+        raise ValueError(f"{transport}: missing unambiguous exit diagnostics; see {error_path}")
+    reason, fuel, limit, retired, tick = diagnostics[0]
+    fuel, limit, retired, tick = map(int, (fuel, limit, retired, tick))
+    if not (0 <= retired <= fuel <= limit and 0 < limit):
+        raise ValueError(f"{transport}: inconsistent fuel or CPU counters; see {error_path}")
+    return dict(command=argv, exit_status=guest.returncode, exit_reason=reason, serial_timing_seconds=timings,
                 runtime_seconds=runtime, peak_rss_kib=rss,
-                fuel_spent=int(fuel), max_fuel=int(limit), exit_retired=int(retired), exit_tick=int(tick),
+                fuel_spent=fuel, max_fuel=limit, exit_retired=retired, exit_tick=tick,
                 input_bytes=input_bytes, output_bytes=output_bytes, input_log=str(input_path),
                 serial_log=str(output_path), diagnostics_log=str(error_path))
+
+
+def require_exit(run, reason, *, success=True):
+    status = run["exit_status"]
+    if run["exit_reason"] != reason or not (status == 0 if success else status > 0):
+        raise ValueError(f"expected {reason} with {'zero' if success else 'positive'} status; "
+                         f"got {run['exit_reason']} status {status}; see {run['diagnostics_log']}")
 
 
 def negative_controls(binary, manifest):

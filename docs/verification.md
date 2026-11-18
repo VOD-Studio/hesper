@@ -1516,3 +1516,34 @@ Linux config 指纹 `8430512b3688036b0e25506f4c28dbc49fae57c0f521d4a437332f9e8ff
   只读 `debugfs` 两次核对 `/proof.sh` 精确字节。原始输入与输出、
   FDT、QMP 和哈希见 `.cache/riscv-linux/blk-a/logs-blk/reference-rwyt32vy/`。
   这一关只验收参考机，不替代 Hesper 的设备与宿主门禁。
+
+## RISC-V Linux D2/D3：PLIC 与现代 virtio-blk
+
+`cargo test --locked -p hesper-riscv-linux --lib --test devices` 和
+`cargo test --locked -p hesper-riscv-linux --test virtio_blk` 通过。探针借
+RV64 指令访问板上寄存器和物理 DRAM，覆盖双源优先级、M/S context 屏蔽、
+分段末扇区写读、按序完成、抑制通知、索引从 65535 回绕、复位重协商、
+`GET_ID`、空队列通知、越界/成环及失败写不修改盘与相邻字节。相同操作
+以不同 fuel 切片重放的盘内容、中断与累计 tick 相同。`serial` 不映射块设备。
+`make verify` 的格式、全目标检查、debug/release、Clippy 和演示全部通过。
+
+## RISC-V Linux D4：原生数据盘两次冷启动
+
+在 Arch Linux x86-64 上，以 `RISCV_LINUX_CACHE=$PWD/.cache/riscv-linux/blk-a`
+执行 `make riscv-linux-blk-native`。管道与真实 PTY 均从种子副本开始，各启动
+两个新进程；第二次使用第一次实际导出的 raw，独立结果行是
+`DISK_OK:42`、`DISK_UNMOUNTED`。首提示 31.99–33.46 秒（门限 90 秒），
+每条命令 20 秒 / 256 KiB，退出限 5 秒；四个会话均因 Ctrl+] 成功导出。
+两种传输的写入/读回分别耗 379846656 / 379027456 fuel，门限 450000000。
+
+mke2fs 1.47.4 创建的种子 SHA-256
+`967c0f0d772d5635682a799d2e65f9ca01dd18534b300f636ad6cee04fdfcd3c`
+未变；本次四个导出盘 SHA-256 均为
+`429572aae8c7e5ee3ec9426c6e1ece1f08994805f5ad5b391f89bd8d8ba5bb73`，
+只读 `debugfs` 核对了 `/proof.sh` 的精确内容（不以时间戳一致为契约）。
+加载前拒绝重名/别名、配置混用、单字节固件损坏、非法长度和非普通输入。
+工作盘写入后以 EOF 退出不导出；预算中止、晚到的同名文件与目标目录消失
+均不导出，两个发布失败不留临时文件也不覆盖占用者。
+原始串口、诊断与哈希见 `.cache/riscv-linux/blk-a/logs-blk/native-mhftu8rm/`。
+原 `repro-c` 缓存的 `make riscv-linux-native`（含 OpenSBI TIME / UART
+和两种串口传输）仍通过。

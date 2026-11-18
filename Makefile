@@ -27,6 +27,7 @@
 #   make riscv-linux-native   验收实际固件、CLI 的 Linux shell、PTY 与管道
 #   make riscv-linux-wasm     用已验镜像重放实际 Bun / Node.js Wasm 串口
 #   make riscv-linux-browser  构建生产站点，用 Chrome 交互验收已验本地镜像
+#   make riscv-linux-blk-native  管道与 PTY 两次数据盘冷启动
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -137,6 +138,11 @@ riscv-linux-firmware:
 riscv-linux-native: riscv-linux-firmware
 	cargo build --locked --release -p hesper
 	python3 tools/riscv-linux/native.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
+
+.PHONY: riscv-linux-blk-native
+riscv-linux-blk-native:
+	cargo build --locked --release -p hesper
+	python3 tools/riscv-linux/native_disk.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
 
 riscv-linux-wasm: wasm-build
 	python3 tools/riscv-linux/wasm_serial.py

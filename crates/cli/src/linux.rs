@@ -2,7 +2,7 @@
 
 use std::{
     error::Error,
-    fs::File,
+    fs::{self, File},
     io::{self, IsTerminal, Read, Write},
     ops::Range,
     path::{Path, PathBuf},
@@ -14,7 +14,8 @@ use std::{
 };
 
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS, Machine,
+    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS,
+    Machine,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -23,6 +24,7 @@ use sha2::{Digest, Sha256};
 use crate::terminal::{TerminalGuard, TerminalMode};
 
 const IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images.lock.json");
+const BLK_IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images-blk.lock.json");
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 const DEFAULT_MAX_FUEL: u64 = 450_000_000;
 const BATCH: u32 = 16_384;
@@ -52,6 +54,12 @@ enum LinuxError {
     },
     #[error("{}: not a regular file", .0.display())]
     NotRegular(PathBuf),
+    #[error("{}: output already exists", .0.display())]
+    OutputExists(PathBuf),
+    #[error("{}: data disk length must be a positive multiple of 512 up to 16 MiB (found {bytes})", .path.display())]
+    DiskSize { path: PathBuf, bytes: u64 },
+    #[error("Linux data disk: {0}")]
+    DiskFault(#[from] hesper_riscv_linux::DiskFault),
     #[error("{}: size mismatch (expected {expected}, found {actual})", .path.display())]
     SizeMismatch {
         path: PathBuf,
@@ -81,6 +89,7 @@ enum LinuxError {
 
 struct Options {
     images: PathBuf,
+    disk: Option<(PathBuf, PathBuf)>,
     max_fuel: u64,
     diagnostics: bool,
 }
@@ -88,6 +97,7 @@ struct Options {
 impl Options {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Self>, LinuxError> {
         let mut images = None;
+        let (mut disk_in, mut disk_out) = (None, None);
         let mut max_fuel = DEFAULT_MAX_FUEL;
         let mut diagnostics = false;
         while let Some(arg) = args.next() {
@@ -97,6 +107,19 @@ impl Options {
                         .next()
                         .ok_or_else(|| LinuxError::Usage("--images requires a directory".into()))?;
                     images = Some(PathBuf::from(dir));
+                }
+                "--disk-in" | "--disk-out" => {
+                    let path = args
+                        .next()
+                        .ok_or_else(|| LinuxError::Usage(format!("{arg} requires a file")))?;
+                    let option = if arg == "--disk-in" {
+                        &mut disk_in
+                    } else {
+                        &mut disk_out
+                    };
+                    if option.replace(PathBuf::from(path)).is_some() {
+                        return Err(LinuxError::Usage(format!("{arg} specified more than once")));
+                    }
                 }
                 "--max-fuel" => {
                     max_fuel = args
@@ -112,8 +135,18 @@ impl Options {
                 _ => return Err(LinuxError::Usage(format!("unknown linux argument: {arg}"))),
             }
         }
+        let disk = match (disk_in, disk_out) {
+            (None, None) => None,
+            (Some(input), Some(output)) => Some((input, output)),
+            _ => {
+                return Err(LinuxError::Usage(
+                    "--disk-in and --disk-out must be used together".into(),
+                ));
+            }
+        };
         Ok(Some(Self {
             images: images.ok_or_else(|| LinuxError::Usage("--images is required".into()))?,
+            disk,
             max_fuel,
             diagnostics,
         }))
@@ -134,15 +167,20 @@ struct Image {
     end: String,
 }
 
-fn boot(directory: &Path) -> Result<Machine, LinuxError> {
+fn boot(directory: &Path, disk: Option<DataDisk>) -> Result<Machine, LinuxError> {
     let path = directory.join("manifest.json");
     let actual = serde_json::from_slice::<Value>(&read_bounded(&path, MAX_MANIFEST_BYTES, false)?)
         .map_err(|source| LinuxError::ManifestJson {
             path: path.clone(),
             source,
         })?;
+    let lock = if disk.is_some() {
+        BLK_IMAGE_LOCK
+    } else {
+        IMAGE_LOCK
+    };
     let pinned: Value =
-        serde_json::from_str(IMAGE_LOCK).map_err(|err| LinuxError::ImageLock(err.to_string()))?;
+        serde_json::from_str(lock).map_err(|err| LinuxError::ImageLock(err.to_string()))?;
     if actual != pinned {
         return Err(LinuxError::ManifestMismatch(path));
     }
@@ -163,13 +201,17 @@ fn boot(directory: &Path) -> Result<Machine, LinuxError> {
     }
     let firmware_end = hex_address(&firmware.end)
         .ok_or_else(|| LinuxError::ImageLock("invalid fw_jump.bin end address".into()))?;
-    Ok(Machine::boot(BootImages {
+    let images = BootImages {
         firmware: &verified_image(directory, firmware)?,
         firmware_end,
         kernel: &verified_image(directory, kernel)?,
         initramfs: &verified_image(directory, initramfs)?,
         fdt: &verified_image(directory, fdt)?,
-    })?)
+    };
+    Ok(match disk {
+        Some(disk) => Machine::boot_with_disk(images, disk)?,
+        None => Machine::boot(images)?,
+    })
 }
 
 fn hex_address(text: &str) -> Option<u64> {
@@ -212,46 +254,87 @@ fn open_image(path: &Path) -> io::Result<File> {
 }
 
 fn read_bounded(path: &Path, limit: u64, exact: bool) -> Result<Vec<u8>, LinuxError> {
-    let file_error = |operation, source| LinuxError::File {
-        operation,
-        path: path.into(),
-        source,
-    };
-    let size_error = |actual| LinuxError::SizeMismatch {
-        path: path.into(),
-        expected: if exact {
-            format!("{limit} bytes")
-        } else {
-            format!("at most {limit} bytes")
-        },
-        actual,
-    };
-    let wrong_size = |size| size > limit || (exact && size != limit);
+    read_file(path, limit, |actual| {
+        (actual > limit || (exact && actual != limit)).then(|| LinuxError::SizeMismatch {
+            path: path.into(),
+            expected: if exact {
+                format!("{limit} bytes")
+            } else {
+                format!("at most {limit} bytes")
+            },
+            actual,
+        })
+    })
+}
 
-    let file = open_image(path).map_err(|err| file_error("opening", err))?;
-    let metadata = file.metadata().map_err(|err| file_error("checking", err))?;
+fn read_file(
+    path: &Path,
+    limit: u64,
+    size_error: impl Fn(u64) -> Option<LinuxError>,
+) -> Result<Vec<u8>, LinuxError> {
+    let file = open_image(path).map_err(|source| path_error("opening", path, source))?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| path_error("checking", path, source))?;
     if !metadata.is_file() {
         return Err(LinuxError::NotRegular(path.into()));
     }
     let size = metadata.len();
-    if wrong_size(size) {
-        return Err(size_error(size));
+    if let Some(error) = size_error(size) {
+        return Err(error);
     }
     // Metadata is not a read limit: the file can change after the check.
-    let end = limit
-        .checked_add(1)
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or_else(|| {
-            LinuxError::ImageLock(format!("{}: unrepresentable byte limit", path.display()))
-        })?;
-    let mut bytes = Vec::with_capacity(end);
-    file.take(end as u64)
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
-        .map_err(|err| file_error("reading", err))?;
-    if wrong_size(bytes.len() as u64) {
-        return Err(size_error(bytes.len() as u64));
+        .map_err(|source| path_error("reading", path, source))?;
+    if let Some(error) = size_error(bytes.len() as u64) {
+        return Err(error);
     }
     Ok(bytes)
+}
+
+fn path_error(operation: &'static str, path: &Path, source: io::Error) -> LinuxError {
+    LinuxError::File {
+        operation,
+        path: path.into(),
+        source,
+    }
+}
+
+fn load_disk(input: &Path, output: &Path) -> Result<DataDisk, LinuxError> {
+    match fs::symlink_metadata(output) {
+        Ok(_) => return Err(LinuxError::OutputExists(output.into())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(path_error("checking data disk output", output, source)),
+    }
+    let invalid_size = |bytes| LinuxError::DiskSize {
+        path: input.into(),
+        bytes,
+    };
+    let bytes = read_file(input, DataDisk::MAX_BYTES as u64, |bytes| {
+        (!usize::try_from(bytes).is_ok_and(DataDisk::valid_size)).then(|| invalid_size(bytes))
+    })?;
+    let size = bytes.len() as u64;
+    DataDisk::new(bytes).map_err(|_| invalid_size(size))
+}
+
+fn save_disk(output: &Path, bytes: &[u8]) -> Result<(), LinuxError> {
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let save = || -> io::Result<()> {
+        let mut temp = tempfile::Builder::new()
+            .prefix(".hesper-disk-")
+            .tempfile_in(parent)?;
+        temp.write_all(bytes)?;
+        temp.as_file().sync_all()?;
+        // Hard-link publication is atomic and fails if any name now occupies
+        // the destination. The temporary file is removed on both paths.
+        fs::hard_link(temp.path(), output)
+    };
+    save().map_err(|source| path_error("saving data disk to", output, source))
 }
 
 type InputBuffer = [u8; IO_BYTES];
@@ -464,6 +547,9 @@ impl Session {
             if diagnostics.stalled_traps >= STALLED_TRAP_LIMIT {
                 return Err(LinuxError::TrapLoop(diagnostics.stalled_traps));
             }
+            if let Some(fault) = self.machine.disk_fault() {
+                return Err(fault.into());
+            }
             idle = progress.spent == 0 && !output;
             if matches!(input_end, Some(Exit::Eof))
                 && pending.is_empty()
@@ -520,16 +606,31 @@ impl Session {
 pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let Some(options) = Options::parse(args)? else {
         println!(
-            "Usage: hesper linux --images <dir> [--max-fuel N] [--diagnostics]\n\nRun the pinned guest on raw serial stdin/stdout. Ctrl-] exits.\nDefault fuel: {DEFAULT_MAX_FUEL} guest transitions."
+            "Usage: hesper linux --images <dir> [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout. With paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nDefault fuel: {DEFAULT_MAX_FUEL} guest transitions."
         );
         return Ok(());
     };
+    let disk = options
+        .disk
+        .as_ref()
+        .map(|(input, output)| load_disk(input, output))
+        .transpose()?;
     let mut session = Session {
-        machine: boot(&options.images)?,
+        machine: boot(&options.images, disk)?,
         spent: 0,
         tail: SerialTail::new(),
     };
     let result = session.run(options.max_fuel);
+    if let (Ok(Exit::Quit), Some((_, output))) = (&result, &options.disk) {
+        let bytes = session
+            .machine
+            .data_disk()
+            .expect("booted with a data disk");
+        if let Err(error) = save_disk(output, bytes) {
+            session.report("export-error", options.max_fuel);
+            return Err(error.into());
+        }
+    }
     match &result {
         Ok(exit) if options.diagnostics => session.report(exit.name(), options.max_fuel),
         Err(LinuxError::FuelExhausted(_)) => session.report("fuel", options.max_fuel),

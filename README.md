@@ -124,6 +124,26 @@ make riscv-linux-native  # 真实 OpenSBI 探针、CLI 管道与 PTY 验收
 `--max-fuel` 改变会话的有界推进预算。此入口只支持固定的单 hart RV64IMAC
 板和串口，不声明兼容任意 RISC-V 镜像或外设。
 
+### RISC-V Linux 数据盘（本机）
+
+```sh
+make riscv-linux-blk-data
+(set -C; : > seed.raw) && truncate -s 8M seed.raw && mke2fs -t ext2 -F seed.raw
+cargo run --locked --release -p hesper -- linux --images .cache/riscv-linux/images-blk \
+  --disk-in seed.raw --disk-out first.raw
+```
+
+在客体执行 `mkdir -p /mnt/data && mount -t ext2 /dev/vda /mnt/data`，
+在 `/mnt/data` 写入文件；等 `sync && umount /mnt/data` 成功后用 Ctrl+]
+退出并导出。下次以 `--disk-in first.raw --disk-out second.raw` 冷启动，
+重新挂载 `/dev/vda` 即可读回。根文件系统仍在 RAM，不随盘保存。
+
+磁盘为正长度、512 字节对齐、最大 16 MiB 的 raw 镜像。输入不会修改，必须提供
+尚不存在的输出；输出目录须允许原子创建硬链接。EOF、信号和执行失败不导出。
+`sync` 或卸载只写回会话内的虚拟盘，不会保存宿主文件。
+`make riscv-linux-blk-native` 在管道与真实 PTY 各做两次冷启动；
+见[数据盘契约](docs/plan/riscv-linux-data-disk.md)。
+
 ## Workspace 结构
 
 ```text
@@ -131,7 +151,7 @@ crates/
 ├── cpu6502/   # NMOS 6502 CPU、Bus/Ram、周期执行器及一致性测试
 ├── cli/       # 中文 TUI、文本 CLI、演示宿主、程序预置与资源加载
 ├── apple1/    # Apple I 主板时钟、地址译码 Bus、PIA、显示与键盘
-└── riscv-linux/ # 固定 RV64IMAC、Sv39、CLINT、PLIC 与 UART 板
+└── riscv-linux/ # 固定 RV64IMAC、Sv39、CLINT、PLIC、UART 与可选 virtio-blk
 
 tools/         # 固定外部数据准备及 Visual6502 重放工具
 docs/          # 架构、opcode、路线图、来源和验证记录
