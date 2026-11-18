@@ -226,7 +226,10 @@ printf 'HESPER_OK:%s\n' "$((6 * 7))"
 
 **L8 后的独立增量：**[持久化数据盘](riscv-linux-data-disk.md)已通过 QEMU 参考板、Hesper 原生 CLI 跨冷启动读回、浏览器与 CLI 交换 raw 盘验收。上述无盘配置不变。
 
-**下一步（计划，未实现）：**[自定义 initramfs](riscv-linux-initramfs.md)。保留单 hart 与锁定的固件、内核、基础设备树，先在参考机和原生 CLI 证明可以运行用户自己的 `/init`，再用同一份归档验收浏览器。
+**独立启动根配置：**[自定义 initramfs](riscv-linux-initramfs.md) 保留原版
+IMAC 固件、内核及基础设备树；[Alpine](../../README.md#risc-v-linux-alpine本机与网页)
+是另一套锁定的默认根，复用同一 OpenSBI 字节和物理板，独立启用 F/D 及 Linux
+浮点上下文。不从自定义归档推断 ISA；Alpine 配置无换根、数据盘或网络。
 
 ## 3. 执行纪律与依据
 

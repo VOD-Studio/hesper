@@ -1738,3 +1738,26 @@ manifest、Alpine 换根和带盘均在固件前拒绝，串口 0 字节。原 `
 这一固定提示后缀，原始串口与结果行保留不变。限额仍为 2,000,000,000、
 首提示 180 秒、每命令 60 秒 / 256 KiB。报告：
 `.cache/riscv-linux/repro-c/logs-alpine/native-95pllytt/`。
+
+## RISC-V Linux Alpine：生产 Chromium
+
+Chromium 155.0.8059.84、Bun 1.4.4、Node.js 26.13.1。
+`make wasm-browser-test` 在 Bun、Node.js、Chromium 各 12 项通过；
+`bun run check` 的类型检查、lint 和 5 项 Wasm 会话测试通过。
+`CHROME_BIN=chromium make riscv-linux-alpine-browser` 构建并打开生产站点，
+用键盘选 Alpine、加载同哈希四件和输入统一命令。真实 xterm 显示独立的
+`7.500` 行。停止后冷启动，`mawk` 未安装而原 APK 仍可验签。
+
+| 会话 | 到首提示 (s) | 到末条结果 (s) | 已用 transitions | 限额 |
+| --- | ---: | ---: | ---: | ---: |
+| Alpine 安装 | 41.15 | 91.23 | 761987072 | 1150000000 |
+| Alpine 冷启动 | 41.45 | 50.90 | 439877632 | 1150000000 |
+| 切回标准 | 40.11 | 40.54 | 340525056 | 450000000 |
+
+Alpine 网页限额取成功原生会话较大开销乘 1.5、向上取整至 50M。旧镜像与
+单字节损坏归档分别因大小和 SHA-256 被拒，未发出 `ready` 或串口字节。
+三次通过的会话均以停止按钮结束，主线程最大观察间隔 105.5 ms；页面与 Worker
+网络记录中，四个客体文件和 APK 的 HTTP 请求及传输字节均为 0。
+Wasm 指纹、截图、实际键入和串口见
+`.cache/riscv-linux/repro-c/logs-alpine/browser-s1r8bbtv/`。
+以上为本地验收；未运行远程 CI，未发布 Release 或部署 Pages。

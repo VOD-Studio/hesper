@@ -8,15 +8,19 @@ import { Readable } from "node:stream";
 const [dist, images, logs, mode, ...input] = process.argv.slice(2);
 const diskGate = mode === "disk";
 const initramfsGate = mode === "initramfs";
+const alpineGate = mode === "alpine";
 const [cliDisk, webDisk, oversized] = input;
 const [corrupt] = input;
-const lock = JSON.parse(readFileSync(new URL(diskGate ? "images-blk.lock.json" : "images.lock.json", import.meta.url), "utf8"));
+const lockName = diskGate ? "images-blk.lock.json" : alpineGate ? "images-alpine.lock.json" : "images.lock.json";
+const lock = JSON.parse(readFileSync(new URL(lockName, import.meta.url), "utf8"));
 const root = resolve(dist);
 const profile = mkdtempSync(join(tmpdir(), "hesper-riscv-chrome-"));
 const chrome = process.env.CHROME_BIN || "google-chrome";
 const tab = "/hesper/";
 const guestNames = new Set(lock.images.map(entry => entry.path));
 if (initramfsGate) for (const file of input.slice(1)) guestNames.add(basename(file));
+const isGuestPath = path => guestNames.has(basename(path)) || (alpineGate && /\.apk$/i.test(path));
+const alpineWorkerEvents = [], networkTrace = [], networkRequests = new Map(), servedWasm = new Set();
 const guestRequests = [];
 let guestDownloadedBytes = 0;
 let firstLinuxWasm, releaseFirstLinuxWasm;
@@ -27,7 +31,7 @@ const server = Bun.serve({
   hostname: "127.0.0.1", port: 0,
   async fetch(request) {
     const path = decodeURIComponent(new URL(request.url).pathname);
-    const guestPath = guestNames.has(basename(path));
+    const guestPath = isGuestPath(path);
     if (guestPath || !["GET", "HEAD"].includes(request.method)) guestRequests.push(path);
     if (!path.startsWith(tab)) return new Response(null, { status: 404 });
     const file = resolve(root, path.slice(tab.length) || "index.html");
@@ -35,6 +39,7 @@ const server = Bun.serve({
     const asset = Bun.file(file);
     if (!await asset.exists()) return new Response(null, { status: 404 });
     if (guestPath) guestDownloadedBytes += asset.size;
+    if (alpineGate && /\/hesper_riscv_linux_bg-[^/]+\.wasm$/.test(path)) servedWasm.add(path);
     if (initramfsGate && !firstLinuxWasm && /\/hesper_riscv_linux_bg-[^/]+\.wasm$/.test(path)) {
       firstLinuxWasm = path;
       await cancelledFetch;
@@ -84,12 +89,28 @@ try {
   let sequence = 0, streaming, serialBytes = 0;
   const requests = new Map();
   const replies = [];
-  const workerEvents = [], downloads = [], downloadProgress = new Map(), dialogs = [];
+  const workerEvents = alpineGate ? alpineWorkerEvents : [];
+  const downloads = [], downloadProgress = new Map(), dialogs = [];
+  let networkError;
   const onmessage = ({ data }) => {
     const message = JSON.parse(data);
     if (message.id !== undefined) {
       const complete = requests.get(message.id);
       if (complete) complete(message);
+    } else if (alpineGate && message.method === "Target.attachedToTarget") {
+      void observeTarget(message.params);
+    } else if (alpineGate && message.method === "Network.requestWillBeSent") {
+      const { requestId, request, type } = message.params;
+      const url = new URL(request.url);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return;
+      const requestEvent = { url: url.href, method: request.method, type, target: message.sessionId ?? "page",
+        guest: isGuestPath(decodeURIComponent(url.pathname)) };
+      networkTrace.push(requestEvent);
+      networkRequests.set(`${requestEvent.target}:${requestId}`, requestEvent);
+    } else if (alpineGate && ["Network.loadingFinished", "Network.loadingFailed"].includes(message.method)) {
+      const { requestId, encodedDataLength, errorText } = message.params;
+      const request = networkRequests.get(`${message.sessionId ?? "page"}:${requestId}`);
+      if (request) Object.assign(request, { encodedDataLength, errorText });
     } else if (message.method === "Browser.downloadWillBegin") {
       downloads.push(message.params);
     } else if (message.method === "Browser.downloadProgress") {
@@ -98,7 +119,7 @@ try {
       dialogs.push(message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params.name === "observeHesper") {
       const event = JSON.parse(message.params.payload);
-      if (diskGate || initramfsGate) workerEvents.push(event);
+      if (diskGate || initramfsGate || alpineGate) workerEvents.push(event);
       if (event.request) return;
       replies.push(event);
       if (event.sessionId !== streaming) return;
@@ -110,7 +131,7 @@ try {
   };
   socket.onmessage = onmessage;
   if (browserSocket) browserSocket.onmessage = onmessage;
-  const call = (method, params = {}, ms = 12_000, connection = socket) => new Promise((done, fail) => {
+  const call = (method, params = {}, ms = 12_000, connection = socket, sessionId) => new Promise((done, fail) => {
     const id = ++sequence;
     const timer = setTimeout(() => { requests.delete(id); fail(new Error(`${method}: deadline`)); }, ms);
     requests.set(id, message => {
@@ -119,8 +140,18 @@ try {
       if (message.error) fail(new Error(`${method}: ${message.error.message}`));
       else done(message.result);
     });
-    connection.send(JSON.stringify({ id, method, params }));
+    connection.send(JSON.stringify({ id, method, params, sessionId }));
   });
+  async function observeTarget({ sessionId, targetInfo }) {
+    try {
+      // Enable network observation before the production Worker starts any requests.
+      if (targetInfo.type === "worker") await call("Network.enable", {}, 12_000, socket, sessionId);
+      await call("Runtime.runIfWaitingForDebugger", {}, 12_000, socket, sessionId);
+    } catch (error) {
+      networkError = String(error);
+      emit({ type: "error", message: `Chromium target monitoring: ${networkError}` });
+    }
+  }
   async function evaluate(expression, awaitPromise = false) {
     const result = await call("Runtime.evaluate", { expression, awaitPromise, returnByValue: true });
     if (result.exceptionDetails) throw new Error(`${result.exceptionDetails.exception?.description}: ${expression}`);
@@ -180,8 +211,8 @@ try {
     check(nodeId, `native file input missing: ${selector}`);
     await call("DOM.setFileInputFiles", { nodeId, files });
   }
-  async function selectFiles(directory) {
-    await setFiles("[data-linux-files]", lock.images.map(entry => join(directory, entry.path)));
+  async function selectFiles(directory, profile = lock, override = {}) {
+    await setFiles("[data-linux-files]", profile.images.map(entry => override[entry.path] ?? join(directory, entry.path)));
     await until("!document.querySelector('[data-linux-start]')?.disabled", "four selected local images");
     return evaluate("Array.from(document.querySelector('[data-linux-files]').files, file => file.size).reduce((a,b) => a+b, 0)");
   }
@@ -199,6 +230,11 @@ try {
 
   await call("Page.enable");
   await call("Runtime.enable");
+  if (alpineGate) {
+    await call("Network.enable");
+    await call("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
+      filter: [{ type: "worker" }, { exclude: true }] });
+  }
   await call("Runtime.addBinding", { name: "observeHesper" });
   // Passively record actual Worker replies alongside the unmodified app handler.
   // No synthetic worker, reply, guest state, or rendering.
@@ -220,12 +256,12 @@ try {
         });
       }
       postMessage(message, ...transfer) {
-        if (${diskGate || initramfsGate} && typeof message?.sessionId === 'number' && message.type !== 'stdin') {
+        if (${diskGate || initramfsGate || alpineGate} && typeof message?.sessionId === 'number' && message.type !== 'stdin') {
           this.#observedSessionId = message.sessionId;
           const file = value => value instanceof File ? {name: value.name, size: value.size} : undefined;
           observeHesper(JSON.stringify({request: true, sessionId: message.sessionId, type: message.type,
             files: Object.values(message).flat().filter(value => value instanceof File).map(file),
-            initramfs: file(message.initramfs), disk: file(message.disk)}));
+            initramfs: file(message.initramfs), disk: file(message.disk), profile: message.profile}));
         }
         return super.postMessage(message, ...transfer);
       }
@@ -254,7 +290,168 @@ try {
   await until(visible("[data-linux-files]"), "lazy Linux workspace");
   if (diskGate) await runDiskGate();
   else if (initramfsGate) await runInitramfsGate();
+  else if (alpineGate) await runAlpineGate();
   else await runSerialGate();
+
+  async function runAlpineGate() {
+    const [standardImages, damagedArchive] = input;
+    const standardLock = JSON.parse(readFileSync(new URL("images.lock.json", import.meta.url), "utf8"));
+    const profilePicker = 'select[data-linux-profile][aria-label="启动配置"]';
+    const files = "[data-linux-files]", initramfs = "[data-linux-initramfs]", disk = "[data-linux-disk]";
+    const start = "[data-linux-start]", stop = "[data-linux-stop]", error = "[data-linux-error]";
+    const picker = `document.querySelector(${JSON.stringify(profilePicker)})`;
+    const rows = `${tty()}.split('\\n').map(line => line.trimEnd())`;
+    const url = `http://127.0.0.1:${server.port}${tab}`;
+    const phases = {}, rejected = {};
+    const matches = id => replies.filter(reply => reply.sessionId === id);
+    const inactive = id => matches(id).every(reply => !["ready", "stdout"].includes(reply.type));
+    const nextId = () => 1 + (workerEvents.findLast(event => event.request && event.type === "boot")?.sessionId ?? 0);
+
+    async function chooseProfile(value) {
+      const key = value === "alpine" ? "End" : "Home";
+      check(await evaluate(`${enabled(profilePicker)} && (${picker}.focus(), document.activeElement === ${picker})`),
+        "could not focus the launch configuration selector with the session stopped");
+      await call("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: key === "End" ? 35 : 36 });
+      await call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key });
+      await until(`${picker}.value === ${JSON.stringify(value)} &&
+        document.querySelector('${files}').files.length === 0 && !${enabled(start)} && !${visible(error)}`,
+        `keyboard selection of ${value} with cleared local files and error`);
+      const available = value === "standard";
+      check(await evaluate(`Boolean(${enabled(initramfs)}) === ${available} &&
+        Boolean(${enabled(disk)}) === ${available}`), `optional pickers did not match the ${value} profile`);
+      if (!available) {
+        check(await evaluate(`!${visible(initramfs)} && !${visible(disk)}`), "Alpine exposed a data disk or root picker");
+        const required = await evaluate(`Array.from(${picker}.closest('section').querySelectorAll('ul code'), item => item.textContent)`);
+        check(JSON.stringify(required?.toSorted()) === JSON.stringify(lock.images.map(item => item.path).toSorted()),
+          "Alpine did not list exactly the four required image files");
+      }
+    }
+
+    async function capture(label) {
+      const path = join(logs, `browser-${label}.png`);
+      const screenshot = await call("Page.captureScreenshot", { format: "png" });
+      writeFileSync(path, Buffer.from(screenshot.data, "base64"));
+      return path;
+    }
+
+    async function bootRequest(id, profile, profileLock, directory, override = {}) {
+      const request = await waitFor(() => workerEvents.find(event =>
+        event.request && event.type === "boot" && event.sessionId === id), `Worker boot ${id}`);
+      const expected = profileLock.images.map(image => ({
+        name: image.path, size: statSync(override[image.path] ?? join(directory, image.path)).size,
+      }));
+      const byName = (left, right) => left.name.localeCompare(right.name);
+      check(request.profile === profile && request.initramfs === undefined && request.disk === undefined &&
+        JSON.stringify(request.files.toSorted(byName)) === JSON.stringify(expected.toSorted(byName)),
+        `Worker did not receive the four selected ${profile} files for session ${id}`);
+    }
+
+    async function openPhase(phase, profile, directory, profileLock, reuse = false) {
+      const imageBytes = reuse
+        ? await evaluate(`Array.from(document.querySelector('${files}').files, file => file.size).reduce((a,b) => a+b, 0)`)
+        : await selectFiles(directory, profileLock);
+      streaming = nextId();
+      const id = streaming;
+      // Mark the serial stream before clicking, even if output precedes CDP's click reply.
+      emit({ type: "start", phase, profile, id, browser: version.Browser, url, imageBytes });
+      await click(start);
+      await bootRequest(id, profile, profileLock, directory);
+      phases[phase] = { id, profile, imageBytes };
+    }
+
+    async function closePhase(phase, expectedLine) {
+      const id = streaming;
+      const rendered = `Array.from(document.querySelectorAll('[data-linux-terminal] .xterm-rows > div'))
+        .find(row => row.textContent.trimEnd() === ${JSON.stringify(expectedLine)})`;
+      await until(rendered, `exact ${expectedLine} line in the xterm DOM`);
+      const xtermLine = await evaluate(`(() => {
+        const row = ${rendered};
+        row.scrollIntoView({block:'nearest'});
+        return row.textContent.trimEnd();
+      })()`);
+      if (phase !== "install") {
+        check(!await evaluate(`${rows}.includes("7.500")`), `stale Alpine output in ${phase} terminal`);
+      }
+      check(await evaluate(`${picker}.disabled && document.querySelector('${files}').disabled`),
+        "the launch configuration or local files could change during the running session");
+      const replies = matches(id);
+      const initial = replies.find(reply => reply.type === "state" && reply.state === "running");
+      check(replies.filter(reply => reply.type === "ready").length === 1 &&
+        initial?.time === "0" && initial.retired === "0" && initial.fuel === 0,
+        `session ${id} lacked a fresh, ready machine`);
+      const screenshot = await capture(phase);
+      await click(stop);
+      await until(state("ended"), `Stop ended ${phase}`);
+      const ended = await waitFor(() => matches(id).find(reply => reply.type === "state" && reply.state === "ended"),
+        `Worker end state for ${phase}`);
+      check(workerEvents.some(event => event.request && event.type === "stop" && event.sessionId === id) &&
+        matches(id).every(reply => reply.type !== "error"), `session ${id} did not stop normally`);
+      check(Number.isSafeInteger(ended.fuel) && ended.fuel > 0 && ended.fuel < ended.fuelLimit,
+        `session ${id} did not stop within its transition budget`);
+      Object.assign(phases[phase], { ready: true, initialTick: initial.time, initialRetired: initial.retired,
+        xtermLine, screenshot, exitState: ended.state, tick: ended.time, retired: ended.retired,
+        fuel: ended.fuel, fuelLimit: ended.fuelLimit });
+      streaming = undefined;
+    }
+
+    async function reject(label, directory, profileLock, expected, override = {}) {
+      const imageBytes = await selectFiles(directory, profileLock, override);
+      const id = nextId();
+      await click(start);
+      await bootRequest(id, "alpine", profileLock, directory, override);
+      await until(`${state("failed")} && ${visible(error)}`, `Alpine rejection of ${label}`);
+      const message = await evaluate(`document.querySelector('${error}').textContent.trim()`);
+      check(message.includes(expected) && inactive(id) && await evaluate(`${tty()}.trim() === ""`),
+        `${label} did not fail before guest output: ${message}`);
+      const failed = matches(id).find(reply => reply.type === "state" && reply.state === "failed");
+      check(failed?.time === "0" && failed.retired === "0" && failed.fuel === 0 &&
+        matches(id).some(reply => reply.type === "error" && reply.message === message),
+        `Worker did not report pre-boot validation failure for ${label}`);
+      rejected[label] = { id, message, imageBytes, ready: false, serialBytes: 0, state: failed.state,
+        screenshot: await capture(`rejected-${label}`) };
+    }
+
+    check(await evaluate(`${picker}?.value === 'standard'`), "the existing standard default profile changed");
+    await selectFiles(standardImages, standardLock);
+    await chooseProfile("alpine");
+    let phase = "install";
+    await openPhase(phase, "alpine", images, lock);
+    for await (const line of createInterface({ input: process.stdin })) {
+      const request = JSON.parse(line);
+      if (request.type === "keys") {
+        await type(request.text);
+      } else if (request.type === "cold" && phase === "install") {
+        await closePhase(phase, "7.500");
+        phase = "cold";
+        await openPhase(phase, "alpine", images, lock, true);
+      } else if (request.type === "standard" && phase === "cold") {
+        await closePhase(phase, request.resultLine);
+        await reject("stock-images", standardImages, standardLock, "initramfs.cpio: expected");
+        await reject("corrupt-archive", images, lock, "initramfs.cpio: SHA-256",
+          { "initramfs.cpio": damagedArchive });
+        await chooseProfile("standard");
+        phase = "standard";
+        await openPhase(phase, "standard", standardImages, standardLock);
+      } else if (request.type === "finish" && phase === "standard") {
+        await closePhase(phase, "HESPER_OK:42");
+        check(Object.values(rejected).every(({ id }) => inactive(id)), "a rejected session later emitted Ready or serial");
+        const guestNetwork = networkTrace.filter(request => request.guest);
+        const guestNetworkBytes = guestNetwork.reduce((total, request) => total + (request.encodedDataLength ?? 0), 0);
+        check(!networkError && networkTrace.some(request => request.target !== "page" &&
+          /\/hesper_riscv_linux_bg-[^/]+\.wasm$/.test(new URL(request.url).pathname)),
+          "Chromium did not observe a production Linux Worker Wasm request");
+        check(guestRequests.length === 0 && guestDownloadedBytes === 0 && guestNetwork.length === 0 &&
+          guestNetworkBytes === 0, `guest resources requested over HTTP: ${JSON.stringify({ guestRequests, guestNetwork })}`);
+        check(servedWasm.size === 1, "sessions did not load one production Wasm asset");
+        const maxIntervalMs = await evaluate("globalThis.hesperMaxIntervalMs");
+        emit({ type: "done", phases, rejected, maxIntervalMs, wasmPath: [...servedWasm][0],
+          guestRequests: guestRequests.length, guestDownloadedBytes, guestNetworkRequests: guestNetwork.length,
+          guestNetworkBytes });
+        return;
+      } else throw new Error(`unexpected Alpine browser gate request ${request.type} during ${phase}`);
+    }
+    throw new Error(`browser input closed during Alpine ${phase} phase`);
+  }
 
   async function runInitramfsGate() {
     const [serialImages, fixture, disk, oversized, damagedBoard, malformed] = input;
@@ -645,5 +842,9 @@ try {
   child.kill();
   await child.exited;
   writeFileSync(join(logs, "browser-chromium.stderr.log"), chromeError);
+  if (alpineGate) {
+    writeFileSync(join(logs, "browser-worker-events.jsonl"), alpineWorkerEvents.map(event => JSON.stringify(event)).join("\n") + "\n");
+    writeFileSync(join(logs, "browser-network.jsonl"), networkTrace.map(event => JSON.stringify(event)).join("\n") + "\n");
+  }
   rmSync(profile, { recursive: true, force: true });
 }

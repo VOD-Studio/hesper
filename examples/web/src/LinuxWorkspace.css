@@ -32,6 +32,26 @@
   line-height: 1.6;
 }
 
+.linux-profile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.linux-profile select {
+  padding: 3px 7px;
+  color: var(--foreground);
+  background: #101610;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.linux-profile select:disabled {
+  opacity: 0.6;
+}
+
 .linux-images {
   display: flex;
   flex-wrap: wrap;

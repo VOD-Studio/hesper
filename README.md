@@ -182,6 +182,7 @@ mawk -v n=12 'BEGIN {print sprintf("%.3f", n*1.25/2)}'  # 7.500
 ```
 
 只写入当前 RAM 根；下次冷启动需重新安装。Alpine 不支持换根、数据盘或网络。
+网页工作区选择「Alpine」后加载同目录四个镜像，无需 `manifest.json`。
 构建工具和容器见[参考板构建说明](docs/plan/riscv-linux.md)；
 Alpine 准备阶段另需 `gpg` / `gpgv`。用 `make riscv-linux-alpine-reference`
 （需先执行 `make riscv-linux-qemu`）和 `make riscv-linux-alpine-native` 重放验收。

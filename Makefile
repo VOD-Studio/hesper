@@ -27,6 +27,7 @@
 #   make riscv-linux-native   验收实际固件、CLI 的 Linux shell、PTY 与管道
 #   make riscv-linux-initramfs-native  CLI 的替换根、默认根与数据盘冷启动
 #   make riscv-linux-wasm     用已验镜像重放实际 Bun / Node.js Wasm 串口
+#   make riscv-linux-alpine-browser  生产 Chrome 的 Alpine 串口、冷启动与拒绝验收
 #   make riscv-linux-browser  构建生产站点，用 Chrome 交互验收已验本地镜像
 #   make riscv-linux-blk-native  管道与 PTY 两次数据盘冷启动
 #   make riscv-linux-blk-browser  生产 Chrome 与 CLI 双向互换数据盘
@@ -203,6 +204,11 @@ riscv-linux-initramfs-browser:
 	cd examples/web && bun run build
 	python3 tools/riscv-linux/browser_initramfs.py \
 		$(if $(RISCV_LINUX_BLK_IMAGES),--blk-images "$(RISCV_LINUX_BLK_IMAGES)")
+
+.PHONY: riscv-linux-alpine-browser
+riscv-linux-alpine-browser:
+	cd examples/web && bun run build
+	python3 tools/riscv-linux/browser_alpine.py
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

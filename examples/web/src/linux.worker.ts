@@ -1,5 +1,6 @@
 import imageLock from "../../../tools/riscv-linux/images.lock.json";
 import diskImageLock from "../../../tools/riscv-linux/images-blk.lock.json";
+import alpineImageLock from "../../../tools/riscv-linux/images-alpine.lock.json";
 import { initSync, RiscvLinux } from "./generated/riscv-linux/hesper_riscv_linux";
 import wasmUrl from "./generated/riscv-linux/hesper_riscv_linux_bg.wasm?url";
 import { validDiskSize } from "./linux-disk";
@@ -7,6 +8,8 @@ import { DEFAULT_INITRAMFS_NAME, validInitramfsSize } from "./linux-initramfs";
 import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
 
 const FUEL_LIMIT = 450_000_000;
+// 1.5 × the larger measured native install session, rounded up to 50M.
+const ALPINE_FUEL_LIMIT = 1_150_000_000;
 const FUEL_BATCH = 65_536;
 const STALLED_TRAP_LIMIT = 32;
 const SERIAL_BATCH = 4096;
@@ -16,6 +19,7 @@ const GUEST_MEMORY_MIB = 128;
 
 const pins = new Map(imageLock.images.map((pin) => [pin.path, pin]));
 const diskPins = new Map(diskImageLock.images.map((pin) => [pin.path, pin]));
+const alpinePins = new Map(alpineImageLock.images.map((pin) => [pin.path, pin]));
 const tasks = new MessageChannel();
 const usedIds = new Set<number>();
 let wasmInitialized = false;
@@ -34,6 +38,7 @@ type Session = {
   machine?: RiscvLinux;
   input?: InputQueue;
   fuel: number;
+  fuelLimit: number;
   batchPending: boolean;
   nextReport: number;
 };
@@ -116,15 +121,21 @@ async function initializeWasm(signal: AbortSignal) {
   }
 }
 
-async function loadMachine({ files, initramfs, disk }: BootCommand, signal: AbortSignal) {
+async function loadMachine({ profile, files, initramfs, disk }: BootCommand, signal: AbortSignal) {
+  if (profile !== "standard" && profile !== "alpine") {
+    throw new Error("Unknown Linux boot profile.");
+  }
+  if (profile === "alpine" && (initramfs !== undefined || disk !== undefined)) {
+    throw new Error("The Alpine profile does not support a custom initramfs or data disk.");
+  }
   if (initramfs && !validInitramfsSize(initramfs.size)) {
     throw new InvalidInitramfs("A custom initramfs must be non-empty and no larger than 16 MiB.");
   }
   if (disk && !validDiskSize(disk.size)) {
     throw new Error("A data disk must be a positive multiple of 512 bytes and no larger than 16 MiB.");
   }
-  const profile = disk ? diskPins : pins;
-  const selected = selectFiles(files, profile, initramfs !== undefined);
+  const imagePins = profile === "alpine" ? alpinePins : disk ? diskPins : pins;
+  const selected = selectFiles(files, imagePins, initramfs !== undefined);
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("SHA-256 verification requires a secure browser context (HTTPS or localhost).");
   await initializeWasm(signal);
@@ -147,8 +158,11 @@ async function loadMachine({ files, initramfs, disk }: BootCommand, signal: Abor
   signal.throwIfAborted();
   const firmwareEnd = BigInt(firmware.end);
   try {
+    if (profile === "alpine") {
+      return RiscvLinux.bootImafdc(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes);
+    }
     if (initramfs) {
-      const locked = profile.get(DEFAULT_INITRAMFS_NAME);
+      const locked = imagePins.get(DEFAULT_INITRAMFS_NAME);
       if (!locked) throw new Error("Linux profile lacks a pinned initramfs length.");
       return RiscvLinux.bootWithInitramfs(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes, locked.bytes, diskBytes);
     }
@@ -178,8 +192,8 @@ async function readLocal(file: File, kind: string, signal: AbortSignal) {
 }
 
 function report(session: Session) {
-  const { id: sessionId, machine, state } = session;
-  post({ type: "state", sessionId, state, time: machine?.time ?? 0n, retired: machine?.retired ?? 0n });
+  const { id: sessionId, machine, state, fuel, fuelLimit } = session;
+  post({ type: "state", sessionId, state, time: machine?.time ?? 0n, retired: machine?.retired ?? 0n, fuel, fuelLimit });
   session.nextReport = performance.now() + REPORT_INTERVAL_MS;
 }
 
@@ -217,9 +231,10 @@ function finish(session: Session, reason?: string, invalidInitramfs = false) {
       reason = reason === undefined ? cleanup : `${reason} ${cleanup}`;
     }
   }
+  const { fuel, fuelLimit } = session;
   const sessionId = session.id;
   if (reason !== undefined) post({ type: "error", sessionId, message: reason, invalidInitramfs });
-  post({ type: "state", sessionId, state: reason === undefined ? "ended" : "failed", time, retired });
+  post({ type: "state", sessionId, state: reason === undefined ? "ended" : "failed", time, retired, fuel, fuelLimit });
 }
 
 async function boot(session: Session, command: BootCommand) {
@@ -271,7 +286,7 @@ tasks.port1.onmessage = ({ data: id }: MessageEvent<number>) => {
   if (!machine || session.state !== "running") return;
   try {
     const accepted = feedInput(session.input, machine);
-    const allowance = Math.min(FUEL_BATCH, FUEL_LIMIT - session.fuel);
+    const allowance = Math.min(FUEL_BATCH, session.fuelLimit - session.fuel);
     const spent = machine.run(allowance);
     session.fuel += spent;
     const bytes = machine.receive(SERIAL_BATCH);
@@ -283,7 +298,9 @@ tasks.port1.onmessage = ({ data: id }: MessageEvent<number>) => {
     }
     const diskFault = machine.diskFault;
     if (diskFault !== undefined) throw new Error(`Guest data disk fault: ${diskFault}`);
-    if (session.fuel === FUEL_LIMIT) throw new Error(`Guest exhausted its ${FUEL_LIMIT} transition budget.`);
+    if (session.fuel === session.fuelLimit) {
+      throw new Error(`Guest exhausted its ${session.fuelLimit} transition budget.\n${machine.snapshot()}`);
+    }
     if (spent === 0 && outputLength === 0) {
       if (!session.input?.length) {
         setState(session, "waiting");
@@ -310,6 +327,7 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
       pauseRequested: false,
       exportPending: false,
       fuel: 0,
+      fuelLimit: command.profile === "alpine" ? ALPINE_FUEL_LIMIT : FUEL_LIMIT,
       batchPending: false,
       nextReport: 0,
     };

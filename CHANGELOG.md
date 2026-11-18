@@ -19,6 +19,7 @@
 - **Web**：新增独立 RISC-V Linux 串口工作区。选择锁定的本地镜像后可启动、暂停、继续和停止真实 Linux；不上传镜像，不影响 Apple-1 或 CPU 6502 的启动。
 - **Wasm / Web**：RISC-V Linux 可单独选用本地 raw 数据盘。先在客体卸载，再暂停并下载；同一份盘可在原生 CLI 与浏览器之间往返，未导出的写入不会自动保存。
 - **Wasm / Web**：RISC-V Linux 工作区可单独选择本地 `newc` 启动根；清除选择恢复原版根，归档不上传，可与数据盘合用。
+- **Wasm / Web**：RISC-V Linux 新增「Alpine」启动配置和 `RiscvLinux.bootImafdc`；浏览器在本地校验同一套四个镜像，保留「标准」配置原行为。
 - **RISC-V 参考板**：新增 `make riscv-linux-sources`，按独立来源的 SHA-256 获取并校验固定的 Buildroot、OpenSBI、Linux 和 QEMU 源码；不依赖发行版 QEMU，也不改变普通 Cargo 验证。
 - **RISC-V 参考板**：新增 `make riscv-linux-data`，用同一整数 ABI 工具链构建 OpenSBI、Linux、静态 BusyBox initramfs 与板级 DTB，并检查镜像格式及装载区间。
 - **RISC-V 参考板**：新增 `make riscv-linux-qemu` 和 `make riscv-linux-reference`；以固定 QEMU/TCG 冷启动同哈希客体并验收 BusyBox 串口。QEMU 仅用于对照，不是 Hesper 运行时依赖。

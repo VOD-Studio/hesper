@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
 import { validDiskSize } from "./linux-disk";
 import { DEFAULT_INITRAMFS_NAME, validInitramfsSize } from "./linux-initramfs";
-import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
+import type { LinuxCommand, LinuxProfile, LinuxReply, LinuxState } from "./linux-messages";
 import "@xterm/xterm/css/xterm.css";
 import "./LinuxWorkspace.css";
 
@@ -108,6 +108,7 @@ function downloadDisk(bytes: Uint8Array<ArrayBuffer>) {
 }
 
 export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
+  const [profile, setProfile] = useState<LinuxProfile>("standard");
   const [files, setFiles] = useState<File[]>([]);
   const [initramfs, setInitramfs] = useState<File>();
   const [initramfsError, setInitramfsError] = useState("");
@@ -116,6 +117,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState("");
   const [hasTerminal, setHasTerminal] = useState(false);
+  const filesInput = useRef<HTMLInputElement>(null);
   const initramfsInput = useRef<HTMLInputElement>(null);
   const diskInput = useRef<HTMLInputElement>(null);
   const host = useRef<HTMLDivElement>(null);
@@ -172,6 +174,17 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   function clearDisk() {
     if (diskInput.current) diskInput.current.value = "";
     setDiskSelection("empty");
+  }
+
+  function selectProfile(value: string) {
+    if (session.current || value === profile || (value !== "standard" && value !== "alpine")) return;
+    if (filesInput.current) filesInput.current.value = "";
+    setFiles([]);
+    clearInitramfs();
+    clearDisk();
+    setError("");
+    if (status.state === "failed") setStatus({ state: "ended" });
+    setProfile(value);
   }
 
   function fail(message: string) {
@@ -273,7 +286,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       worker.onmessageerror = () => {
         if (session.current === current) fail("无法读取 Linux Worker 消息。");
       };
-      const command: LinuxCommand = { type: "boot", sessionId: id, files, initramfs, disk };
+      const command: LinuxCommand = { type: "boot", sessionId: id, profile, files, initramfs, disk };
       worker.postMessage(command);
     } catch (reason) {
       fail(reason instanceof Error ? reason.message : String(reason));
@@ -307,7 +320,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   const active = status.state !== "ended" && status.state !== "failed";
   const stopping = pending === "stopping";
   const advancing = status.state === "running" || status.state === "waiting";
-  const requiredImages = initramfs ? baseImageNames : defaultImageNames;
+  const requiredImages = profile === "standard" && initramfs ? baseImageNames : defaultImageNames;
   const selectedNames = new Set(files.map((file) => file.name));
   const missingImages = requiredImages.filter((name) => !selectedNames.has(name));
   const unexpectedImages = selectedNames.size !== files.length ||
@@ -395,8 +408,22 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             <h2 className="section-label" id="linux-images-label">
               基础启动文件
             </h2>
+            <label className="linux-profile">
+              启动配置
+              <select
+                data-linux-profile
+                aria-label="启动配置"
+                value={profile}
+                disabled={active}
+                onChange={(event) => selectProfile(event.currentTarget.value)}
+              >
+                <option value="standard">标准</option>
+                <option value="alpine">Alpine</option>
+              </select>
+            </label>
             <p id="linux-files-help">
               请一次选择此配置的锁定文件。浏览器只在本地读取并校验，不会上传。
+              {profile === "alpine" && " Alpine 必须使用锁定的 initramfs，不支持自定义根或数据盘。"}
             </p>
             <ul className="linux-images">
               {requiredImages.map((name) => (
@@ -412,6 +439,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             )}
             <input
               data-linux-files
+              ref={filesInput}
               type="file"
               multiple
               aria-label="选择 Linux 启动镜像"
@@ -428,7 +456,11 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               <p data-linux-files-error role="alert">缺少启动文件：{missingImages.join(", ")}。</p>
             )}
           </section>
-          <section className="linux-local-input" aria-labelledby="linux-initramfs-label">
+          <section
+            className="linux-local-input"
+            aria-labelledby="linux-initramfs-label"
+            hidden={profile === "alpine"}
+          >
             <h2 className="section-label" id="linux-initramfs-label">
               自定义 initramfs（可选）
             </h2>
@@ -442,7 +474,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               aria-label="选择自定义 initramfs"
               aria-describedby="linux-initramfs-help"
               aria-invalid={Boolean(initramfsError)}
-              disabled={active}
+              disabled={active || profile === "alpine"}
               onChange={(event) => selectInitramfs(event.currentTarget)}
             />
             {initramfsError && (
@@ -452,13 +484,17 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               data-linux-clear-initramfs
               variant="outline"
               size="sm"
-              disabled={active || (!initramfs && !initramfsError)}
+              disabled={active || profile === "alpine" || (!initramfs && !initramfsError)}
               onClick={clearInitramfs}
             >
               清除自定义 initramfs
             </Button>
           </section>
-          <section className="linux-local-input" aria-labelledby="linux-disk-label">
+          <section
+            className="linux-local-input"
+            aria-labelledby="linux-disk-label"
+            hidden={profile === "alpine"}
+          >
             <h2 className="section-label" id="linux-disk-label">
               本地数据盘（可选）
             </h2>
@@ -473,7 +509,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               aria-label="选择 Linux 原始数据盘"
               aria-describedby="linux-disk-help"
               aria-invalid={diskSelection === "invalid"}
-              disabled={active}
+              disabled={active || profile === "alpine"}
               onChange={(event) => selectDisk(event.currentTarget)}
             />
             {diskSelection === "invalid" && (
@@ -485,7 +521,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               data-linux-clear-disk
               variant="outline"
               size="sm"
-              disabled={active || diskSelection === "empty"}
+              disabled={active || profile === "alpine" || diskSelection === "empty"}
               onClick={clearDisk}
             >
               清除数据盘

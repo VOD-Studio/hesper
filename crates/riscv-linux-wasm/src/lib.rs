@@ -2,7 +2,7 @@
 
 use core::mem::MaybeUninit;
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, DRAM_SIZE, DataDisk, FDT_ADDRESS, INITRAMFS_ADDRESS,
+    BootError, BootImages, DRAM_BASE, DRAM_SIZE, DataDisk, FDT_ADDRESS, HartIsa, INITRAMFS_ADDRESS,
     KERNEL_ADDRESS, LoadError, MAX_INITRAMFS_BYTES, Machine, dram_range,
 };
 use hesper_wasm_support as js;
@@ -28,7 +28,33 @@ impl RiscvLinux {
         initramfs: &Uint8Array,
         fdt: &Uint8Array,
     ) -> Result<RiscvLinux, JsValue> {
-        boot(firmware, firmware_end, kernel, initramfs, fdt, None, None)
+        boot(
+            firmware,
+            firmware_end,
+            kernel,
+            initramfs,
+            fdt,
+            BootMode::Default(HartIsa::Imac),
+        )
+    }
+
+    /// Boot a fixed RV64IMAFDC board with an authenticated, unmodified default root.
+    #[wasm_bindgen(js_name = bootImafdc)]
+    pub fn boot_imafdc(
+        firmware: &Uint8Array,
+        firmware_end: BigInt,
+        kernel: &Uint8Array,
+        initramfs: &Uint8Array,
+        fdt: &Uint8Array,
+    ) -> Result<RiscvLinux, JsValue> {
+        boot(
+            firmware,
+            firmware_end,
+            kernel,
+            initramfs,
+            fdt,
+            BootMode::Default(HartIsa::Imafdc),
+        )
     }
 
     /// Boot with a caller-owned raw image, copied once into the machine's private disk.
@@ -47,8 +73,7 @@ impl RiscvLinux {
             kernel,
             initramfs,
             fdt,
-            None,
-            Some(bytes),
+            BootMode::Disk(bytes),
         )
     }
 
@@ -75,8 +100,7 @@ impl RiscvLinux {
             kernel,
             initramfs,
             fdt,
-            Some(locked_len),
-            disk.as_ref(),
+            BootMode::Replacement(locked_len, disk.as_ref()),
         )
     }
 
@@ -198,14 +222,19 @@ impl RiscvLinux {
     }
 }
 
+enum BootMode<'a> {
+    Default(HartIsa),
+    Disk(&'a Uint8Array),
+    Replacement(usize, Option<&'a Uint8Array>),
+}
+
 fn boot(
     firmware: &Uint8Array,
     firmware_end: BigInt,
     kernel: &Uint8Array,
     initramfs: &Uint8Array,
     fdt: &Uint8Array,
-    locked_initramfs_len: Option<usize>,
-    disk: Option<&Uint8Array>,
+    mode: BootMode<'_>,
 ) -> Result<RiscvLinux, JsValue> {
     let firmware_end = address(firmware_end, "firmware_end")?;
     if !(DRAM_BASE + 1..=KERNEL_ADDRESS).contains(&firmware_end) {
@@ -223,19 +252,19 @@ fn boot(
         64,
         INITRAMFS_ADDRESS - KERNEL_ADDRESS,
     )?;
-    let custom = locked_initramfs_len
-        .map(|_| {
-            fixed_byte_view(initramfs, |len| {
-                if len < 1.0 || len > MAX_INITRAMFS_BYTES as f64 {
-                    return Err(js::error(
-                        "InvalidInitramfs",
-                        "custom initramfs must be non-empty and no larger than 16 MiB",
-                    ));
-                }
-                Ok(len as usize)
-            })
-        })
-        .transpose()?;
+    let custom = if let BootMode::Replacement(..) = mode {
+        Some(fixed_byte_view(initramfs, |len| {
+            if len < 1.0 || len > MAX_INITRAMFS_BYTES as f64 {
+                return Err(js::error(
+                    "InvalidInitramfs",
+                    "custom initramfs must be non-empty and no larger than 16 MiB",
+                ));
+            }
+            Ok(len as usize)
+        })?)
+    } else {
+        None
+    };
     let (initramfs, initramfs_len) = match &custom {
         Some((bytes, len)) => (bytes, *len),
         None => (
@@ -249,6 +278,11 @@ fn boot(
         40,
         DRAM_BASE + DRAM_SIZE as u64 - FDT_ADDRESS - BootImages::FDT_GROWTH,
     )?;
+    let disk = match mode {
+        BootMode::Default(_) => None,
+        BootMode::Disk(bytes) => Some(bytes),
+        BootMode::Replacement(_, disk) => disk,
+    };
     let disk = disk
         .map(|bytes| {
             let (bytes, _) = fixed_byte_view(bytes, |len| {
@@ -273,10 +307,12 @@ fn boot(
         initramfs: stage(initramfs, initramfs_len, "initramfs", &mut initrd_buf)?,
         fdt: stage(fdt, fdt_len, "DTB", &mut fdt_buf)?,
     };
-    let machine = match (locked_initramfs_len, disk) {
-        (Some(locked_len), disk) => Machine::boot_with_initramfs(images, locked_len, disk),
-        (None, Some(disk)) => Machine::boot_with_disk(images, disk),
-        (None, None) => Machine::boot(images),
+    let machine = match mode {
+        BootMode::Default(isa) => Machine::boot_with_isa(images, isa),
+        BootMode::Disk(_) => Machine::boot_with_disk(images, disk.expect("staged data disk")),
+        BootMode::Replacement(locked_len, _) => {
+            Machine::boot_with_initramfs(images, locked_len, disk)
+        }
     }
     .map_err(boot_error)?;
     Ok(RiscvLinux { machine })

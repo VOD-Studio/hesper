@@ -6,8 +6,10 @@ export type LinuxState =
   | "failed"
   | "ended";
 
+export type LinuxProfile = "standard" | "alpine";
+
 export type LinuxCommand = { sessionId: number } & (
-  | { type: "boot"; files: File[]; initramfs?: File; disk?: File }
+  | { type: "boot"; profile: LinuxProfile; files: File[]; initramfs?: File; disk?: File }
   | { type: "stdin"; bytes: Uint8Array }
   | { type: "pause" }
   | { type: "resume" }
@@ -21,6 +23,6 @@ export type LinuxReply = { sessionId: number } & (
   | { type: "stdout"; bytes: Uint8Array }
   | { type: "disk"; bytes: Uint8Array<ArrayBuffer> }
   | { type: "discard-required" }
-  | { type: "state"; state: LinuxState; time: bigint; retired: bigint }
+  | { type: "state"; state: LinuxState; time: bigint; retired: bigint; fuel: number; fuelLimit: number }
   | { type: "error"; message: string; invalidInitramfs?: boolean }
 );

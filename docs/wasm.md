@@ -128,6 +128,14 @@ SHA-256；绑定不下载、不分发客体镜像。实例不持有输入数组�
 `make riscv-linux-wasm` 用已准备的锁定镜像在实际 Bun/Node.js 产物中运行同一
 套串口命令，和 `make wasm-browser-test` 的无镜像轻量检查分开。
 
+### Alpine（显式 RV64IMAFDC）
+
+`RiscvLinux.bootImafdc(firmware, firmwareEnd, kernel, initramfs, fdt)` 使用
+[`images-alpine.lock.json`](../tools/riscv-linux/images-alpine.lock.json) 中的四个镜像。
+调用方负责在启动前核对全部大小和 SHA-256。绑定显式启用 F/D，不根据客体内容推断
+ISA；`boot`、`bare`、换根及数据盘入口仍为 IMAC。这里的根是锁定的默认归档，
+使用与 `boot` 相同的 56 MiB 装载窗口，不改变自定义归档的 16 MiB 限制。
+
 ### 可写数据盘
 
 `RiscvLinux.bootWithDisk(firmware, firmwareEnd, kernel, initramfs, fdt, disk)`

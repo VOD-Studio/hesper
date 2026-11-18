@@ -54,6 +54,14 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 已输入的字节在继续后投递；停止丢弃当前机器，再启动得到新的 RAM 和终端。
 启动期间可取消。只支持固定板，不提供网络、图形或机器存档。
 
+#### Alpine
+
+按[根目录说明](../../README.md#risc-v-linux-alpine本机与网页)构建 `images-alpine`，
+将「启动配置」从「标准」切到「Alpine」，再一次选择其中四个锁定镜像。
+不需要选择 `manifest.json`。改变配置会清除旧选择；在会话运行期间不能切换。
+Alpine 使用固定的 RAM 根，无自定义归档和数据盘；用内置 apk keys 离线安装的包
+只在当前会话中存在。生产站点不托管镜像或 APK。
+
 #### 可选自定义启动根
 
 在「自定义 initramfs（可选）」中选择未压缩的单个 `newc` 归档（含填充最多
@@ -108,6 +116,9 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 `make riscv-linux-initramfs-browser` 用同一份 QEMU 验收归档验证生产网页的
 串口、数据盘和默认根恢复。准备原版 `serial` / `blk` 镜像；若块设备镜像在
 另一缓存中，通过 `RISCV_LINUX_BLK_IMAGES` 指定其 `images-blk` 目录。
+
+`CHROME_BIN=chromium make riscv-linux-alpine-browser` 验收生产网页的 Alpine
+启动、离线安装、冷启动和坏文件拒绝；串口、输入及截图保存在所用缓存的 `logs-alpine/`。
 
 ### 2026-09-15 本轮 QA
 

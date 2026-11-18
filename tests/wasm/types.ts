@@ -6,6 +6,13 @@ import { Apple1 as NodeApple } from "../../target/wasm-packages/apple1/nodejs/he
 import initRiscv, { RiscvLinux } from "../../target/wasm-packages/riscv-linux/web/hesper_riscv_linux.js";
 import { RiscvLinux as NodeRiscv } from "../../target/wasm-packages/riscv-linux/nodejs/hesper_riscv_linux.js";
 
+function bootAlpine(firmware: Uint8Array, end: bigint, kernel: Uint8Array, root: Uint8Array, fdt: Uint8Array) {
+  const web: RiscvLinux = RiscvLinux.bootImafdc(firmware, end, kernel, root, fdt);
+  const node: NodeRiscv = NodeRiscv.bootImafdc(firmware, end, kernel, root, fdt);
+  web.free(); node.free();
+}
+void bootAlpine;
+
 async function example(rom: Uint8Array) {
   await Promise.all([init(), initApple(), initRiscv()]);
   const cpu = new Cpu6502Ram(), apple = new Apple1(rom, false);
