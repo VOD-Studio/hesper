@@ -1439,3 +1439,18 @@ RAM 与 tick 清零。用有效 Image 头但越过 initramfs 起点的 `image_si
 和冻结诊断；设备与特权聚焦测试 8 项及 `make verify` 通过。
 原始记录 `repro-c/logs/hesper-{pipe,pty}-{serial,input}.raw`。这是本机证明，
 不代表 Wasm 或浏览器。
+
+## RISC-V Linux L7a：实际 Wasm 绑定
+
+`CHROME_BIN=chromium make wasm-browser-test`：Bun、Node.js 及 Chrome 各
+通过 10 项轻量对照；其中 RV64 四指令用 `4`、`1+3`、单步切片，验证
+原生 PC、x0/x1/x2、DRAM 签名，以及超过 Wasm32 地址和满宽寄存器。
+UART 在 tick 128 注入 `0xc3`，用 1/37/4096 fuel 切片，均只返回 `0xc4`，
+结束于 tick 1005、退休 572 条。生成声明的 TypeScript 检查及 `make verify` 通过。
+
+`RISCV_LINUX_CACHE="$PWD/.cache/riscv-linux/repro-c" make riscv-linux-wasm`：
+Bun 1.4.4 和 Node.js 26.13.1 分别在 33.87 / 34.26 s 到同一 Linux shell，
+并通过 `uname`、`/proc/cpuinfo`、`HESPER_OK:42` 与 Ctrl+] 正常退出。
+峰值 RSS 208532 / 222740 KiB；两次退出均为 `340787200/450000000`
+fuel、`340754648` 退休及 `677471556` tick。`repro-c/logs/hesper-wasm.json`
+记录清单、原始串口与预算。这是 JS 绑定的完整客体启动，不是网页验收。

@@ -399,6 +399,16 @@ name = "hesper-riscv-linux"
 version = "0.2.1"
 
 [[package]]
+name = "hesper-riscv-linux-wasm"
+version = "0.2.1"
+dependencies = [
+ "hesper-riscv-linux",
+ "hesper-wasm-support",
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "hesper-wasm-support"
 version = "0.2.1"
 dependencies = [

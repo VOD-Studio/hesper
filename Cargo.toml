@@ -2,7 +2,7 @@
 members = [
     "crates/cpu6502", "crates/cli", "crates/apple1",
     "crates/cpu6502-wasm", "crates/apple1-wasm", "crates/wasm-support",
-    "crates/riscv-linux",
+    "crates/riscv-linux", "crates/riscv-linux-wasm",
 ]
 default-members = ["crates/cli"]
 resolver = "3"

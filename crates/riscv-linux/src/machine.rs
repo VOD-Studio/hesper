@@ -79,9 +79,20 @@ pub struct Machine {
 impl Machine {
     /// Create an empty board with the hart at the DRAM base.
     pub fn new() -> Self {
+        Self::with_board(Board::new())
+    }
+
+    /// Create an empty board, returning an error if DRAM cannot be allocated.
+    pub fn try_new() -> Result<Self, BootError> {
+        Board::try_new()
+            .map(Self::with_board)
+            .map_err(|_| BootError::Allocation)
+    }
+
+    fn with_board(board: Board) -> Self {
         Self {
             hart: Hart::new(),
-            board: Board::new(),
+            board,
             retired: 0,
             cycle: 0,
             external_lines: 0,
@@ -92,7 +103,7 @@ impl Machine {
     /// Validate every image and boot a new board in M-mode at the OpenSBI entry.
     pub fn boot(images: BootImages<'_>) -> Result<Self, BootError> {
         let images = Validated::new(images)?;
-        let mut machine = Self::new();
+        let mut machine = Self::try_new()?;
         machine.install_boot(images);
         Ok(machine)
     }

@@ -1,4 +1,4 @@
-// Build both standalone Wasm packages. Bun is a host tool, not a runtime dependency.
+// Build the standalone Wasm packages. Bun is a host tool, not a runtime dependency.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -25,14 +25,16 @@ if (mode === "setup") {
   if (check.exitCode !== 0 || check.stdout.toString().trim() !== `wasm-bindgen ${version}`) {
     throw new Error(`Need wasm-bindgen ${version}; run make wasm-setup or set WASM_BINDGEN`);
   }
+  const libraries = ["cpu6502", "apple1", "riscv-linux"];
   run(["cargo", "build", "--locked", "--release", "--target", "wasm32-unknown-unknown",
-    "-p", "hesper-cpu6502-wasm", "-p", "hesper-apple1-wasm"]);
-  for (const library of ["cpu6502", "apple1"]) {
+    ...libraries.flatMap(library => ["-p", `hesper-${library}-wasm`])]);
+  for (const library of libraries) {
+    const module = `hesper_${library.replaceAll("-", "_")}`;
     for (const target of ["web", "nodejs"]) {
       const out = resolve(root, `target/wasm-packages/${library}/${target}`);
       mkdirSync(out, { recursive: true });
-      run([bindgen, `target/wasm32-unknown-unknown/release/hesper_${library}_wasm.wasm`,
-        "--target", target, "--out-dir", out, "--out-name", `hesper_${library}`]);
+      run([bindgen, `target/wasm32-unknown-unknown/release/${module}_wasm.wasm`,
+        "--target", target, "--out-dir", out, "--out-name", module]);
       writeFileSync(resolve(out, "README.md"),
         `# hesper-${library} (${target})\n\nVersion: ${packageVersion}. Built with wasm-bindgen ${version}.\n\n` +
         "Usage and interface contract: docs/wasm.md in the Hesper source repository.\n" +

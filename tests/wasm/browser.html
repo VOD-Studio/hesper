@@ -8,20 +8,26 @@
   pre { white-space: pre-wrap; background: #f3f4f6; padding: 1rem; }
 </style>
 <h1>Hesper WASM 验证</h1>
-<p>浏览器直接加载 CPU 和 Apple I 的 ES Module，对照同版本原生 Rust 的执行结果。</p>
+<p>浏览器直接加载三种实际 Wasm ES Module，对照同版本原生 Rust 的执行结果。</p>
 <pre id="result" role="status">正在加载…</pre>
 <script type="module">
   import initCpu, { Cpu6502Ram } from "../../target/wasm-packages/cpu6502/web/hesper_cpu6502.js";
   import initApple, { Apple1 } from "../../target/wasm-packages/apple1/web/hesper_apple1.js";
+  import initRiscv, { RiscvLinux } from "../../target/wasm-packages/riscv-linux/web/hesper_riscv_linux.js";
   import { cases } from "./checks.mjs";
+  import { riscvCases } from "./riscv-checks.mjs";
   const result = document.querySelector("#result");
   try {
-    await Promise.all([initCpu(), initApple()]);
-    const response = await fetch("../../target/wasm-packages/reference.json");
-    if (!response.ok) throw new Error(`reference.json: HTTP ${response.status}`);
-    const reference = await response.json();
+    await Promise.all([initCpu(), initApple(), initRiscv()]);
+    async function reference(file) {
+      const response = await fetch(`../../target/wasm-packages/${file}.json`);
+      if (!response.ok) throw new Error(`${file}.json: HTTP ${response.status}`);
+      return response.json();
+    }
+    const [base, riscv] = await Promise.all([reference("reference"), reference("riscv-reference")]);
+    const probes = [...cases(Cpu6502Ram, Apple1, base), ...riscvCases(RiscvLinux, riscv)];
     const passed = [];
-    for (const [name, run] of cases(Cpu6502Ram, Apple1, reference)) {
+    for (const [name, run] of probes) {
       run();
       passed.push(`✓ ${name}`);
       result.textContent = passed.join("\n");

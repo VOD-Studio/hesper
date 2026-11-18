@@ -1,8 +1,8 @@
 # WASM 与 JavaScript 绑定
 
-`hesper-cpu6502-wasm` 与 `hesper-apple1-wasm` 分别生成可独立加载的 WASM、JS 和 TypeScript 声明。CPU 包提供 **CPU + 64 KiB RAM** 的宿主 `Cpu6502Ram`，Apple I 包提供完整固定配置机器 `Apple1`。原有 CPU 仍不持有内存，也没有第三方运行时依赖。
+`hesper-cpu6502-wasm`、`hesper-apple1-wasm` 与 `hesper-riscv-linux-wasm` 分别生成可独立加载的 WASM、JS 和 TypeScript 声明。CPU 包提供 **CPU + 64 KiB RAM** 的 `Cpu6502Ram`；Apple I 和 RISC-V Linux 分别提供固定板的 `Apple1` 和 `RiscvLinux`。模拟器核心仍无第三方运行时依赖。
 
-两个包通过内部 `hesper-wasm-support` 共用参数校验、错误和 CPU 观察快照转换。Apple I 包直接链接 Rust CPU，不需要加载 CPU 的 JS 包，也不在每个总线访问时调用 JS。CLI/TUI 不参与 WASM 构建。
+绑定通过内部 `hesper-wasm-support` 共用参数校验和错误转换。Apple I 包直接链接 Rust CPU，不需要加载 CPU 的 JS 包，也不在每个总线访问时调用 JS。CLI/TUI 不参与 WASM 构建。
 
 ## 构建
 
@@ -24,7 +24,8 @@ make wasm-browser-test  # 上述测试和类型检查，再用独立无头 Chrom
 ```text
 target/wasm-packages/
 ├── cpu6502/{web,nodejs}/hesper_cpu6502{.js,.d.ts,_bg.wasm,_bg.wasm.d.ts}
-└── apple1/{web,nodejs}/hesper_apple1{.js,.d.ts,_bg.wasm,_bg.wasm.d.ts}
+├── apple1/{web,nodejs}/hesper_apple1{.js,.d.ts,_bg.wasm,_bg.wasm.d.ts}
+└── riscv-linux/{web,nodejs}/hesper_riscv_linux{.js,.d.ts,_bg.wasm,_bg.wasm.d.ts}
 ```
 
 每个目录包含 README；Apple I README 同时保留内嵌 P-Lab 字模的作者、来源、CC BY 4.0 许可证和格式转换说明。**WASM 包不内嵌、不下载或分发 Woz Monitor / BASIC ROM**，由调用方提供；CLI 的内置资源不改变 WASM 接口。
@@ -107,9 +108,29 @@ try {
 
 没有隐式定时器、墙钟节流、DOM 访问或文件系统依赖。宿主可在主线程分批调用，也可以自己放入 Worker；不能把“每次推进 250,000 ticks”当成保证实时帧率。
 
+## RISC-V Linux 串口
+
+`RiscvLinux.boot(firmware, firmwareEnd, kernel, initramfs, fdt)` 创建单 hart、
+128 MiB RAM 的固定板。四个镜像是 `Uint8Array`，`firmwareEnd` 是 `bigint`。
+调用方先按 [`images.lock.json`](../tools/riscv-linux/images.lock.json) 核对大小和
+SHA-256；绑定不下载、不分发客体镜像。实例不持有输入数组。装载范围或格式错误
+报 `InvalidBootImage`，RAM 或镜像暂存分配失败报 `AllocationFailed`。
+
+- `run(fuel)`：单批 `0..=1_000_000`，返回实际消耗的推进预算；等待事件或串口
+  背压可提前返回。浏览器将有限批放在独立 Worker，不能在单次调用内等待 shell。
+- `send(bytes)` 接受最多 4096 字节的前缀，返回已入队字节数；未接收的后缀由
+  宿主重试。`receive(limit)` 取出最多 4096 个完成发送的字节，返回独立副本。
+- `pc/satp/retired/time` 及 `register(index)` 使用 `bigint`。`snapshot()` 返回
+  有界冻结诊断，`stalledTraps` 是连续未退休的 trap 数；结束后调用 `free()`。
+- `bare(address, program)` 和 `word(address)` 供小探针使用，仍以 `bigint`
+  传 RV64 地址；`word` 仅读取四字节 DRAM，不读取设备。
+
+`make riscv-linux-wasm` 用已准备的锁定镜像在实际 Bun/Node.js 产物中运行同一
+套串口命令，和 `make wasm-browser-test` 的无镜像轻量检查分开。
+
 ## 类型、错误与生命周期
 
-- 地址、字节和单次预算的 JS 参数是 `number`。绑定层用浮点参数先验证有限、整数、范围，再转换成 Rust 硬件宽度类型，避免自动截断/回绕。
+- 6502/Apple I 的地址和字节，以及各绑定的单次预算是 `number`。绑定先验证有限、整数与范围；RISC-V 的地址使用 `bigint`，不截断到 Wasm32。
 - `step/runCycles/runTicks` 的单次预算为 `1..=1_000_000`；超范围在执行前报错。`readMemory` 长度为 `0..=65536`，同时检查地址与长度之和。
 - 长期 `u64` 计数和 Step 的 `cycles` 返回 `bigint`。要序列化到 JSON，请显式转换成字符串；不要转成可能丢精度的 `number`。
 - 成功返回的快照是普通 JS 数据，无需 `free()`。字节数组是独立副本，不暴露 WASM 内存视图。CPU/机器实例持有 WASM 内存，调用结束后用 `free()` 或 `Symbol.dispose` 释放。
@@ -119,6 +140,9 @@ try {
 ## 验证范围
 
 `make wasm-test` 用同版本原生 Rust 实时生成参考数据，在 Bun 与 Node.js 中测试实际生成的 `nodejs` JS/WASM：CPU 逐周期记录（包含 RMW、RDY、SO、NMI、物理 RESET）、单步续跑、半周期、参数检查、实例隔离，以及 Apple I 回显、主时钟与 CPU 周期、数字视频采样、不同分批方式、RESET/清屏、队列限制和错误时输出保存。
+
+RISC-V 的轻量检查对照四条整数指令的 PC、寄存器和 RAM 签名，并在相同虚拟
+tick 注入 UART 字节，比较不同分批方式的回传内容与结束状态。
 
 `make wasm-browser-test` 通过 HTTP 加载 `web` 产物，在真实 Chrome 上运行同一组检查。也可在仓库根目录运行 `python3 -m http.server 8000 --bind 127.0.0.1`，打开 `http://127.0.0.1:8000/tests/wasm/browser.html` 查看验证页；先执行 `make wasm-test` 生成包和参考数据。
 

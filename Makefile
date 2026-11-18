@@ -9,10 +9,10 @@
 #   make fix       运行 cargo fmt --all 后，再对 workspace 全部 crate（含全部 target）
 #                  cargo fix --allow-dirty 自动修复
 #   make build     cargo build --workspace（debug）或 --release
-#   make wasm      CPU / Apple I 库及 JS 绑定的 Wasm 编译检查
+#   make wasm      CPU / Apple I / RISC-V Linux 库及 JS 绑定的 Wasm 编译检查
 #                  （需要已安装 wasm32 目标，不在 verify 中强制）
 #   make wasm-setup 安装目标和匹配版本的 wasm-bindgen 到 .cache/wasm-tools
-#   make wasm-build 生成两个库的 web / nodejs 包（需要 Bun）
+#   make wasm-build 生成三个库的 web / nodejs 包（需要 Bun）
 #   make wasm-test  构建包并运行实际 JS 绑定与原生 Rust 对照测试
 #   make wasm-browser-test  用独立无头 Chrome 加载 web 产物运行同组检查
 #   make wasm-typecheck  用固定版本 TypeScript 检查产物的调用类型（首次联网）
@@ -24,6 +24,7 @@
 #   make riscv-linux-reference 用已准备的 QEMU 和锁定镜像做实际串口验收（离线）
 #   make riscv-linux-firmware  用已验固件交接 S 态探针，验证 SBI TIME 与 UART 中断
 #   make riscv-linux-native   验收实际固件、CLI 的 Linux shell、PTY 与管道
+#   make riscv-linux-wasm     用已验镜像重放实际 Bun / Node.js Wasm 串口
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -38,7 +39,7 @@
 .PHONY: verify fmt fix check test test-release clippy demo diff build build-release \
         wasm wasm-setup wasm-build wasm-test wasm-browser-test wasm-typecheck \
         tools-test riscv-linux-sources riscv-linux-data riscv-linux-qemu riscv-linux-reference \
-        riscv-linux-firmware riscv-linux-native \
+        riscv-linux-firmware riscv-linux-native riscv-linux-wasm \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -81,7 +82,8 @@ build-release:
 	cargo build --workspace --release
 
 wasm:
-	cargo check -p hesper-cpu6502 -p hesper-apple1 -p hesper-cpu6502-wasm -p hesper-apple1-wasm --target wasm32-unknown-unknown --locked
+	cargo check -p hesper-cpu6502 -p hesper-apple1 -p hesper-cpu6502-wasm -p hesper-apple1-wasm \
+		-p hesper-riscv-linux -p hesper-riscv-linux-wasm --target wasm32-unknown-unknown --locked
 
 wasm-setup:
 	bun tools/build_wasm.ts setup
@@ -91,6 +93,7 @@ wasm-build:
 
 wasm-test: wasm-build
 	cargo run -p hesper-apple1-wasm --example reference --release --locked > target/wasm-packages/reference.json
+	cargo run -p hesper-riscv-linux --example wasm_reference --release --locked > target/wasm-packages/riscv-reference.json
 	bun test tests/wasm/
 	node --test tests/wasm/bindings.test.mjs
 
@@ -125,6 +128,9 @@ riscv-linux-firmware:
 riscv-linux-native: riscv-linux-firmware
 	cargo build --locked --release -p hesper
 	python3 tools/riscv-linux/native.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
+
+riscv-linux-wasm: wasm-build
+	python3 tools/riscv-linux/wasm_serial.py
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

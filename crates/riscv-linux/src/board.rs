@@ -3,13 +3,14 @@ use crate::{
     interrupt_devices::{Clint, Plic},
     uart::Uart,
 };
+use std::collections::TryReserveError;
 
 const CLINT: u64 = 0x0200_0000;
 const PLIC: u64 = 0x0c00_0000;
 const UART: u64 = 0x1000_0000;
 
 pub(crate) struct Board {
-    pub(crate) ram: Box<[u8]>,
+    pub(crate) ram: Vec<u8>,
     pub(crate) uart: Uart,
     clint: Clint,
     plic: Plic,
@@ -18,8 +19,19 @@ pub(crate) struct Board {
 
 impl Board {
     pub(crate) fn new() -> Self {
+        Self::with_ram(vec![0; DRAM_SIZE])
+    }
+
+    pub(crate) fn try_new() -> Result<Self, TryReserveError> {
+        let mut ram = Vec::new();
+        ram.try_reserve_exact(DRAM_SIZE)?;
+        ram.resize(DRAM_SIZE, 0);
+        Ok(Self::with_ram(ram))
+    }
+
+    fn with_ram(ram: Vec<u8>) -> Self {
         Self {
-            ram: vec![0; DRAM_SIZE].into_boxed_slice(),
+            ram,
             uart: Uart::new(),
             clint: Clint::new(),
             plic: Plic::new(),

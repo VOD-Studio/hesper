@@ -8,7 +8,6 @@ pub const KERNEL_ADDRESS: u64 = 0x8020_0000;
 pub const INITRAMFS_ADDRESS: u64 = 0x8400_0000;
 /// Physical start of the firmware's in-place device tree.
 pub const FDT_ADDRESS: u64 = 0x8780_0000;
-const FDT_GROWTH: u64 = 0x1_0000;
 const DRAM_END: u64 = DRAM_BASE + DRAM_SIZE as u64;
 
 /// The four board images. The host verifies their hashes against its trust
@@ -21,9 +20,15 @@ pub struct BootImages<'a> {
     pub fdt: &'a [u8],
 }
 
-/// A board image or load interval rejected before changing the machine.
+impl BootImages<'_> {
+    /// RAM after the device tree reserved for in-place firmware updates.
+    pub const FDT_GROWTH: u64 = 0x1_0000;
+}
+
+/// Failure to validate the board images or allocate RAM for a cold boot.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum BootError {
+    Allocation,
     Format(&'static str),
     Overlap(&'static str, &'static str),
     Range(&'static str),
@@ -32,6 +37,7 @@ pub enum BootError {
 impl fmt::Display for BootError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Allocation => write!(f, "could not allocate {DRAM_SIZE} bytes of board DRAM"),
             Self::Format(image) => write!(f, "unsupported or malformed {image}"),
             Self::Overlap(first, second) => write!(f, "{first} and {second} load ranges overlap"),
             Self::Range(image) => write!(f, "{image} load range is outside board DRAM"),
@@ -62,7 +68,11 @@ impl<'a> Validated<'a> {
             return Err(BootError::Format(INITRD));
         }
         let initrd = span(INITRD, INITRAMFS_ADDRESS, images.initramfs.len() as u64)?;
-        let tree = span(DTB, FDT_ADDRESS, images.fdt.len() as u64 + FDT_GROWTH)?;
+        let tree = span(
+            DTB,
+            FDT_ADDRESS,
+            images.fdt.len() as u64 + BootImages::FDT_GROWTH,
+        )?;
         let regions = [
             (FW, DRAM_BASE..images.firmware_end),
             (KERNEL, kernel_bytes),

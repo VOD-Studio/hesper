@@ -9,6 +9,7 @@
 - **RISC-V 设备**：接入 CLINT、PLIC、NS16550A 串口与确定性虚拟时钟；WFI 可快进到下一设备事件。
 - **RISC-V 装载器**：新增固定板的 `Machine::boot` / `reboot`，在写 RAM 前校验 OpenSBI 驻留范围、Linux Image 头、initramfs 与 DTB；无效重启保留原会话。
 - **CLI**：新增独立 `hesper linux --images <dir>`，校验锁定镜像，在本机串口启动 RV64IMAC Linux 和 BusyBox；支持管道、PTY、Ctrl+] 退出及有界推进诊断。
+- **Wasm**：新增可独立加载的 `RiscvLinux` 绑定，分块推进和收发原始 UART 字节；RV64 地址、寄存器和累计计数使用 `bigint`，不捆绑客体镜像。
 - **RISC-V 参考板**：新增 `make riscv-linux-sources`，按独立来源的 SHA-256 获取并校验固定的 Buildroot、OpenSBI、Linux 和 QEMU 源码；不依赖发行版 QEMU，也不改变普通 Cargo 验证。
 - **RISC-V 参考板**：新增 `make riscv-linux-data`，用同一整数 ABI 工具链构建 OpenSBI、Linux、静态 BusyBox initramfs 与板级 DTB，并检查镜像格式及装载区间。
 - **RISC-V 参考板**：新增 `make riscv-linux-qemu` 和 `make riscv-linux-reference`；以固定 QEMU/TCG 冷启动同哈希客体并验收 BusyBox 串口。QEMU 仅用于对照，不是 Hesper 运行时依赖。
