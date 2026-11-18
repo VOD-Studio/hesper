@@ -23,6 +23,7 @@ QUIT = b"\x1d"
 INPUT_BUDGET = sum(map(len, COMMANDS)) + len(QUIT)
 BOOT_SECONDS = 90
 EXIT_SECONDS = 5
+ACCEPTANCE_MAX_FUEL = 450_000_000
 SUMMARY = re.compile(r"^linux: exit=(\S+) fuel=(\d+)/(\d+) retired=(\d+) time=(\d+)(?:\s|$)", re.M)
 
 
@@ -35,8 +36,8 @@ def reap(guest, options):
     return None
 
 
-def linux_command(binary, *, images=IMAGE_DIR, disk=None, initramfs=None):
-    argv = [str(binary), "linux", "--images", str(images), "--diagnostics"]
+def linux_command(binary, *, images=IMAGE_DIR, disk=None, initramfs=None, max_fuel=ACCEPTANCE_MAX_FUEL):
+    argv = [str(binary), "linux", "--images", str(images), "--diagnostics", "--max-fuel", str(max_fuel)]
     if initramfs is not None:
         argv += ["--initramfs", str(initramfs)]
     if disk is not None:

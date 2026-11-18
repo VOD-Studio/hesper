@@ -1678,3 +1678,12 @@ Arch Linux x86-64，Chromium 155.0.8059.84、Bun 1.4.4、Node.js 26.13.1。
 包括伪装长度的 `Uint8Array`；`bun run check`、`bun run build`、原有
 `make riscv-linux-browser` 和 `make riscv-linux-blk-browser` 均通过。
 以上为本地证据；没有远程 CI、Release 或 Pages 部署结论。
+
+## RISC-V Linux CLI：默认不限额
+
+本地 release CLI 用 `repro-c/images` 和 `--diagnostics` 在真实 PTY 冷启动，
+未传 fuel 参数。客体执行 `sleep 4000` 后打印独立结果行 `FUEL_DEFAULT_OK:42`
+并返回完整提示符；Ctrl+] 正常退出、恢复 PTY 设置，报告
+`fuel=516030464/unlimited`，越过原先的 450000000 上限。管道下显式
+`--max-fuel 1` 以 `fuel=1/1` 和非零状态退出。原始串口和诊断：
+`.cache/riscv-linux/fuel-default.RqwtY0/`。

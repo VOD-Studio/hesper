@@ -14,7 +14,7 @@ import time
 from build_guest import BLK_IMAGE_DIR, ENV, IMAGE_DIR, IMAGE_NAMES, INITRD, verified_manifest
 from disk_acceptance import check_proof, disk_states, make_seed
 from initramfs_acceptance import custom_states, default_states, fixture_info, initrd_end_state
-from native import BOOT_SECONDS, EXIT_SECONDS, capture_serial, linux_command, require_exit
+from native import ACCEPTANCE_MAX_FUEL, BOOT_SECONDS, EXIT_SECONDS, capture_serial, linux_command, require_exit
 from native_disk import DISK_BYTES, expect_entries, expect_stderr, require_boot_fuel
 from serial_acceptance import PROMPT, STEP_BYTES, STEP_SECONDS, session
 from sources import CACHE, require_tools, sha256
@@ -22,7 +22,6 @@ from sources import CACHE, require_tools, sha256
 LOGS = CACHE / "logs-initramfs"
 BASE_FILES = ("manifest.json", *(name for name in IMAGE_NAMES if name != "initramfs.cpio"))
 MAX_INITRAMFS_BYTES = 16 * 1024 * 1024
-MAX_FUEL = 450_000_000
 MARKER = "INITRAMFS_DISK_OK"
 KERNEL_PANIC = re.compile(rb"Kernel panic - not syncing: (?:VFS: Unable to mount root fs|No working init found)[^\n]*")
 
@@ -166,15 +165,15 @@ def panic_control(binary, images, manifest, seed, logs):
     archive_data = b"070701" + b"".join(f"{field:08x}".encode("ascii") for field in fields) + b"TRAILER!!!\0\0\0\0"
     archive.write_bytes(archive_data)
     argv = linux_command(binary, images=images, disk=(seed, publish / "absent.raw"), initramfs=archive)
-    run = capture_serial(argv + ["--max-fuel", str(MAX_FUEL)], "pipe", logs=logs, termination=None,
-                         exit_seconds=BOOT_SECONDS)
+    run = capture_serial(argv, "pipe", logs=logs, termination=None, exit_seconds=BOOT_SECONDS)
     require_exit(run, "fuel", success=False)
-    expect_stderr(run["diagnostics_log"], f"Linux guest fuel exhausted (limit {MAX_FUEL} transitions)")
+    expect_stderr(run["diagnostics_log"], f"Linux guest fuel exhausted (limit {ACCEPTANCE_MAX_FUEL} transitions)")
     expect_entries(publish)
     serial = Path(run["serial_log"]).read_bytes().replace(b"\r\n", b"\n")
     panic = KERNEL_PANIC.search(serial)
     linux = b"Linux version " + manifest["kernelrelease"].encode("ascii") + b" "
-    if (run["input_bytes"] != 0 or run["fuel_spent"] != MAX_FUEL or run["max_fuel"] != MAX_FUEL
+    if (run["input_bytes"] != 0 or run["fuel_spent"] != ACCEPTANCE_MAX_FUEL
+            or run["max_fuel"] != ACCEPTANCE_MAX_FUEL
             or not 0 <= serial.find(b"OpenSBI ") < serial.find(linux) or not panic
             or panic.start() < serial.find(linux) or PROMPT in serial or b"Initramfs unpacking failed" in serial):
         raise ValueError(f"missing-init: expected firmware then Linux panic and no shell; see {run['serial_log']}")

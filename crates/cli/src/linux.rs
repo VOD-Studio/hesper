@@ -26,7 +26,6 @@ use crate::terminal::{TerminalGuard, TerminalMode};
 const IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images.lock.json");
 const BLK_IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images-blk.lock.json");
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
-const DEFAULT_MAX_FUEL: u64 = 450_000_000;
 const BATCH: u32 = 16_384;
 const STALLED_TRAP_LIMIT: u32 = 32;
 const IO_BYTES: usize = 2048;
@@ -120,7 +119,6 @@ impl Options {
         let mut initramfs = None;
         let (mut disk_in, mut disk_out) = (None, None);
         let mut max_fuel = None;
-        let mut unlimited = false;
         let mut diagnostics = false;
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -165,21 +163,11 @@ impl Options {
                             })?,
                     );
                 }
-                "--no-fuel-limit" => unlimited = true,
                 "--diagnostics" => diagnostics = true,
                 "--help" | "-h" => return Ok(None),
                 _ => return Err(LinuxError::Usage(format!("unknown linux argument: {arg}"))),
             }
         }
-        let fuel_limit = match (max_fuel, unlimited) {
-            (Some(_), true) => {
-                return Err(LinuxError::Usage(
-                    "--max-fuel and --no-fuel-limit are mutually exclusive".into(),
-                ));
-            }
-            (None, true) => FuelLimit::Unlimited,
-            (limit, false) => FuelLimit::Bounded(limit.unwrap_or(DEFAULT_MAX_FUEL)),
-        };
         let disk = match (disk_in, disk_out) {
             (None, None) => None,
             (Some(input), Some(output)) => Some((input, output)),
@@ -193,7 +181,7 @@ impl Options {
             images: images.ok_or_else(|| LinuxError::Usage("--images is required".into()))?,
             initramfs,
             disk,
-            fuel_limit,
+            fuel_limit: max_fuel.map_or(FuelLimit::Unlimited, FuelLimit::Bounded),
             diagnostics,
         }))
     }
@@ -693,9 +681,8 @@ impl Session {
 pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let Some(options) = Options::parse(args)? else {
         println!(
-            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs to boot an uncompressed newc archive (up to 16 MiB) instead of the pinned root. The firmware, kernel and source DTB stay locked.\nWith paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nDefault fuel: {DEFAULT_MAX_FUEL} guest transitions."
+            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs to boot an uncompressed newc archive (up to 16 MiB) instead of the pinned root. The firmware, kernel and source DTB stay locked.\nWith paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nThere is no total fuel limit by default. Use --max-fuel N to limit guest transitions."
         );
-        println!("Use --no-fuel-limit instead of --max-fuel N to remove the total session limit.");
         return Ok(());
     };
     let disk = options

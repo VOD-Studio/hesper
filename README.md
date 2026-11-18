@@ -114,16 +114,16 @@ TUI 启动配置中可用鼠标或 Tab 选中“扩展 RAM”，按 Enter／空�
 
 ```sh
 make riscv-linux-data
-cargo run --locked --release -p hesper -- linux --images .cache/riscv-linux/images --no-fuel-limit
+cargo run --locked --release -p hesper -- linux --images .cache/riscv-linux/images
 make riscv-linux-native  # 真实 OpenSBI 探针、CLI 管道与 PTY 验收
 ```
 
 镜像未捆绑；构建宿主要求见 [RISC-V Linux 计划](docs/plan/riscv-linux.md)。
 `linux` 核对锁定的 OpenSBI 1.6、Linux 6.12 和 BusyBox initramfs 后冷启动。
-等到 `hesper# ` 再输入命令；Ctrl+] 退出宿主。`--no-fuel-limit` 只取消整场会话的
-推进总上限，不改变分批执行和异常循环检测。它与 `--max-fuel N` 互斥；两者都
-不指定时，仍以 450000000 次客体状态转换为上限。`--diagnostics` 输出推进统计，
-不限额时显示 `fuel=<已用>/unlimited`。此入口只支持固定的单 hart RV64IMAC
+等到 `hesper# ` 再输入命令；Ctrl+] 退出宿主。默认不限制整场会话的推进总量，
+分批执行和异常循环检测仍启用。需要上限时加 `--max-fuel N`，例如用于有界脚本；
+`N` 是客体状态转换次数，不是秒数。`--diagnostics` 输出推进统计，默认显示
+`fuel=<已用>/unlimited`。此入口只支持固定的单 hart RV64IMAC
 板和串口，不声明兼容任意 RISC-V 镜像或外设。
 
 ### RISC-V Linux 数据盘（本机）

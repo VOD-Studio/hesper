@@ -171,15 +171,16 @@ def session_controls(binary, seed, directory):
         publish = logs / "publish"
         publish.mkdir(parents=True)
         target = publish / "output.raw"
-        argv = linux_command(binary, images=BLK_IMAGE_DIR, disk=(seed, target))
         if name == "fuel":
-            run = capture_serial(argv + ["--max-fuel", "1"], "pipe", logs=logs, termination=None)
+            argv = linux_command(binary, images=BLK_IMAGE_DIR, disk=(seed, target), max_fuel=1)
+            run = capture_serial(argv, "pipe", logs=logs, termination=None)
             require_exit(run, "fuel", success=False)
             if run["fuel_spent"] != 1 or run["max_fuel"] != 1:
                 raise ValueError(f"fuel: expected exactly one transition; see {run['diagnostics_log']}")
             expect_stderr(run["diagnostics_log"], "Linux guest fuel exhausted (limit 1 transitions)")
             expect_entries(publish)
         else:
+            argv = linux_command(binary, images=BLK_IMAGE_DIR, disk=(seed, target))
             moved = logs / "moved"
 
             def exchange(receive, send):
