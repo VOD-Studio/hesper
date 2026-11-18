@@ -1,4 +1,7 @@
-use crate::{PrivilegeMode, board::Board, dram_range, hart::Hart};
+use crate::{
+    BootError, BootImages, FDT_ADDRESS, PrivilegeMode, board::Board, boot::Validated, dram_range,
+    hart::Hart,
+};
 use core::fmt;
 
 /// Failure to load a host byte span into the board's DRAM.
@@ -34,6 +37,7 @@ pub struct DebugState {
     pub pc: u64,
     pub x: [u64; 32],
     pub mode: PrivilegeMode,
+    pub satp: u64,
     pub last_trap: Option<Trap>,
     pub retired: u64,
     pub time: u64,
@@ -68,6 +72,33 @@ impl Machine {
         }
     }
 
+    /// Validate every image and boot a new board in M-mode at the OpenSBI entry.
+    pub fn boot(images: BootImages<'_>) -> Result<Self, BootError> {
+        let images = Validated::new(images)?;
+        let mut machine = Self::new();
+        machine.install_boot(images);
+        Ok(machine)
+    }
+
+    /// Cold boot on the existing allocation. Validation failure preserves the
+    /// old RAM, devices and hart observation.
+    pub fn reboot(&mut self, images: BootImages<'_>) -> Result<(), BootError> {
+        let images = Validated::new(images)?;
+        self.board.reset();
+        self.hart = Hart::new();
+        self.retired = 0;
+        self.cycle = 0;
+        self.external_lines = 0;
+        self.install_boot(images);
+        Ok(())
+    }
+
+    fn install_boot(&mut self, images: Validated<'_>) {
+        images.install(&mut self.board.ram);
+        // Hart 0 is a0=0 at reset; a1 points to the mutable tree in RAM.
+        self.hart.x[11] = FDT_ADDRESS;
+    }
+
     /// Copy a complete host span into DRAM or reject it without modifying RAM.
     pub fn load(&mut self, address: u64, data: &[u8]) -> Result<(), LoadError> {
         let range = dram_range(address, data.len()).ok_or(LoadError {
@@ -90,6 +121,7 @@ impl Machine {
             pc: self.hart.pc,
             x: self.hart.x,
             mode: self.hart.privilege.mode,
+            satp: self.hart.privilege.satp,
             last_trap: self.hart.last_trap,
             retired: self.retired,
             time: self.board.time(),

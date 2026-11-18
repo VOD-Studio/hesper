@@ -4,8 +4,10 @@ use core::ops::Range;
 
 mod atomic;
 mod board;
+mod boot;
 mod compressed;
 mod decode;
+mod fdt;
 mod hart;
 mod interrupt_devices;
 mod machine;
@@ -14,6 +16,7 @@ mod pmp;
 mod privilege;
 mod uart;
 
+pub use boot::{BootError, BootImages, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS};
 pub use machine::{DebugState, LoadError, Machine, Progress, Trap};
 pub use privilege::PrivilegeMode;
 

@@ -31,6 +31,14 @@ impl Board {
         self.clint.time(self.ticks)
     }
 
+    pub(crate) fn reset(&mut self) {
+        self.ram.fill(0);
+        self.uart = Uart::new();
+        self.clint = Clint::new();
+        self.plic = Plic::new();
+        self.ticks = 0;
+    }
+
     pub(crate) fn advance(&mut self, ticks: u64) {
         self.ticks = ticks;
         self.uart.advance(ticks);

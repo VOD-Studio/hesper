@@ -1395,3 +1395,16 @@ UART 探针用 DLAB 配置除数且不产生输出，给 14 字节触发水位�
 claim 清 pending、complete 后电平重报和 RBR 消费后撤销均有断言；最后由
 客体写 THR 返回该字节，等待队列清空后没有忙转。每批最多 100 fuel。
 证据在 `.cache/riscv-linux/logs/l5a-*.log`；尚未执行真实 OpenSBI。
+
+## RISC-V Linux L5b：镜像范围、事务装载和入口
+
+`cargo test --locked -p hesper-riscv-linux --test boot` 2 项通过：初始
+`pc=0x80000000`、M 态、`satp=0`、`a0=0`、`a1=0x87800000`，有效重启后旧
+RAM 与 tick 清零。用有效 Image 头但越过 initramfs 起点的 `image_size`、
+过长的固件驻留区和错误 FDT 总长/实际 initrd 地址，分别验证冲突与格式错误；
+拒绝后保留原 PC、寄存器及 RAM。`make verify` 通过；日志在
+`.cache/riscv-linux/logs/l5b-*.log`。
+
+另用 `Machine::boot` 装载 L1c 锁定的四份原始镜像（含真实 DTB），观察
+同一复位寄存器及 DTB 字节，见 `repro-c/logs/l5b-locked-loader.log`。
+这一步未执行固件，不是 Linux 或 OpenSBI 启动证明。
