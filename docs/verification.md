@@ -1199,3 +1199,23 @@ Windows x86_64／ARM64 均完成编译，但同一个文件浏览器测试因 `/
 的编辑器语言服务需要另行指向仍提供该入口的 TypeScript；本仓库的检查与构建
 流程只调用 `tsc`。远程 CI 与 GitHub Pages 部署本轮未执行（改动尚未推送），
 需推送后以 Actions 结果为准；这也不代替 `examples/web` 的浏览器 UI 验收。
+
+## RISC-V Linux L1a：固定源码输入
+
+`make riscv-linux-sources` 从空 `src/` 下载并验证四份归档；同一缓存执行
+`python3 tools/riscv-linux/sources.py --verify-only` 离线验证通过。预期和实际 SHA-256
+均为 [`sources.lock.json`](../tools/riscv-linux/sources.lock.json) 中的四项。Buildroot
+发布签名与 kernel.org 摘要签名经 GnuPG 校验（公钥指纹分别为
+`AB07D806D2CE741FB886EE50B025BA8B59C36319`、
+`B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1`）；OpenSBI、QEMU 对照 Buildroot
+独立发布的 SHA-256。BusyBox、musl 版本和摘要记录自该版 Buildroot 的包配方，
+随工具链构建验证，本卡不构建它们。
+
+- 单归档上限 512 MiB，下载截止 300 秒；实测冷下载、离线校验和负向检查合计
+  150.76 秒，下载与校验输出在 `.cache/riscv-linux/logs/sources.log`。
+- 空缓存运行 `--verify-only` 以缺文件退出；另建缓存，以 `corrupted archive`
+  替代 `src/buildroot-2024.02.12.tar.xz`，`make riscv-linux-sources` 在第一项
+  报 SHA-256 不匹配且不覆盖坏文件。日志在
+  `.cache/riscv-linux/logs/l1a-negative.elKIYyRY/`。
+
+本卡只验证输入，不证明客体能启动。

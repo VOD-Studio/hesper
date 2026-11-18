@@ -18,6 +18,7 @@
 #   make wasm-typecheck  用固定版本 TypeScript 检查产物的调用类型（首次联网）
 #   make tools-test  用 Bun 运行 tools/ 下 4 个验证脚本自身的回归测试
 #                  （不在 verify 中：冷缓存首次运行需要联网真实下载）
+#   make riscv-linux-sources  获取并校验参考板的固定源码（显式联网）
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -31,7 +32,7 @@
 
 .PHONY: verify fmt fix check test test-release clippy demo diff build build-release \
         wasm wasm-setup wasm-build wasm-test wasm-browser-test wasm-typecheck \
-        tools-test \
+        tools-test riscv-linux-sources \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -97,6 +98,11 @@ wasm-browser-test: wasm-test wasm-typecheck
 # 冷缓存时真实下载固定上游数据，因此不加入 verify。
 tools-test:
 	bun test tools/
+
+# ---- RISC-V Linux 参考板（不属于普通 Cargo 验证） ----
+
+riscv-linux-sources:
+	python3 tools/riscv-linux/sources.py
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

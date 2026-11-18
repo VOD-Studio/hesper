@@ -1,0 +1,62 @@
+{
+  "sources": [
+    {
+      "name": "buildroot",
+      "version": "2024.02.12",
+      "revision": "aeeeefb855ab829e4de428a460ee5f59eecb6998",
+      "archive": "buildroot-2024.02.12.tar.xz",
+      "url": "https://buildroot.org/downloads/buildroot-2024.02.12.tar.xz",
+      "sha256": "0b3aee04a6ca267343c821c6f1784d3254d649961970b13602fd19328455b4cd",
+      "checksum_source": "https://buildroot.org/downloads/buildroot-2024.02.12.tar.xz.sign",
+      "license_files": ["COPYING"],
+      "patches": []
+    },
+    {
+      "name": "opensbi",
+      "version": "1.6",
+      "revision": "bd613dd92113f683052acfb23d9dc8ba60029e0a",
+      "archive": "opensbi-1.6.tar.gz",
+      "url": "https://codeload.github.com/riscv-software-src/opensbi/tar.gz/refs/tags/v1.6",
+      "sha256": "d11702103f177a2914e94eec57ce5ed820296d874f6b6525c4482e55d71a3667",
+      "checksum_source": "https://github.com/buildroot/buildroot/blob/2025.02/boot/opensbi/opensbi.hash",
+      "license_files": ["COPYING.BSD"],
+      "patches": []
+    },
+    {
+      "name": "linux",
+      "version": "6.12",
+      "archive": "linux-6.12.tar.xz",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz",
+      "sha256": "b1a2562be56e42afb3f8489d4c2a7ac472ac23098f1ef1c1e40da601f54625eb",
+      "checksum_source": "https://www.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc",
+      "license_files": ["COPYING", "LICENSES/"],
+      "patches": []
+    },
+    {
+      "name": "qemu",
+      "version": "9.2.0",
+      "archive": "qemu-9.2.0.tar.xz",
+      "url": "https://download.qemu.org/qemu-9.2.0.tar.xz",
+      "sha256": "f859f0bc65e1f533d040bbe8c92bcfecee5af2c921a6687c652fb44d089bd894",
+      "checksum_source": "https://lists.buildroot.org/pipermail/buildroot/2025-January/769998.html",
+      "license_files": ["COPYING", "COPYING.LIB", "LICENSE"],
+      "patches": []
+    }
+  ],
+  "buildroot_packages": {
+    "busybox": {
+      "version": "1.36.1",
+      "sha256": "b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314",
+      "url": "https://busybox.net/downloads/busybox-1.36.1.tar.bz2",
+      "recipe": "package/busybox",
+      "license_files": ["LICENSE", "archival/libarchive/bz/LICENSE"]
+    },
+    "musl": {
+      "version": "1.2.4",
+      "sha256": "7a35eae33d5372a7c0da1188de798726f68825513b7ae3ebe97aaaa52114f039",
+      "url": "https://musl.libc.org/releases/musl-1.2.4.tar.gz",
+      "recipe": "package/musl",
+      "license_files": ["COPYRIGHT"]
+    }
+  }
+}
