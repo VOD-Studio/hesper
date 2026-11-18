@@ -7,6 +7,7 @@ mod compressed;
 mod decode;
 mod hart;
 mod machine;
+mod pmp;
 mod privilege;
 
 pub use machine::{DebugState, LoadError, Machine, Progress, Trap};

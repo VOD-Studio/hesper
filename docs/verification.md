@@ -1343,3 +1343,29 @@ I/M 签名复验也通过。这不是完整 ISA 认证，也未执行完整测�
 测试按 1 步核对异常；WFI 以 50 fuel 尝试，等待时实际只用 3 fuel，局部使能的
 MTIP 唤醒后未误取全局屏蔽的中断。日志在 `.cache/riscv-linux/logs/l3ab-*.log`。
 本卡未证明 PMP、分页或真实固件启动。
+
+## RISC-V Linux L3c：PMP、MPRV 与完整上游程序
+
+`cargo test --locked -p hesper-riscv-linux --test pmp --test privilege` 8 项通过；
+`make verify` 通过。板上 16 个 PMP 槽、4 字节粒度、54 位地址字段，支持
+TOR/NA4/NAPOT；低索引优先，命中条目覆盖全访问方可放行。探针确认锁定 TOR
+保护两侧地址、S/U 未匹配拒绝、MPRV 改变数据检查但不改变取指、故障不写回。
+记录在 `.cache/riscv-linux/logs/l3c-*.log`。
+
+使用 L2b 固定的 riscv-tests 与 `env` 版本，以及 L1b 工具链。对
+`rv64ui/{add,lw}`、`rv64um/divw`、`rv64ua/amoadd_w`、`rv64uc/rvc` 分别构建
+完整 `p` 环境测试（不是 L2 的指令摘录）：
+
+```sh
+"${CROSS_COMPILE}gcc" -march=rv64imac_zicsr_zifencei -mabi=lp64 \
+  -static -mcmodel=medany -fvisibility=hidden -nostdlib -nostartfiles \
+  -I riscv-test-env/p -I riscv-tests/isa/macros/scalar -T riscv-test-env/p/link.ld \
+  "riscv-tests/isa/$case.S" -o "$name.elf"
+"${CROSS_COMPILE}objcopy" -O binary "$name.elf" "$name.bin"
+```
+
+两端从同一平面镜像执行到 `tohost=1`。Hesper 以 `run(1)` 读取 `nm` 求得的
+`tohost` RAM 八字节，最多 6000 fuel；五项分别用 512、325、144、108、302
+fuel。QEMU 在 `write_tohost+16` 停止并以 GDB 读取同一 RAM，五项均为
+`01 00 00 00 00 00 00 00`。ELF、反汇编、镜像 SHA-256 和原始结果在
+`.cache/riscv-linux/repro-c/logs/full-isa/`；`tohost` 不是产品 MMIO 设备。

@@ -68,7 +68,24 @@ const fn csrw(csr: u32, rs1: u32) -> u32 {
 }
 
 fn addr(offset: i32) -> u64 {
-    DRAM_BASE + offset as u64
+    DRAM_BASE + 0x1000 + offset as u64
+}
+
+fn machine_with_access() -> Machine {
+    let mut machine = Machine::new();
+    let setup = [
+        addi(31, 0, -1),
+        csrw(0x3b0, 31), // pmpaddr0: NAPOT covering physical space
+        addi(31, 0, 31),
+        csrw(0x3a0, 31), // pmpcfg0: NAPOT, RWX
+        0x0000_1f97,     // auipc x31, 1
+        0xff0f_8067,     // jalr x0, -16(x31): enter test section
+    ];
+    machine
+        .load(DRAM_BASE, setup.map(u32::to_le_bytes).as_flattened())
+        .unwrap();
+    retire(&mut machine, setup.len() as u32);
+    machine
 }
 
 fn load<const N: usize>(machine: &mut Machine, offset: i32, words: [u32; N]) {
@@ -113,7 +130,7 @@ fn trap(machine: &mut Machine, mode: PrivilegeMode, vector: i32, cause: u64, val
 #[test]
 fn user_ecall_delegates_to_supervisor_and_nested_supervisor_ecall_returns_from_machine() {
     const SIGNATURE: i32 = 0x300;
-    let mut machine = Machine::new();
+    let mut machine = machine_with_access();
     load(
         &mut machine,
         0,
@@ -224,7 +241,7 @@ fn csr_readonly_and_privilege_faults_do_not_write_the_destination() {
     const WRITE_ZERO: u32 = csrrw(5, MHARTID, 0);
     const WRITE_NONZERO: u32 = csrrw(5, MHARTID, 5);
     const READ: u32 = csrr(5, MHARTID);
-    let mut machine = Machine::new();
+    let mut machine = machine_with_access();
     load(
         &mut machine,
         0,
@@ -296,7 +313,7 @@ fn csr_readonly_and_privilege_faults_do_not_write_the_destination() {
 fn machine_timer_requires_pending_local_and_global_enables_and_stays_pending_until_deasserted() {
     const VECTOR: i32 = M_VECTOR + 4 * 7;
     const RESUME: i32 = 14 * 4;
-    let mut machine = Machine::new();
+    let mut machine = machine_with_access();
     load(
         &mut machine,
         0,
@@ -360,7 +377,7 @@ fn machine_timer_requires_pending_local_and_global_enables_and_stays_pending_unt
 fn delegated_external_interrupt_obeys_target_privilege_and_preserves_guest_pending_bits() {
     const VECTOR: i32 = S_VECTOR + 4 * 9;
     const RESUME: i32 = S_CODE + 12;
-    let mut machine = Machine::new();
+    let mut machine = machine_with_access();
     load(
         &mut machine,
         0,
@@ -459,7 +476,8 @@ fn delegated_external_interrupt_obeys_target_privilege_and_preserves_guest_pendi
 
 #[test]
 fn wfi_waits_without_spending_fuel_and_wakes_with_global_interrupts_off() {
-    let mut machine = Machine::new();
+    let mut machine = machine_with_access();
+    let started = machine.debug_state().time;
     load(
         &mut machine,
         0,
@@ -473,13 +491,16 @@ fn wfi_waits_without_spending_fuel_and_wakes_with_global_interrupts_off() {
         ],
     );
     let wait = machine.run(50);
-    assert_eq!((wait.spent, wait.retired, wait.time), (3, 3, 3));
+    assert_eq!((wait.spent, wait.retired, wait.time), (3, 3, started + 3));
     let before = machine.debug_state();
     machine.set_interrupt_lines(1 << 3); // MSIP is pending but individually disabled.
     assert_eq!(machine.run(50).spent, 0);
     assert_eq!(machine.debug_state(), before);
     machine.set_interrupt_lines(MTIP);
     retire(&mut machine, 3);
-    assert_eq!(machine.debug_state().x[2..5], [3, 4, 5]);
+    assert_eq!(
+        machine.debug_state().x[2..5],
+        [started + 3, started + 4, started + 5]
+    );
     assert_eq!(machine.debug_state().last_trap, None);
 }

@@ -1,4 +1,6 @@
-use crate::{DRAM_BASE, atomic, compressed, decode::alu, dram_range, machine::Trap, privilege};
+use crate::{
+    DRAM_BASE, atomic, compressed, decode::alu, dram_range, machine::Trap, pmp::Access, privilege,
+};
 use core::ops::Range;
 
 #[derive(Debug)]
@@ -61,6 +63,13 @@ impl Hart {
         if pc & 1 != 0 {
             return Err(self.trap(0, pc));
         }
+        if !self
+            .privilege
+            .pmp
+            .allows(pc, 2, self.privilege.mode, Access::Execute)
+        {
+            return Err(self.trap(1, pc));
+        }
         let range = dram_range(pc, 2).ok_or_else(|| self.trap(1, pc))?;
         let start = range.start;
         let low = u16::from_le_bytes(ram[range].try_into().expect("two-byte fetch"));
@@ -70,6 +79,13 @@ impl Hart {
                 2,
             )
         } else {
+            if !self
+                .privilege
+                .pmp
+                .allows(pc, 4, self.privilege.mode, Access::Execute)
+            {
+                return Err(self.trap(1, pc + 2));
+            }
             let high = ram
                 .get(start + 2..start + 4)
                 .ok_or_else(|| self.trap(1, pc + 2))?;
@@ -184,6 +200,13 @@ impl Hart {
         if address & (bytes as u64 - 1) != 0 {
             return Err(self.trap(4, address));
         }
+        if !self
+            .privilege
+            .pmp
+            .allows(address, bytes, self.privilege.data_mode(), Access::Read)
+        {
+            return Err(self.trap(5, address));
+        }
         let range = dram_range(address, bytes).ok_or_else(|| self.trap(5, address))?;
         let value = &ram[range];
         Ok(match bytes {
@@ -202,7 +225,7 @@ impl Hart {
         bytes: usize,
         value: u64,
     ) -> Result<(), Trap> {
-        let range = self.store_range(address, bytes)?;
+        let range = self.store_range(address, bytes, Access::Write)?;
         ram[range].copy_from_slice(&value.to_le_bytes()[..bytes]);
         self.invalidate_reservation(address, bytes);
         Ok(())
@@ -237,14 +260,14 @@ impl Hart {
             }
             StoreConditional => {
                 let reserved = self.reservation.take() == Some((address, bytes));
-                let range = self.store_range(address, bytes)?;
+                let range = self.store_range(address, bytes, Access::Write)?;
                 if reserved {
                     ram[range].copy_from_slice(&rhs.to_le_bytes()[..bytes]);
                 }
                 u64::from(!reserved)
             }
             _ => {
-                let range = self.store_range(address, bytes)?;
+                let range = self.store_range(address, bytes, Access::Atomic)?;
                 let old = if bytes == 4 {
                     u64::from(u32::from_le_bytes(
                         ram[range.clone()].try_into().expect("word"),
@@ -262,9 +285,21 @@ impl Hart {
         Ok(())
     }
 
-    fn store_range(&self, address: u64, bytes: usize) -> Result<Range<usize>, Trap> {
+    fn store_range(
+        &self,
+        address: u64,
+        bytes: usize,
+        access: Access,
+    ) -> Result<Range<usize>, Trap> {
         if address & (bytes as u64 - 1) != 0 {
             return Err(self.trap(6, address));
+        }
+        if !self
+            .privilege
+            .pmp
+            .allows(address, bytes, self.privilege.data_mode(), access)
+        {
+            return Err(self.trap(7, address));
         }
         dram_range(address, bytes).ok_or_else(|| self.trap(7, address))
     }

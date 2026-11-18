@@ -1,4 +1,5 @@
 use crate::Trap;
+use crate::pmp::Pmp;
 
 /// Current RISC-V hart privilege, encoded as in `mstatus.MPP`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +111,7 @@ pub(crate) struct State {
     pub(crate) mode: PrivilegeMode,
     pub(crate) mstatus: u64,
     pub(crate) satp: u64,
+    pub(crate) pmp: Pmp,
     supervisor: TrapCsrs,
     machine: TrapCsrs,
     medeleg: u64,
@@ -131,6 +133,7 @@ impl State {
             mode: PrivilegeMode::Machine,
             mstatus: SXL_64 | UXL_64,
             satp: 0,
+            pmp: Pmp::default(),
             supervisor: TrapCsrs::default(),
             machine: TrapCsrs::default(),
             medeleg: 0,
@@ -233,7 +236,7 @@ impl State {
             // The single hart is hart 0; there are no assigned IDs or config structure.
             MVENDORID..=MCONFIGPTR => 0,
             // No HPM or counter inhibition yet; unimplemented CSRs trap.
-            _ => return None,
+            _ => return self.pmp.read(csr),
         })
     }
 
@@ -281,9 +284,20 @@ impl State {
             // Explicit writes replace this instruction's automatic counter increments.
             MCYCLE => self.cycle_offset = value.wrapping_sub(counters[0].wrapping_add(1)),
             MINSTRET => self.instret_offset = value.wrapping_sub(counters[2].wrapping_add(1)),
-            _ => return None,
+            _ => return self.pmp.write(csr, value),
         }
         Some(())
+    }
+
+    pub(crate) fn data_mode(&self) -> PrivilegeMode {
+        if self.mode != PrivilegeMode::Machine || self.mstatus & MPRV == 0 {
+            return self.mode;
+        }
+        match (self.mstatus & MPP) >> MPP_SHIFT {
+            0 => PrivilegeMode::User,
+            1 => PrivilegeMode::Supervisor,
+            _ => PrivilegeMode::Machine,
+        }
     }
 
     pub(crate) fn take_trap(&mut self, trap: Trap) -> u64 {
