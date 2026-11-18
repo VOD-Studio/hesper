@@ -194,6 +194,9 @@ Alpine 准备阶段另需 `gpg`、`gpgv` 和 `openssl`。首次构建交叉工�
 Buildroot 会下载依赖。CLI 和网页也接受原来的 `images-alpine` 四件套。
 
 `make riscv-linux-alpine-reference` 需要先执行 `make riscv-linux-qemu`。
+数据盘参考镜像由 `make riscv-linux-alpine-blk-data` 生成，使用同一官方内核
+和 OpenSBI。`make riscv-linux-alpine-blk-reference` 用固定 QEMU 重放
+`/dev/vda` 的写入和只读冷启动。
 重放原生和网页的整机验收时，也准备标准镜像和旧版 Alpine 镜像
 （`make riscv-linux-data riscv-linux-alpine-legacy-data`）。
 原生验收同时需要 `make riscv-linux-blk-data` 生成数据盘配置。

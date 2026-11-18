@@ -1,4 +1,4 @@
-"""Authenticate the pinned Alpine APK and recover the official kernel and module."""
+"""Authenticate the pinned Alpine APK and recover the official kernel and modules."""
 
 import argparse
 import gzip
@@ -6,6 +6,7 @@ from hashlib import sha256
 from io import BytesIO
 import json
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -21,6 +22,16 @@ LOCK = PROFILE / "alpine-kernel.lock.json"
 PIN = json.loads(LOCK.read_bytes())
 RELEASE = PIN["release"]
 MODULE = f"lib/modules/{RELEASE}/kernel/kernel/configs.ko"
+DISK_MODULES = tuple(f"lib/modules/{RELEASE}/kernel/{path}.ko" for path in (
+    "drivers/virtio/virtio_ring",
+    "drivers/virtio/virtio",
+    "drivers/virtio/virtio_mmio",
+    "drivers/block/virtio_blk",
+    "fs/jbd2/jbd2",
+    "fs/mbcache",
+    "lib/crc/crc16",
+    "fs/ext4/ext4",
+))
 
 
 def gzip_member(data, limit):
@@ -71,26 +82,41 @@ def authenticated_data(paths):
     return data_tar
 
 
-def extract(paths):
+def extract(paths, *, disk=False):
     with tarfile.open(fileobj=BytesIO(authenticated_data(paths))) as archive:
         image = gzip.decompress(read_member(archive, "boot/vmlinuz-lts"))
         config = read_member(archive, f"boot/config-{RELEASE}")
         module = gzip.decompress(read_member(archive, MODULE + ".gz"))
+        modules = {MODULE: module}
+        loaded = set()
+        for name in DISK_MODULES if disk else ():
+            payload = gzip.decompress(read_member(archive, name + ".gz"))
+            dependencies = re.findall(rb"\0depends=([^\0]*)\0", payload)
+            if (f"\0vermagic={RELEASE} ".encode() not in payload or len(dependencies) != 1
+                    or set(filter(None, dependencies[0].split(b","))) - loaded):
+                raise ValueError(f"{name}: incompatible module or missing earlier dependency")
+            loaded.add(Path(name).stem.encode())
+            modules[name] = payload
     for name, payload in (("image", image), ("config", config), ("module", module)):
         if sha256(payload).hexdigest() != PIN[f"{name}_sha256"]:
             raise ValueError(f"Alpine {name} differs from its locked bytes")
     if (f"\0vermagic={RELEASE} ".encode() not in module or b"\0depends=\0" not in module
             or not {b"CONFIG_IKCONFIG=m", b"CONFIG_IKCONFIG_PROC=y"} <= set(config.splitlines())):
         raise ValueError("expected a standalone configs module for the pinned Alpine kernel")
-    return image, module
+    return image, modules
 
 
-def module_overlay(module):
-    overlay = {MODULE: Member(stat.S_IFREG | 0o644, 0, 0, module)}
-    parent = Path(MODULE).parent
-    while parent != Path("lib"):
-        overlay[parent.as_posix()] = Member(stat.S_IFDIR | 0o755, 0, 0)
-        parent = parent.parent
+def module_overlay(modules):
+    overlay = {}
+    for name, payload in modules.items():
+        overlay[name] = Member(stat.S_IFREG | 0o644, 0, 0, payload)
+        parent = Path(name).parent
+        while parent != Path("lib"):
+            overlay[parent.as_posix()] = Member(stat.S_IFDIR | 0o755, 0, 0)
+            parent = parent.parent
+    if all(name in modules for name in DISK_MODULES):
+        overlay["opt/hesper/disk-modules"] = Member(
+            stat.S_IFREG | 0o644, 0, 0, "".join(f"/{name}\n" for name in DISK_MODULES).encode())
     return overlay
 
 

@@ -13,9 +13,9 @@ import sys
 import tempfile
 
 from alpine_acceptance import cold_states as alpine_cold_states, states as alpine_states
-from build_guest import (ALPINE_CANDIDATE_DIR, ALPINE_IMAGE_DIR, ALPINE_LOGS, BLK_IMAGE_DIR, BLK_LOGS,
+from build_guest import (ALPINE_BLK_LOGS, ALPINE_CANDIDATE_DIR, ALPINE_IMAGE_DIR, ALPINE_LOGS, BLK_IMAGE_DIR, BLK_LOGS,
                          DRAM, DRAM_END, ENV, FDT, FDT_GROWTH, IMAGE_DIR, INITRD, LOGS, block_tree,
-                         capture, logged, verified_manifest)
+                         alpine_profile, capture, logged, verified_manifest)
 from build_qemu import QEMU, version
 from disk_acceptance import check_proof, drive_disk, make_seed
 from serial_acceptance import STEP_SECONDS, STEP_BYTES, drive, session
@@ -73,7 +73,7 @@ def tree_snapshot(request, logs, name, address, length):
     return dtb
 
 
-def alpine_tree(dtb, manifest, phase):
+def alpine_tree(dtb, manifest, phase, *, disk=False):
     automatic = phase == "automatic"
     cpu = "/cpus/cpu@0"
     intc = f"{cpu}/interrupt-controller"
@@ -117,7 +117,11 @@ def alpine_tree(dtb, manifest, phase):
     ]
     if not automatic:
         soc = set(capture("fdtget", "-l", dtb, "/soc").splitlines())
-        if soc != {node.rsplit("/", 1)[1] for node in (clint, plic, uart)}:
+        devices = {node.rsplit("/", 1)[1] for node in (clint, plic, uart)}
+        if disk:
+            devices.add("virtio_mmio@10001000")
+            properties.extend(block_tree(plic_phandle))
+        if soc != devices:
             raise ValueError(f"{dtb}: unexpected guest devices: {sorted(soc)}")
         properties.extend([
             ("s", "/", "compatible", "hesper,riscv-linux"),
@@ -136,7 +140,7 @@ def alpine_tree(dtb, manifest, phase):
     return report
 
 
-def startup_tree(request, manifest, logs, fdt_bytes):
+def startup_tree(request, manifest, logs, fdt_bytes, *, disk=False):
     reset = logs / "qemu-reset-addrs.raw"
     # virt's RV64 reset ROM loads t0/a1 from these two consecutive dwords.
     request("pmemsave", val=0x1018, size=16, filename=str(reset))
@@ -149,7 +153,7 @@ def startup_tree(request, manifest, logs, fdt_bytes):
         raise ValueError(f"unexpected QEMU reset ROM firmware/DTB addresses: {firmware:#x}/{address:#x}")
     dtb = tree_snapshot(request, logs, "qemu-startup", address, fdt_bytes)
     return dict(firmware=f"{firmware:#x}", address=f"{address:#x}",
-                properties=alpine_tree(dtb, manifest, "startup"))
+                properties=alpine_tree(dtb, manifest, "startup", disk=disk))
 
 
 def runtime_tree(request, manifest, logs, initrd_bytes, fdt_bytes):
@@ -260,7 +264,7 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
                 try:
                     request = qmp(host)
                     cpu_readback(request, manifest["qemu_cpu"], logs)
-                    startup = startup_tree(request, manifest, logs, fdt_bytes) if alpine else None
+                    startup = startup_tree(request, manifest, logs, fdt_bytes, disk=disk is not None) if alpine else None
                     wiring = disk_wiring(request, logs, builtin_dtb) if disk is not None else None
                     request("cont")
                     if states is not None:
@@ -269,11 +273,13 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
                     elif disk is None:
                         timings = drive(receive, send, manifest["kernelrelease"], manifest["isa"])
                     else:
-                        timings = drive_disk(receive, send, write, "DISK_OK", boot_seconds=STEP_SECONDS)
+                        timings = drive_disk(receive, send, write, "DISK_OK", boot_seconds=STEP_SECONDS,
+                                             step_seconds=step_seconds, alpine=alpine)
                     handoff = runtime_tree(request, manifest, logs, initrd_bytes, fdt_bytes)
                     if alpine:
                         handoff["address"] = f"{FDT:#x}"
-                        handoff["properties"] = alpine_tree(logs / "qemu-handoff.dtb", manifest, "handoff")
+                        handoff["properties"] = alpine_tree(logs / "qemu-handoff.dtb", manifest, "handoff",
+                                                            disk=disk is not None)
                     if wiring is not None:
                         wiring["guest_tree"] = disk_tree(logs / "qemu-handoff.dtb", "/soc/interrupt-controller@c000000")
                         handoff["disk"] = wiring
@@ -295,17 +301,19 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
     return report
 
 
-def run_disk(manifest, qemu_version):
+def run_disk(manifest, qemu_version, *, alpine=False, candidate=False):
     require_tools("mke2fs", "debugfs")
-    BLK_LOGS.mkdir(parents=True, exist_ok=True)
-    logs = Path(tempfile.mkdtemp(prefix="reference-", dir=BLK_LOGS))
+    log_root = ALPINE_BLK_LOGS if alpine else BLK_LOGS
+    images = alpine_profile(True, False, candidate)[1] if alpine else BLK_IMAGE_DIR
+    log_root.mkdir(parents=True, exist_ok=True)
+    logs = Path(tempfile.mkdtemp(prefix="reference-", dir=log_root))
     seed = logs / "seed.raw"
     working = logs / "guest.raw"
     info = make_seed(seed)
     shutil.copyfile(seed, working)
-    first = run(manifest, qemu_version, logs=logs / "first", images=BLK_IMAGE_DIR, disk=working, write=True)
+    first = run(manifest, qemu_version, logs=logs / "first", images=images, disk=working, write=True, alpine=alpine)
     after_write = check_proof(working, "DISK_OK")
-    second = run(manifest, qemu_version, logs=logs / "second", images=BLK_IMAGE_DIR, disk=working)
+    second = run(manifest, qemu_version, logs=logs / "second", images=images, disk=working, alpine=alpine)
     after_read = check_proof(working, "DISK_OK")
     if sha256(seed) != info["sha256"] or after_write == info["sha256"] or after_read != after_write:
         raise ValueError(f"unexpected disk changes; see {logs}")
@@ -331,22 +339,22 @@ def run_alpine(manifest, qemu_version, candidate):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("serial", "blk", "alpine"), default="serial")
+    parser.add_argument("--profile", choices=("serial", "blk", "alpine", "alpine-blk"), default="serial")
     parser.add_argument("--candidate", action="store_true", help="qualify the unlocked Alpine candidate")
     args = parser.parse_args()
-    if args.candidate and args.profile != "alpine":
-        parser.error("--candidate requires --profile alpine")
+    if args.candidate and args.profile not in ("alpine", "alpine-blk"):
+        parser.error("--candidate requires --profile alpine or alpine-blk")
     require_tools("dtc", "fdtget")
     if not QEMU.is_file():
         raise FileNotFoundError(f"{QEMU}: run make riscv-linux-qemu first")
     qemu_version = version()
-    blk = args.profile == "blk"
-    alpine = args.profile == "alpine"
+    blk = args.profile in ("blk", "alpine-blk")
+    alpine = args.profile in ("alpine", "alpine-blk")
     manifest = verified_manifest(blk, alpine=alpine, candidate=args.candidate)
-    if alpine:
+    if blk:
+        run_disk(manifest, qemu_version, alpine=alpine, candidate=args.candidate)
+    elif alpine:
         run_alpine(manifest, qemu_version, args.candidate)
-    elif blk:
-        run_disk(manifest, qemu_version)
     else:
         run(manifest, qemu_version)
         print(f"QEMU cold boot and three serial commands passed: {LOGS / 'qemu-reference.json'}")

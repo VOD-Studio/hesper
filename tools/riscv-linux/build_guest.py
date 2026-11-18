@@ -41,6 +41,10 @@ ALPINE_CPU_PROFILE = PROFILE / "qemu-cpu-alpine.txt"
 ALPINE_LEGACY_LOCK = PROFILE / "images-alpine.lock.json"
 ALPINE_IMAGE_LOCK = PROFILE / "images-alpine-lts.lock.json"
 ALPINE_IMAGE_DIR = CACHE / "images-alpine-lts"
+ALPINE_BLK_IMAGE_LOCK = PROFILE / "images-alpine-lts-blk.lock.json"
+ALPINE_BLK_IMAGE_DIR = CACHE / "images-alpine-lts-blk"
+ALPINE_BLK_CANDIDATE_DIR = CACHE / "images-alpine-lts-blk-candidate"
+ALPINE_BLK_LOGS = CACHE / "logs-alpine-blk"
 ALPINE_LEGACY_DIR = CACHE / "images-alpine"
 ALPINE_CANDIDATE_DIR = CACHE / "images-alpine-lts-candidate"
 ALPINE_LOGS = CACHE / "logs-alpine"
@@ -301,12 +305,10 @@ def block_tree(plic_phandle):
 
 
 def verified_manifest(blk=False, *, directory=None, alpine=False, candidate=False, legacy=False):
-    if (alpine and blk) or (candidate and (not alpine or legacy)) or (legacy and not alpine):
-        raise ValueError("candidate verification requires the Alpine serial board")
+    if (candidate and not alpine) or (legacy and (not alpine or blk or candidate)):
+        raise ValueError("candidate verification requires an official Alpine kernel profile")
     if alpine:
-        lock = ALPINE_LEGACY_LOCK if legacy else ALPINE_IMAGE_LOCK
-        default_dir = ALPINE_LEGACY_DIR if legacy else (
-            ALPINE_CANDIDATE_DIR if candidate else ALPINE_IMAGE_DIR)
+        lock, default_dir = alpine_profile(blk, legacy, candidate)
     else:
         lock, default_dir = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
     directory = default_dir if directory is None else directory
@@ -328,6 +330,14 @@ def verified_manifest(blk=False, *, directory=None, alpine=False, candidate=Fals
     if alpine:
         check_alpine_manifest(manifest, directory, legacy)
     return manifest
+
+
+def alpine_profile(blk, legacy, candidate):
+    if blk:
+        return ALPINE_BLK_IMAGE_LOCK, ALPINE_BLK_CANDIDATE_DIR if candidate else ALPINE_BLK_IMAGE_DIR
+    if legacy:
+        return ALPINE_LEGACY_LOCK, ALPINE_LEGACY_DIR
+    return ALPINE_IMAGE_LOCK, ALPINE_CANDIDATE_DIR if candidate else ALPINE_IMAGE_DIR
 
 
 def check_alpine_manifest(manifest, directory, legacy):
@@ -359,7 +369,8 @@ def guest_build_dir(blk=False, *, alpine=False, legacy=False):
     inputs = [LOCK, PROFILE / "buildroot.defconfig", PROFILE / "linux.fragment", PROFILE / "rootfs/init",
               PROFILE / "board.dts"]
     if blk:
-        inputs.extend((PROFILE / "linux-blk.fragment", PROFILE / "board-blk.dtsi"))
+        inputs.extend((PROFILE / ("rootfs/alpine-blk-init" if alpine else "linux-blk.fragment"),
+                       PROFILE / "board-blk.dtsi"))
     if alpine:
         inputs.extend((alpine_root.ALPINE_SOURCE_LOCK, ALPINE_CPU_PROFILE))
         inputs.append(PROFILE / "linux-alpine.fragment" if legacy else alpine_kernel.LOCK)
@@ -370,17 +381,17 @@ def guest_build_dir(blk=False, *, alpine=False, legacy=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("serial", "blk", "alpine", "alpine-legacy"), default="serial")
+    parser.add_argument("--profile", choices=("serial", "blk", "alpine", "alpine-legacy", "alpine-blk"),
+                        default="serial")
     parser.add_argument("--candidate", action="store_true", help="write an unlocked blk or Alpine build")
     args = parser.parse_args()
     legacy = args.profile == "alpine-legacy"
-    blk, alpine = args.profile == "blk", args.profile in ("alpine", "alpine-legacy")
-    if args.candidate and args.profile not in ("blk", "alpine"):
-        parser.error("--candidate requires --profile blk or alpine")
+    blk, alpine = args.profile in ("blk", "alpine-blk"), args.profile.startswith("alpine")
+    if args.candidate and args.profile not in ("blk", "alpine", "alpine-blk"):
+        parser.error("--candidate requires --profile blk, alpine or alpine-blk")
     if alpine:
-        logs = ALPINE_LOGS
-        lock = ALPINE_LEGACY_LOCK if legacy else ALPINE_IMAGE_LOCK
-        output = ALPINE_LEGACY_DIR if legacy else (ALPINE_CANDIDATE_DIR if args.candidate else ALPINE_IMAGE_DIR)
+        logs = ALPINE_BLK_LOGS if blk else ALPINE_LOGS
+        lock, output = alpine_profile(blk, legacy, args.candidate)
     else:
         logs = BLK_LOGS if blk else LOGS
         lock, output = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
@@ -425,13 +436,13 @@ def main():
             linux_config = sha256(k_out / ".config")
             modules = None
         else:
-            image_data, module = alpine_kernel.extract(paths)
+            image_data, kernel_modules = alpine_kernel.extract(paths, disk=blk)
             image = build / "Image"
             image.write_bytes(image_data)
             image_end, release = kernel_end(image), alpine_kernel.RELEASE
             linux_config = alpine_kernel.PIN["config_sha256"]
-            modules = alpine_kernel.module_overlay(module)
-        cpio = alpine_root.build_root(build, prefix, paths, logs, modules=modules)
+            modules = alpine_kernel.module_overlay(kernel_modules)
+        cpio = alpine_root.build_root(build, prefix, paths, logs, modules=modules, disk=blk)
     else:
         br_out = build / "buildroot"
         cpio, prefix, compiler = rootfs(unpack(known["buildroot"]), br_out, jobs, logs, blk)

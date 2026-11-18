@@ -35,6 +35,7 @@
 #   make riscv-linux-initramfs-browser  生产 Chrome 的替换根、默认根与数据盘启动
 #   make riscv-linux-alpine-sources / riscv-linux-alpine-data  验签发行版输入 / 复建 Alpine 镜像
 #   make riscv-linux-alpine-reference  固定 QEMU 验收 Alpine 客体
+#   make riscv-linux-alpine-blk-data / riscv-linux-alpine-blk-reference  复建并验证官方 Alpine 数据盘配置
 #   make riscv-linux-fd-reference  对照 QEMU 与 Hesper 的浮点位签名
 #   make riscv-linux-alpine-native  原生管道、PTY、冷启动和镜像拒绝验收
 #
@@ -154,6 +155,13 @@ riscv-linux-alpine-legacy-data:
 
 riscv-linux-alpine-reference:
 	python3 tools/riscv-linux/reference.py --profile alpine
+
+.PHONY: riscv-linux-alpine-blk-data riscv-linux-alpine-blk-reference
+riscv-linux-alpine-blk-data:
+	python3 tools/riscv-linux/build_guest.py --profile alpine-blk
+
+riscv-linux-alpine-blk-reference:
+	python3 tools/riscv-linux/reference.py --profile alpine-blk
 
 riscv-linux-fd-reference:
 	cargo build --locked --release -p hesper-riscv-linux --example isa_probe

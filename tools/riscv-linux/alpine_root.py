@@ -226,7 +226,7 @@ def check_elfs(entries, readelf, logs):
                 pending.add(found)
 
 
-def build_root(directory, prefix, paths, logs, *, modules=None):
+def build_root(directory, prefix, paths, logs, *, modules=None, disk=False):
     directory.mkdir(parents=True, exist_ok=True)
     entries = tar_members(paths["root"])
     if not stat.S_ISREG(entries["lib/apk/db/installed"].mode) or not stat.S_ISDIR(entries["etc/apk/keys"].mode):
@@ -245,6 +245,9 @@ def build_root(directory, prefix, paths, logs, *, modules=None):
                "opt/hesper/fp-context": Member(stat.S_IFREG | 0o755, 0, 0, probe.read_bytes())}
     if modules:
         overlay.update(modules)
+    if disk:
+        overlay["opt/hesper/serial-init"] = overlay["init"]
+        overlay["init"] = Member(stat.S_IFREG | 0o755, 0, 0, (PROFILE / "rootfs/alpine-blk-init").read_bytes())
     if overlap := entries.keys() & overlay.keys():
         raise ValueError(f"Alpine overlay conflicts: {sorted(overlap)}")
     expected = entries | overlay

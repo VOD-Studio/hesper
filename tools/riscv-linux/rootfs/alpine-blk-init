@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+while IFS= read -r module; do
+    /bin/busybox insmod "$module"
+done </opt/hesper/disk-modules
+exec /opt/hesper/serial-init

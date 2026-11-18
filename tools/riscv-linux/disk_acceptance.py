@@ -3,7 +3,7 @@
 import subprocess
 
 from build_guest import ENV
-from serial_acceptance import result_line, session
+from serial_acceptance import STEP_SECONDS, result_line, session
 from sources import sha256
 
 SECTORS = 16384
@@ -14,10 +14,11 @@ def proof(marker):
     return f'echo "{marker}:$((6 * 7))"\n'.encode("ascii")
 
 
-def commands(write, marker, *, busybox=False):
+def commands(write, marker, *, busybox=False, alpine=False):
     script = proof(marker).rstrip(b"\n")
     prefix = b"/bin/busybox " if busybox else b""
-    mount = prefix + b"mkdir -p /mnt/data && mount -t ext2 "
+    filesystem = b"ext4" if alpine else b"ext2"
+    mount = prefix + b"mkdir -p /mnt/data && mount -t " + filesystem + b" "
     target = b"/dev/vda /mnt/data && "
     if write:
         command = (mount + target + b"printf '%s\\n' '" + script + b"' > /mnt/data/proof.sh && sync && "
@@ -26,19 +27,25 @@ def commands(write, marker, *, busybox=False):
     else:
         command = mount + b"-o ro " + target + b"sh /mnt/data/proof.sh && umount /mnt/data && echo DISK_UNMOUNTED\n"
         expected = (f"{marker}:42".encode("ascii"), b"DISK_UNMOUNTED")
-    return ((prefix + CAPACITY, (str(SECTORS).encode("ascii"),)), (command, expected))
+    capacity = prefix + CAPACITY
+    if alpine:
+        # Both cold boots must begin with a fresh RAM root.
+        capacity = b"test ! -e /tmp/hesper-disk-proof && touch /tmp/hesper-disk-proof && " + capacity
+    return ((capacity, (str(SECTORS).encode("ascii"),)), (command, expected))
 
 
-def disk_states(write, marker, *, busybox=False):
+def disk_states(write, marker, *, busybox=False, alpine=False):
     def require(lines):
         return lambda output: all(result_line(output, line) for line in lines)
 
     return tuple((name, command, require(lines)) for name, (command, lines) in
-                 zip(("capacity", "write" if write else "read"), commands(write, marker, busybox=busybox)))
+                 zip(("capacity", "write" if write else "read"),
+                     commands(write, marker, busybox=busybox, alpine=alpine)))
 
 
-def drive_disk(receive, send, write, marker, *, boot_seconds):
-    return session(receive, send, disk_states(write, marker), boot_seconds)
+def drive_disk(receive, send, write, marker, *, boot_seconds, step_seconds=STEP_SECONDS, alpine=False):
+    return session(receive, send, disk_states(write, marker, alpine=alpine), boot_seconds,
+                   step_seconds=step_seconds, allow_cursor_query=alpine)
 
 
 def make_seed(path):

@@ -1839,3 +1839,19 @@ CLI 默认不限额，显式 `--max-fuel 1 --diagnostics` 实测以 `fuel=1/1` �
 同一生产构建通过官方 Alpine 安装、冷启动、旧 Alpine 和标准配置回归，
 以及自定义启动根和 CLI／浏览器数据盘交换。Alpine 报告在
 `.cache/riscv-linux/repro-c/logs-alpine/browser-oujshthv/`。
+
+## RISC-V Linux Alpine 数据盘：复建和固定 QEMU
+
+Debian 12、DTC 1.6.1 下，在两个干净的镜像构建目录
+`alpine-blk-clean-a.cxAOBE` 与 `alpine-blk-clean-b.cSrrvY` 复建
+`images-alpine-lts-blk`，复用锁定工具链和 OpenSBI。四个启动文件与
+manifest 逐字节一致。`make riscv-linux-alpine-data` 也通过原无盘锁。
+新 RAM 根为 8,704,556 字节，按官方 APK 内的依赖次序加载八个模块。
+镜像指纹见[数据盘镜像锁](../tools/riscv-linux/images-alpine-lts-blk.lock.json)。
+
+`make riscv-linux-alpine-blk-reference` 在 QEMU 9.2.0 下两次冷启动，
+首提示分别为 0.88 和 0.89 秒。客体通过 ext4 驱动挂载 8 MiB ext2 整盘，
+首次写入并卸载，第二次只读挂载并得到独立的 `DISK_OK:42` 后卸载。
+两次均从新的 RAM 根启动。`debugfs` 核对脚本字节，原种子和只读挂载
+前后的磁盘哈希均一致。串口、QMP 与报告在
+`.cache/riscv-linux/repro-c/logs-alpine-blk/reference-40wx7fat/`。
