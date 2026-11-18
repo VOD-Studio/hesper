@@ -1594,3 +1594,23 @@ Chrome 155.0.8059.84 打开生产页面，使用原生文件选取、键盘输�
 能区分秒级客体执行与毫秒级宿主读取、复制和发布，不能归因到某个内核函数。
 浏览器门禁记录到首提示符的实际墙钟时间，未取得 Worker/Wasm 峰值内存；
 以上原生 RSS 不用于推断浏览器内存。未据此调整解释器、预算或镜像分发策略。
+
+## RISC-V Linux U1：固定 QEMU 启动替换根
+
+在离线 Debian 12 构建容器执行
+`RISCV_LINUX_CACHE=/work/.cache/riscv-linux/repro-c make riscv-linux-initramfs-reference`。
+`serial` 基础锁 SHA-256 为
+`0f17682e3c179735e68134bc9f5ff0276c6b7b932f78b5b8efdba852332642c8`；
+Buildroot 2024.02.12 GCC 12.4.0 生成小端 RV64IMAC、`lp64` 静态 `root-proof`，
+`readelf` 确认无解释器；GNU cpio 2.13 列出 0755 的 `/init`、`/bin/root-proof`
+及 `/dev/console`（5:1）。两个独立目录重建均为 886904 字节，SHA-256 均为
+`ffd7f68e8b6215d7f8949ca96d68bce3e8679636bf4901ff28db41138eb984b0`。
+
+QEMU 9.2.0 TCG 中，替换根在 0.494 秒到完整提示，独立结果行依次为
+`ROOT_OK:custom-v1:42`、`ROOT_OK:custom-v1:15`、`6.12.0-hesper`；原版
+在 0.512 秒到提示，同一路径报告 `not found`，内核版本相同。两回 QMP
+`quit` 的退出状态均为 0。DTC 1.6.1 独立生成替换树；QMP 交接读回的
+initrd 起点 `0x84000000`、替换尾址 `0x840d8878`（原版 `0x840e3c00`）
+等于预期，bootargs 未变，固件 `no-map` 区覆盖至 `0x80060000`。
+归档与报告保存在 `.cache/riscv-linux/repro-c/initramfs/`，原始串口、输入、
+ELF 及设备树在其 `reference-c4lx9r9q/` 下。此关只验收 QEMU 中的客体。

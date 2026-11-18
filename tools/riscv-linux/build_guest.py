@@ -88,8 +88,9 @@ def check_config(actual, requested, extra):
 def check_elf(path, readelf, name, logs):
     report = capture(readelf, "-h", "-A", "-lW", path)
     (logs / f"{name}-elf.txt").write_text(report + "\n")
-    if "ELF64" not in report or "RISC-V" not in report or "soft-float ABI" not in report:
-        raise ValueError(f"{path}: expected ELF64/RISC-V with lp64 ABI")
+    if any(field not in report for field in ("ELF64", "little endian", "RISC-V", "soft-float ABI")):
+        raise ValueError(f"{path}: expected little-endian ELF64/RISC-V with lp64 ABI")
+
     if re.search(r"^\s*INTERP\s", report, re.MULTILINE):
         raise ValueError(f"{path}: unexpected program interpreter")
     # GCC's ELF attributes list Zmmul separately even when M already covers it.
@@ -134,6 +135,13 @@ def check_cpio(path, blk):
             raise ValueError(f"{path}: missing {applet} applet")
 
 
+def guest_compiler(out):
+    gccs = list((out / "host/bin").glob("riscv64-*-linux-musl-gcc"))
+    if len(gccs) != 1:
+        raise ValueError(f"{out}: expected exactly one Buildroot RISC-V musl compiler, found {gccs}")
+    return gccs[0]
+
+
 def rootfs(source, out, jobs, logs, blk):
     config = PROFILE / "buildroot.defconfig"
     make = ("make", "-C", source, f"O={out}", f"BR2_DEFCONFIG={config}",
@@ -143,11 +151,9 @@ def rootfs(source, out, jobs, logs, blk):
     check_config(out / ".config", (config,), {"BR2_RISCV_ISA_RVI": "y", "BR2_GCC_TARGET_ABI": '"lp64"',
                                            "BR2_RISCV_ISA_RVF": "n", "BR2_RISCV_ISA_RVD": "n", "BR2_RISCV_ISA_RVV": "n"})
     logged("buildroot", *make, logs=logs)
-    gccs = list((out / "host/bin").glob("riscv64-*-linux-musl-gcc"))
-    if len(gccs) != 1:
-        raise ValueError(f"{out}: expected exactly one Buildroot RISC-V musl compiler, found {gccs}")
-    prefix = str(gccs[0]).removesuffix("gcc")
-    compiler = capture(gccs[0], "--version").splitlines()[0]
+    gcc = guest_compiler(out)
+    prefix = str(gcc).removesuffix("gcc")
+    compiler = capture(gcc, "--version").splitlines()[0]
     check_elf(out / "target/bin/busybox", prefix + "readelf", "busybox", logs)
     cpio = out / "images/rootfs.cpio"
     with cpio.open("rb") as stream:
@@ -263,8 +269,10 @@ def block_tree(plic_phandle):
             ("x", node, "interrupt-parent", plic_phandle), ("u", node, "interrupts", "1")]
 
 
-def verified_manifest(blk=False):
-    lock, directory = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
+def verified_manifest(blk=False, *, directory=None):
+    lock = BLK_IMAGE_LOCK if blk else IMAGE_LOCK
+    if directory is None:
+        directory = BLK_IMAGE_DIR if blk else IMAGE_DIR
     manifest = json.loads(lock.read_bytes())
     actual = json.loads((directory / "manifest.json").read_bytes())
     if actual != manifest or sha256(LOCK) != manifest["source_lock_sha256"]:

@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+export HESPER_ROOT_ID=custom-v1
+export PS1='hesper# '
+exec /bin/sh -i </dev/console >/dev/console 2>&1

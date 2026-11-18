@@ -16,7 +16,7 @@ from build_guest import (BLK_IMAGE_DIR, BLK_LOGS, DRAM, ENV, FDT, FDT_GROWTH, IM
                          LOGS, block_tree, capture, logged, verified_manifest)
 from build_qemu import QEMU, version
 from disk_acceptance import check_proof, drive_disk, make_seed
-from serial_acceptance import STEP_SECONDS, STEP_BYTES, drive
+from serial_acceptance import STEP_SECONDS, STEP_BYTES, drive, session
 from sources import require_tools, sha256
 
 
@@ -55,11 +55,11 @@ def cpu_readback(request, cpu, logs):
     (logs / "qemu-effective-cpu.json").write_text(json.dumps(effective, indent=2) + "\n")
 
 
-def runtime_tree(request, manifest, logs):
-    fw, _, initrd, fdt = manifest["images"]
+def runtime_tree(request, manifest, logs, initrd_bytes, fdt_bytes):
+    fw = manifest["images"][0]
     buffer = logs / "qemu-handoff.raw"
     request("stop")
-    request("pmemsave", val=FDT, size=fdt["bytes"] + FDT_GROWTH, filename=str(buffer))
+    request("pmemsave", val=FDT, size=fdt_bytes + FDT_GROWTH, filename=str(buffer))
     raw = buffer.read_bytes()
     magic, size = struct.unpack_from(">II", raw)
     # QEMU packs the incoming tree before OpenSBI expands it for fixups.
@@ -68,11 +68,12 @@ def runtime_tree(request, manifest, logs):
     dtb = logs / "qemu-handoff.dtb"
     dtb.write_bytes(raw[:size])
     logged("qemu-handoff-dts", "dtc", "-I", "dtb", "-O", "dts", dtb, logs=logs)
-    for key, expected in (("start", INITRD), ("end", INITRD + initrd["bytes"])):
+    for key, expected in (("start", INITRD), ("end", INITRD + initrd_bytes)):
         actual = capture("fdtget", "-t", "x", dtb, "/chosen", f"linux,initrd-{key}")
         if actual != f"0 {expected:x}":
             raise ValueError(f"runtime initrd {key}: expected {expected:#x}, got {actual}")
-    if capture("fdtget", "-t", "s", dtb, "/chosen", "bootargs") != manifest["bootargs"]:
+    bootargs = capture("fdtget", "-t", "s", dtb, "/chosen", "bootargs")
+    if bootargs != manifest["bootargs"]:
         raise ValueError("runtime bootargs differ from the image lock")
     covered = DRAM
     ranges = []
@@ -87,7 +88,8 @@ def runtime_tree(request, manifest, logs):
             covered = end
     if covered < int(fw["end"], 16):
         raise ValueError(f"runtime FDT no-map coverage ends too early at {covered:#x}")
-    return dict(initrd_start=f"{INITRD:#x}", initrd_end=f"{INITRD + initrd['bytes']:#x}", firmware_no_map_end=f"{covered:#x}")
+    return dict(initrd_start=f"{INITRD:#x}", initrd_end=f"{INITRD + initrd_bytes:#x}",
+                bootargs=bootargs, firmware_no_map_end=f"{covered:#x}")
 
 
 BUS = "virtio-mmio-bus.0"
@@ -117,7 +119,15 @@ def disk_wiring(request, logs, builtin_dtb):
                 qemu_tree=disk_tree(builtin_dtb, "/soc/plic@c000000"))
 
 
-def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write=False):
+def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write=False,
+        replacement=None, states=None):
+    if replacement is None:
+        initramfs = images / "initramfs.cpio"
+        fdt = images / "board.dtb"
+        initrd_bytes, fdt_bytes = (image["bytes"] for image in manifest["images"][2:])
+    else:
+        initramfs, fdt = replacement
+        initrd_bytes, fdt_bytes = initramfs.stat().st_size, fdt.stat().st_size
     logs.mkdir(parents=True, exist_ok=True)
     machine = "virt,aclint=off,aia=none"
     common = ["-accel", "tcg", "-cpu", manifest["qemu_cpu"], "-smp", "1", "-m", "128M", "-display", "none", "-monitor", "none"]
@@ -133,8 +143,8 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
         host, child = socket.socketpair()
         with host, child:
             argv = [QEMU, "-machine", machine, *common, "-serial", "stdio", "-bios", images / "fw_jump.bin",
-                    "-kernel", images / "Image", "-dtb", images / "board.dtb", "-device",
-                    f"loader,file={images / 'initramfs.cpio'},addr={INITRD:#x},force-raw=on", "-S",
+                    "-kernel", images / "Image", "-dtb", fdt, "-device",
+                    f"loader,file={initramfs},addr={INITRD:#x},force-raw=on", "-S",
                     "-chardev", f"socket,id=hesper_qmp,fd={child.fileno()}", "-mon", "chardev=hesper_qmp,mode=control"]
             if disk is not None:
                 argv += ["-global", "virtio-mmio.force-legacy=false",
@@ -162,11 +172,13 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
                     cpu_readback(request, manifest["qemu_cpu"], logs)
                     wiring = disk_wiring(request, logs, builtin_dtb) if disk is not None else None
                     request("cont")
-                    if disk is None:
+                    if states is not None:
+                        timings = session(receive, send, states, STEP_SECONDS)
+                    elif disk is None:
                         timings = drive(receive, send, manifest["kernelrelease"], manifest["isa"])
                     else:
                         timings = drive_disk(receive, send, write, "DISK_OK", boot_seconds=STEP_SECONDS)
-                    handoff = runtime_tree(request, manifest, logs)
+                    handoff = runtime_tree(request, manifest, logs, initrd_bytes, fdt_bytes)
                     if wiring is not None:
                         wiring["guest_tree"] = disk_tree(logs / "qemu-handoff.dtb", "/soc/interrupt-controller@c000000")
                         handoff["disk"] = wiring

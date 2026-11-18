@@ -1,6 +1,6 @@
 # RISC-V Linux 下一步：在固定内核上启动自己的 `/init`
 
-**状态：实施方案，尚未实现。** [固定板启动](riscv-linux.md)和[数据盘 D1–D5](riscv-linux-data-disk.md)已在本地验收。下一步只换启动链的最后一件东西：用户提供 `initramfs.cpio`，不用重编 Hesper、OpenSBI 或内核，就能在串口运行自己的程序。**第一张工作卡是 U1：先在 QEMU 证明第二份用户空间能跑；第一个可交付入口是 U3 的原生 CLI。**
+**状态：U1 参考机已在本地验收，U2–U4 待验收。** [固定板启动](riscv-linux.md)和[数据盘 D1–D5](riscv-linux-data-disk.md)已在本地验收。下一步只换启动链的最后一件东西：用户提供 `initramfs.cpio`，不用重编 Hesper、OpenSBI 或内核，就能在串口运行自己的程序。第一个可交付入口是 U3 的原生 CLI。
 
 不先加 hart：多核既不能改变镜像锁，也不能让现有 RV64IMAC 核心执行发行版常见的 `lp64d` 程序。这一轮不开放任意内核、DTB、bootargs、压缩归档、分区系统盘、UEFI 或网络；不发布镜像，不部署 Pages。
 
@@ -31,6 +31,11 @@ hesper linux --images .cache/riscv-linux/images-blk --initramfs ./my-root.cpio \
 3. 复用 [QEMU 参考脚本](../../tools/riscv-linux/reference.py)的单 hart、128 MiB、固定 CPU、固定地址 raw loader。用构建工具在临时目录按新包实际长度生成参考 DTB，**不用 Hesper 待测的 DTB 修改逻辑**。QMP 取 OpenSBI 交接后的树，核对 initrd 起止、原 bootargs 和固件 `no-map` 保留区。这里的 manifest 仍记录基础锁；新归档长度、指纹和派生树另记，不伪造一份能通过原锁的目录。
 
 **退出证据：**等待完整提示，输入 `/bin/root-proof 6 7`，要求独立结果行 `ROOT_OK:custom-v1:42` 和下一次提示；再以不同参数得到不同乘积。串口输入不含期望结果。`uname -r` 仍是 `6.12.0-hesper`；对照用默认根运行同一路径不能成功。后续 CLI 与浏览器使用这份 cpio 的**同一 SHA-256**，不各造一份。建议新增 `make riscv-linux-initramfs-reference`；这一关只证明客体与参考板相容。
+
+准备好 `make riscv-linux-data` 和 `make riscv-linux-qemu` 的产物后，运行
+`make riscv-linux-initramfs-reference`。可沿用[构建容器](riscv-linux.md)和
+`RISCV_LINUX_CACHE`；通过后将归档及报告写入该缓存的 `initramfs/`，
+每回编译与串口证据另存于其 `reference-*/`。见[实测记录](../verification.md#risc-v-linux-u1固定-qemu-启动替换根)。
 
 ## U2 · 在 Rust 装载路径派生 DTB，不放松默认校验
 

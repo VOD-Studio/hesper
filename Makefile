@@ -29,6 +29,7 @@
 #   make riscv-linux-browser  构建生产站点，用 Chrome 交互验收已验本地镜像
 #   make riscv-linux-blk-native  管道与 PTY 两次数据盘冷启动
 #   make riscv-linux-blk-browser  生产 Chrome 与 CLI 双向互换数据盘
+#   make riscv-linux-initramfs-reference  复建替换根并在固定 QEMU 验证
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -133,6 +134,10 @@ riscv-linux-reference:
 riscv-linux-blk-reference:
 	python3 tools/riscv-linux/reference.py --profile blk
 
+
+.PHONY: riscv-linux-initramfs-reference
+riscv-linux-initramfs-reference:
+	python3 tools/riscv-linux/initramfs_reference.py
 riscv-linux-firmware:
 	python3 tools/riscv-linux/firmware_probe.py
 
