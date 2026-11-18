@@ -36,10 +36,12 @@ def source_lock():
     return json.loads(ALPINE_SOURCE_LOCK.read_bytes())
 
 
-def inputs(fetch=False):
+def inputs(fetch=False, *, extra=None):
     entries = source_lock()["sources"]
     if set(entries) != {"root", "signature", "package", "key"}:
         raise ValueError("expected one locked tar, signature, package and Alpine signing key")
+    if extra:
+        entries.update(extra)
     directory = CACHE / "src" / "alpine"
     if fetch:
         directory.mkdir(parents=True, exist_ok=True)
@@ -224,7 +226,7 @@ def check_elfs(entries, readelf, logs):
                 pending.add(found)
 
 
-def build_root(directory, prefix, paths, logs):
+def build_root(directory, prefix, paths, logs, *, modules=None):
     directory.mkdir(parents=True, exist_ok=True)
     entries = tar_members(paths["root"])
     if not stat.S_ISREG(entries["lib/apk/db/installed"].mode) or not stat.S_ISDIR(entries["etc/apk/keys"].mode):
@@ -241,6 +243,8 @@ def build_root(directory, prefix, paths, logs):
                "opt/hesper": Member(stat.S_IFDIR | 0o755, 0, 0),
                f"opt/hesper/{paths['package'].name}": Member(stat.S_IFREG | 0o644, 0, 0, paths["package"].read_bytes()),
                "opt/hesper/fp-context": Member(stat.S_IFREG | 0o755, 0, 0, probe.read_bytes())}
+    if modules:
+        overlay.update(modules)
     if overlap := entries.keys() & overlay.keys():
         raise ValueError(f"Alpine overlay conflicts: {sorted(overlap)}")
     expected = entries | overlay

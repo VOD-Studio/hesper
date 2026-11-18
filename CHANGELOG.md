@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- **RISC-V 参考板**：Alpine 默认镜像直接使用验签的官方 riscv64 `linux-lts` 内核 `6.18.63-0-lts` 和配套 `configs.ko`，固定 QEMU 对照验证模块加载及内核配置哈希。
+
 - **RISC-V 机器库**：`hesper-riscv-linux` 提供 128 MiB DRAM、有界 `Machine::run(fuel)`、寄存器/内存观察，以及裸机 RV64IMAC，包含原子预约和 16/32 位混合取指。范围见[实施计划](docs/plan/riscv-linux.md)。
 - **RISC-V 机器库**：新增显式 RV64IMAFDC 配置，含单/双精度、舍入与异常标志、NaN-boxing 和 Linux 浮点上下文所需 CSR；原有默认构造器仍为 RV64IMAC。
 - **RISC-V 特权架构**：新增 M/S/U、Zicsr、陷入委派与返回、计数器读取、中断门控、WFI、16 槽 PMP 和 Sv39 地址翻译。

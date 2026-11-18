@@ -1761,3 +1761,24 @@ Alpine 网页限额取成功原生会话较大开销乘 1.5、向上取整至 50
 Wasm 指纹、截图、实际键入和串口见
 `.cache/riscv-linux/repro-c/logs-alpine/browser-s1r8bbtv/`。
 以上为本地验收；未运行远程 CI，未发布 Release 或部署 Pages。
+
+## RISC-V Linux Alpine 官方内核：来源、复建和 QEMU
+
+Alpine v3.24 的 riscv64 `linux-lts-6.18.63-r0.apk` 通过 minirootfs 自带的
+官方 RSA 密钥验签，并校验签名覆盖的数据成员指纹。官方 `boot/vmlinuz-lts`
+解压得到 22,386,176 字节的 `Image`，镜像头声明的有效范围结束于
+`0x817d9000`。同包的 `configs.ko.gz` 解压后加入 7,339,104 字节的 RAM 根。
+产物与来源指纹分别记录在 [镜像锁](../tools/riscv-linux/images-alpine-lts.lock.json)
+和 [内核来源锁](../tools/riscv-linux/alpine-kernel.lock.json)。
+
+Debian 12 下 `repro-c`、`repro-d` 及从源码缓存起步的 `alpine-lts-clean`
+生成的四件套和 manifest 逐字节一致。干净缓存断网构建 OpenSBI 与
+Buildroot 工具链，无单独的 Linux 源码归档或内核构建目录。旧版
+`make riscv-linux-alpine-legacy-data` 仍通过原镜像锁校验。
+
+固定 QEMU 9.2.0 在候选和锁定镜像上分别完成两次冷启动。锁定镜像在
+0.72 / 0.73 秒到串口提示符，两次 `uname -r` 均为 `6.18.63-0-lts`。
+验收先确认 `configs` 未加载，随后经 `insmod` 加载，从 `/proc/modules`
+查到模块，并核对 `/proc/config.gz` 解压后的 SHA-256 与官方配置一致。
+同一会话验证 `FP_CTX_OK:8`、离线验签安装 `mawk` 与结果 `7.500`。
+锁定镜像串口和报告在 `.cache/riscv-linux/repro-c/logs-alpine/reference-0m208hsg/`。

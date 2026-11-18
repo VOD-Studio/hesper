@@ -1,0 +1,13 @@
+{
+  "release": "6.18.63-0-lts",
+  "source": {
+    "archive": "linux-lts-6.18.63-r0.apk",
+    "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/riscv64/linux-lts-6.18.63-r0.apk",
+    "bytes": 23328633,
+    "sha256": "f37d91ad99fde29a62a2357d6ea18ceb58d2ba311f445bd8bf2b165c2c80fdfa"
+  },
+  "signing_key": "alpine-devel@lists.alpinelinux.org-60ac2099.rsa.pub",
+  "image_sha256": "d42ed161a88ccc5906546a7de1805e585966f623a24cedc0cdc3c8a8dab1606c",
+  "config_sha256": "a2bbacb5ba169cb09e53da04a8677d7b5b67f8bf4e99484cd0414801cdedda59",
+  "module_sha256": "b3d515bf3c388608ab24bb25a62fe63892e342b72ae9eb89caa3116e277478fc"
+}

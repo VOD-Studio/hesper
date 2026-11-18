@@ -67,8 +67,8 @@ def download(entry, archive):
         partial.replace(archive)
 
 
-def archives(fetch=False):
-    inputs = releases()
+def archives(fetch=False, *, names=RELEASES):
+    inputs = [entry for entry in releases() if entry["name"] in names]
     directory = CACHE / "src"
     if fetch:
         require_tools("curl")

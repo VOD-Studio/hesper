@@ -53,7 +53,7 @@
         tools-test riscv-linux-sources riscv-linux-data riscv-linux-qemu riscv-linux-reference \
         riscv-linux-firmware riscv-linux-native riscv-linux-wasm riscv-linux-browser \
         riscv-linux-blk-data riscv-linux-blk-reference \
-        riscv-linux-alpine-sources riscv-linux-alpine-data riscv-linux-alpine-reference \
+        riscv-linux-alpine-sources riscv-linux-alpine-data riscv-linux-alpine-legacy-data riscv-linux-alpine-reference \
         riscv-linux-fd-reference \
         data singlestep functional decimal interrupt visual6502 pins full
 
@@ -144,10 +144,13 @@ riscv-linux-blk-reference:
 	python3 tools/riscv-linux/reference.py --profile blk
 
 riscv-linux-alpine-sources:
-	python3 tools/riscv-linux/alpine_root.py
+	python3 tools/riscv-linux/alpine_kernel.py
 
 riscv-linux-alpine-data:
 	python3 tools/riscv-linux/build_guest.py --profile alpine
+
+riscv-linux-alpine-legacy-data:
+	python3 tools/riscv-linux/build_guest.py --profile alpine-legacy
 
 riscv-linux-alpine-reference:
 	python3 tools/riscv-linux/reference.py --profile alpine

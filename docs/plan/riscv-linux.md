@@ -228,8 +228,11 @@ printf 'HESPER_OK:%s\n' "$((6 * 7))"
 
 **独立启动根配置：**[自定义 initramfs](riscv-linux-initramfs.md) 保留原版
 IMAC 固件、内核及基础设备树；[Alpine](../../README.md#risc-v-linux-alpine本机与网页)
-是另一套锁定的默认根，复用同一 OpenSBI 字节和物理板，独立启用 F/D 及 Linux
-浮点上下文。不从自定义归档推断 ISA；Alpine 配置无换根、数据盘或网络。
+使用锁定的官方 `linux-lts` 内核和同包 `configs.ko`，复用同一 OpenSBI 字节、
+物理板和 RV64IMAFDC 配置。它使用 RAM 根，原版 APK 可离线安装签名包。
+准备工具以已验签的 minirootfs 中的发行版密钥验证 APK v2 的压缩控制成员，
+再按签名覆盖的 `datahash` 验证数据成员。上游 aports 配方见
+[linux-lts APKBUILD](https://gitlab.alpinelinux.org/alpine/aports/-/blob/aabe3e5ce3d1b3469580a931ce1746e05dc95c01/main/linux-lts/APKBUILD)。
 
 ## 3. 执行纪律与依据
 

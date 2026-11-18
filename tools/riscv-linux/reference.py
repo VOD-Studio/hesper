@@ -320,9 +320,9 @@ def run_alpine(manifest, qemu_version, candidate):
     logs = Path(tempfile.mkdtemp(prefix="reference-candidate-" if candidate else "reference-", dir=ALPINE_LOGS))
     images = ALPINE_CANDIDATE_DIR if candidate else ALPINE_IMAGE_DIR
     first = run(manifest, qemu_version, logs=logs / "install", images=images, alpine=True,
-                states=alpine_states(), step_seconds=60)
+                states=alpine_states(manifest), step_seconds=60)
     cold = run(manifest, qemu_version, logs=logs / "cold", images=images, alpine=True,
-               states=alpine_cold_states(), step_seconds=60)
+               states=alpine_cold_states(manifest), step_seconds=60)
     report = dict(manifest=manifest, candidate=candidate, install_boot=first, cold_boot=cold)
     report_path = logs / "report.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n")

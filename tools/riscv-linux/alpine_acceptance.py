@@ -2,10 +2,10 @@
 
 import re
 
+from alpine_kernel import MODULE, PIN, RELEASE as LTS_RELEASE
 from serial_acceptance import result_line
 
 RELEASE = b"3.24.4"
-KERNEL_RELEASE = b"6.12.0-hesper"
 PACKAGE = b"/opt/hesper/mawk-1.3.4_p20260302-r0.apk"
 APK = b"/sbin/apk --no-network"
 BUSYBOX = b"/bin/busybox "
@@ -42,11 +42,25 @@ def trusted_states():
     )
 
 
-def states():
+def kernel_states(manifest):
+    release = manifest["kernelrelease"]
+    yield checked("uname", BUSYBOX + b"uname -r", release.encode())
+    if release == LTS_RELEASE:
+        module = b"/" + MODULE.encode()
+        yield checked("module-absent", b"test ! -e /proc/config.gz && test ! -e /sys/module/configs")
+        yield checked("module-sha256", BUSYBOX + b"sha256sum " + module,
+                      PIN["module_sha256"].encode() + b"  " + module)
+        yield checked("module-load", BUSYBOX + b"insmod " + module)
+        yield checked("module-active", BUSYBOX + b"grep -q '^configs ' /proc/modules")
+        yield checked("module-config", BUSYBOX + b"zcat /proc/config.gz | " + BUSYBOX + b"sha256sum",
+                      PIN["config_sha256"].encode() + b"  -")
+
+
+def states(manifest):
     """Full install session, in the (state, command bytes, predicate) transport format."""
     return (
         checked("alpine-release", BUSYBOX + b"cat /etc/alpine-release", RELEASE),
-        checked("uname", BUSYBOX + b"uname -r", KERNEL_RELEASE),
+        *kernel_states(manifest),
         checked("apk-arch", b"/sbin/apk --print-arch", b"riscv64"),
         checked("userspace-sha256", BUSYBOX + b"sha256sum /bin/busybox /sbin/apk /lib/ld-musl-riscv64.so.1",
                 *ALPINE_SHA256),
@@ -68,6 +82,6 @@ def states():
     )
 
 
-def cold_states():
+def cold_states(manifest):
     """A fresh RAM root must lack the installation but retain its signed input."""
-    return (*absent_states(), checked("package-path", b"PKG=" + PACKAGE), *trusted_states())
+    return (*kernel_states(manifest), *absent_states(), checked("package-path", b"PKG=" + PACKAGE), *trusted_states())
