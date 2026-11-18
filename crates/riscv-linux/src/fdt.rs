@@ -6,7 +6,8 @@ const FDT_PROP: u32 = 3;
 const FDT_NOP: u32 = 4;
 const FDT_END: u32 = 9;
 
-pub(crate) fn check(bytes: &[u8], initrd_start: u64, initrd_end: u64) -> Option<()> {
+/// Validate the tree and return the byte offset of the unique 8-byte initrd end.
+pub(crate) fn check(bytes: &[u8], initrd_start: u64, initrd_end: u64) -> Option<usize> {
     let mut header = bytes.get(..HEADER_SIZE)?;
     if word(&mut header)? != FDT_MAGIC || size(&mut header)? != bytes.len() {
         return None;
@@ -43,6 +44,7 @@ pub(crate) fn check(bytes: &[u8], initrd_start: u64, initrd_end: u64) -> Option<
     let mut chosen_seen = false;
     let mut in_chosen = false;
     let mut chosen_properties = 0u8;
+    let mut initrd_end_offset = None;
     loop {
         match word(&mut structure)? {
             FDT_BEGIN_NODE => {
@@ -93,6 +95,7 @@ pub(crate) fn check(bytes: &[u8], initrd_start: u64, initrd_end: u64) -> Option<
                 if name.is_empty() {
                     return None;
                 }
+                let value_offset = structure_end - structure.len();
                 let value = take(&mut structure, len)?;
                 padding(&mut structure, len)?;
                 if depth == 2 && in_chosen {
@@ -106,15 +109,21 @@ pub(crate) fn check(bytes: &[u8], initrd_start: u64, initrd_end: u64) -> Option<
                         return None;
                     }
                     chosen_properties |= bit;
+                    if bit == 4 {
+                        initrd_end_offset = Some(value_offset);
+                    }
                 }
             }
             FDT_NOP => {}
             FDT_END => {
-                return (depth == 0
-                    && structure.is_empty()
-                    && reserved_memory_seen
-                    && chosen_properties == 7)
-                    .then_some(());
+                if depth != 0
+                    || !structure.is_empty()
+                    || !reserved_memory_seen
+                    || chosen_properties != 7
+                {
+                    return None;
+                }
+                return initrd_end_offset;
             }
             _ => return None,
         }

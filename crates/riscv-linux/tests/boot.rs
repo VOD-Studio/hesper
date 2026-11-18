@@ -1,12 +1,14 @@
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS, Machine,
-    PrivilegeMode,
+    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS,
+    MAX_INITRAMFS_BYTES, Machine, PrivilegeMode,
 };
 use std::ops::Range;
 
 const FIRMWARE_END: u64 = DRAM_BASE + 0x1000;
 const STALE_ADDRESS: u64 = KERNEL_ADDRESS + 0x100;
 const STALE_BYTES: &[u8] = b"old guest RAM";
+const LOCKED_INITRAMFS_LEN: usize = 512;
+const LOCKED_INITRD_END: u64 = INITRAMFS_ADDRESS + LOCKED_INITRAMFS_LEN as u64;
 
 fn image(first_instruction: u32) -> [u8; 64] {
     let mut header = [0; 64];
@@ -21,6 +23,10 @@ fn image(first_instruction: u32) -> [u8; 64] {
 }
 
 fn dtb(initrd: Range<u64>, firmware_end: u64) -> Vec<u8> {
+    test_dtb(initrd, firmware_end, false)
+}
+
+fn test_dtb(initrd: Range<u64>, firmware_end: u64, duplicate_initrd_end: bool) -> Vec<u8> {
     const STRINGS: &str = concat!(
         "#address-cells\0#size-cells\0bootargs\0",
         "linux,initrd-start\0linux,initrd-end\0ranges\0reg\0no-map\0",
@@ -50,10 +56,19 @@ fn dtb(initrd: Range<u64>, firmware_end: u64) -> Vec<u8> {
     node(&mut tree, "");
     property(&mut tree, "#address-cells", &2u32.to_be_bytes());
     property(&mut tree, "#size-cells", &2u32.to_be_bytes());
+    // The root property is a decoy; only the matching /chosen property may change.
+    property(
+        &mut tree,
+        "linux,initrd-end",
+        &LOCKED_INITRD_END.to_be_bytes(),
+    );
     node(&mut tree, "chosen");
     property(&mut tree, "bootargs", b"console=ttyS0 rdinit=/init\0");
     property(&mut tree, "linux,initrd-start", &initrd.start.to_be_bytes());
     property(&mut tree, "linux,initrd-end", &initrd.end.to_be_bytes());
+    if duplicate_initrd_end {
+        property(&mut tree, "linux,initrd-end", &initrd.end.to_be_bytes());
+    }
     word(&mut tree, END_NODE);
     node(&mut tree, "reserved-memory");
     property(&mut tree, "#address-cells", &2u32.to_be_bytes());
@@ -292,4 +307,275 @@ fn rejected_reboots_preserve_existing_ram_and_execution_state() {
             format_error,
         );
     }
+}
+
+fn newc_entry(archive: &mut Vec<u8>, name: &[u8], data: &[u8]) {
+    archive.extend_from_slice(b"070701");
+    for value in [
+        0,
+        if name.starts_with(b"TRAILER!!!\0") {
+            0
+        } else {
+            0o100755
+        },
+        0,
+        0,
+        1,
+        0,
+        data.len(),
+        0,
+        0,
+        0,
+        0,
+        name.len(),
+        0,
+    ] {
+        archive.extend_from_slice(format!("{value:08x}").as_bytes());
+    }
+    archive.extend_from_slice(name);
+    archive.resize(archive.len().next_multiple_of(4), 0);
+    archive.extend_from_slice(data);
+    archive.resize(archive.len().next_multiple_of(4), 0);
+}
+
+fn newc_archive(data: &[u8]) -> Vec<u8> {
+    let mut archive = Vec::new();
+    newc_entry(&mut archive, b"init\0\0\0", data);
+    newc_entry(&mut archive, b"TRAILER!!!\0\0", b"");
+    archive
+}
+
+#[test]
+fn replacement_derives_only_the_guest_initrd_end_and_preserves_the_source_tree() {
+    let base = Fixture::new(7, FIRMWARE_END);
+    let locked_dtb = dtb(INITRAMFS_ADDRESS..LOCKED_INITRD_END, base.firmware_end);
+    let mut locked_archive = base.initramfs.to_vec();
+    locked_archive.resize(LOCKED_INITRAMFS_LEN, 0);
+    let mut equal = newc_archive(b"different init");
+    equal.resize(LOCKED_INITRAMFS_LEN, 0);
+    assert_ne!(equal, locked_archive);
+    let short = newc_archive(b"shorter");
+    let long = newc_archive(&[0xa5; LOCKED_INITRAMFS_LEN]);
+    assert!(short.len() < LOCKED_INITRAMFS_LEN && long.len() > LOCKED_INITRAMFS_LEN);
+
+    let short_images = BootImages {
+        initramfs: &short,
+        fdt: &locked_dtb,
+        ..base.images()
+    };
+    assert_eq!(
+        Machine::boot(short_images).err(),
+        Some(BootError::Format("DTB"))
+    );
+
+    let disk = DataDisk::new(vec![0xab; 512]).unwrap();
+    let mut machine = Machine::boot_with_initramfs(
+        BootImages {
+            initramfs: &short,
+            fdt: &locked_dtb,
+            ..base.images()
+        },
+        LOCKED_INITRAMFS_LEN,
+        Some(disk),
+    )
+    .unwrap();
+    for (index, archive) in [&short, &equal, &long].into_iter().enumerate() {
+        if index != 0 {
+            let limit = INITRAMFS_ADDRESS + archive.len() as u64;
+            machine.load(limit - 1, b"last byte and beyond").unwrap();
+            machine
+                .reboot_with_initramfs(
+                    BootImages {
+                        initramfs: archive,
+                        fdt: &locked_dtb,
+                        ..base.images()
+                    },
+                    LOCKED_INITRAMFS_LEN,
+                )
+                .unwrap();
+        }
+        let end = INITRAMFS_ADDRESS + archive.len() as u64;
+        let expected_dtb = dtb(INITRAMFS_ADDRESS..end, base.firmware_end);
+        assert_eq!(
+            machine.inspect(FDT_ADDRESS, locked_dtb.len()),
+            Some(expected_dtb.as_slice())
+        );
+        assert_eq!(
+            machine.inspect(INITRAMFS_ADDRESS, archive.len()),
+            Some(archive.as_slice())
+        );
+        assert_eq!(machine.inspect(end, 1), Some(b"\0".as_slice()));
+        assert_eq!(machine.data_disk(), Some([0xab; 512].as_slice()));
+        assert_entry(&mut machine, 7);
+    }
+    assert_eq!(
+        locked_dtb,
+        dtb(INITRAMFS_ADDRESS..LOCKED_INITRD_END, base.firmware_end)
+    );
+
+    machine
+        .reboot(BootImages {
+            initramfs: &locked_archive,
+            fdt: &locked_dtb,
+            ..base.images()
+        })
+        .unwrap();
+    assert_eq!(
+        machine.inspect(FDT_ADDRESS, locked_dtb.len()),
+        Some(locked_dtb.as_slice())
+    );
+    assert_eq!(
+        machine.inspect(INITRAMFS_ADDRESS, LOCKED_INITRAMFS_LEN),
+        Some(locked_archive.as_slice())
+    );
+}
+
+#[test]
+fn replacement_rejects_invalid_archives_without_changing_the_running_board() {
+    let base = Fixture::new(7, FIRMWARE_END);
+    let mut machine =
+        Machine::boot_with_disk(base.images(), DataDisk::new(vec![0x35; 512]).unwrap()).unwrap();
+    assert_entry(&mut machine, 7);
+    assert_eq!(machine.serial_input(b"queued input"), 12);
+    machine.load(STALE_ADDRESS, STALE_BYTES).unwrap();
+    let state = machine.diagnostics();
+    let next = Fixture::new(9, FIRMWARE_END + 0x1000);
+    let mut reject = |case: &str, initramfs: &[u8], fdt: &[u8], locked_len, error| {
+        let images = BootImages {
+            initramfs,
+            fdt,
+            ..next.images()
+        };
+        assert_eq!(
+            machine.reboot_with_initramfs(images, locked_len),
+            Err(error),
+            "{case}"
+        );
+        assert_eq!(machine.diagnostics(), state, "{case}");
+        base.assert_loaded(&machine);
+        assert_eq!(
+            machine.inspect(STALE_ADDRESS, STALE_BYTES.len()),
+            Some(STALE_BYTES),
+            "{case}"
+        );
+        assert_eq!(machine.data_disk(), Some([0x35; 512].as_slice()), "{case}");
+    };
+
+    let mut entry = Vec::new();
+    let data = b"new init!";
+    newc_entry(&mut entry, b"init\0\0\0", data);
+    let archive = newc_archive(data);
+    let mut bad_magic = archive.clone();
+    bad_magic[5] = b'2';
+    let mut bad_hex = archive.clone();
+    bad_hex[7] = b'x'; // unneeded c_ino is still a hex field.
+    let mut bad_checksum = archive.clone();
+    bad_checksum[109] = b'1';
+    let mut overflowing_data = archive.clone();
+    overflowing_data[54..62].copy_from_slice(b"ffffffff");
+    let mut bad_name = archive.clone();
+    bad_name[115] = b'x'; // nonzero after the first NUL.
+    let mut unterminated_name = archive.clone();
+    unterminated_name[114..117].fill(b'x');
+    let mut zero_namesize = archive.clone();
+    zero_namesize[94..102].copy_from_slice(b"00000000");
+    let mut bad_name_padding = archive.clone();
+    bad_name_padding[117] = 1;
+    let mut bad_data_padding = archive.clone();
+    bad_data_padding[120 + data.len()] = 1;
+    let mut trailer_data = entry.clone();
+    newc_entry(&mut trailer_data, b"TRAILER!!!\0", b"not empty");
+    let mut bad_tail = archive.clone();
+    bad_tail.extend_from_slice(&[0, 1]);
+    let mut concatenated = archive.clone();
+    concatenated.extend_from_slice(&archive);
+    for (case, malformed) in [
+        ("zero bytes", [].as_slice()),
+        ("gzip", b"\x1f\x8b\x08"),
+        ("crc magic", &bad_magic),
+        ("truncated header", &archive[..109]),
+        ("nonhex field", &bad_hex),
+        ("newc checksum", &bad_checksum),
+        ("truncated name", &archive[..115]),
+        ("zero namesize", &zero_namesize),
+        ("NUL followed by nonzero", &bad_name),
+        ("missing NUL", &unterminated_name),
+        ("nonzero name padding", &bad_name_padding),
+        ("truncated payload", &archive[..120 + data.len() - 1]),
+        ("oversized payload field", &overflowing_data),
+        ("nonzero payload padding", &bad_data_padding),
+        ("missing trailer", &entry),
+        ("truncated trailer padding", &archive[..archive.len() - 1]),
+        ("nonempty trailer payload", &trailer_data),
+        ("nonzero tail", &bad_tail),
+        ("concatenated archives", &concatenated),
+    ] {
+        reject(
+            case,
+            malformed,
+            &next.fdt,
+            next.initramfs.len(),
+            BootError::Format("custom initramfs"),
+        );
+    }
+
+    let locked_len = next.initramfs.len();
+    let wrong_end = INITRAMFS_ADDRESS + archive.len() as u64;
+    let wrong_dtb = dtb(INITRAMFS_ADDRESS..wrong_end, next.firmware_end);
+    let duplicate_dtb = test_dtb(
+        INITRAMFS_ADDRESS..INITRAMFS_ADDRESS + locked_len as u64,
+        next.firmware_end,
+        true,
+    );
+    for (case, fdt, len) in [
+        ("DTB already describes replacement", &wrong_dtb, locked_len),
+        ("incorrect locked length", &next.fdt, locked_len + 1),
+        ("duplicate chosen end", &duplicate_dtb, locked_len),
+    ] {
+        reject(case, &archive, fdt, len, BootError::Format("DTB"));
+    }
+}
+
+#[test]
+fn replacement_size_limit_includes_zero_padding() {
+    assert_eq!(MAX_INITRAMFS_BYTES, 16 * 1024 * 1024);
+    let base = Fixture::new(7, FIRMWARE_END);
+    // A trailer-only archive is loadable even though it has no /init.
+    let mut archive = Vec::with_capacity(MAX_INITRAMFS_BYTES + 1);
+    archive.extend_from_slice(&base.initramfs);
+    archive.resize(MAX_INITRAMFS_BYTES, 0);
+    let mut machine = Machine::boot_with_initramfs(
+        BootImages {
+            initramfs: &archive,
+            ..base.images()
+        },
+        base.initramfs.len(),
+        None,
+    )
+    .unwrap();
+    let end = INITRAMFS_ADDRESS + MAX_INITRAMFS_BYTES as u64;
+    let expected_dtb = dtb(INITRAMFS_ADDRESS..end, base.firmware_end);
+    assert_eq!(
+        machine.inspect(FDT_ADDRESS, base.fdt.len()),
+        Some(expected_dtb.as_slice())
+    );
+    assert_eq!(machine.inspect(end - 1, 2), Some(b"\0\0".as_slice()));
+    assert_entry(&mut machine, 7);
+    archive.push(0);
+    let state = machine.debug_state();
+    assert_eq!(
+        machine.reboot_with_initramfs(
+            BootImages {
+                initramfs: &archive,
+                ..base.images()
+            },
+            base.initramfs.len(),
+        ),
+        Err(BootError::InitramfsTooLarge)
+    );
+    assert_eq!(machine.debug_state(), state);
+    assert_eq!(
+        machine.inspect(FDT_ADDRESS, base.fdt.len()),
+        Some(expected_dtb.as_slice())
+    );
 }

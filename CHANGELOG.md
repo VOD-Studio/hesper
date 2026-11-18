@@ -8,6 +8,7 @@
 - **RISC-V 特权架构**：新增 M/S/U、Zicsr、陷入委派与返回、计数器读取、中断门控、WFI、16 槽 PMP 和 Sv39 地址翻译。
 - **RISC-V 设备**：接入 CLINT、PLIC、NS16550A 串口与确定性虚拟时钟；WFI 可快进到下一设备事件。
 - **RISC-V 装载器**：新增固定板的 `Machine::boot` / `reboot`，在写 RAM 前校验 OpenSBI 驻留范围、Linux Image 头、initramfs 与 DTB；无效重启保留原会话。
+- **RISC-V 装载器**：显式替换 initramfs 时，验证未压缩的 `newc` 归档并派生客体设备树；原始 DTB 不变，无效替换不改变现有机器。
 - **CLI**：新增独立 `hesper linux --images <dir>`，校验锁定镜像，在本机串口启动 RV64IMAC Linux 和 BusyBox；支持管道、PTY、Ctrl+] 退出及有界推进诊断。
 - **CLI / RISC-V Linux**：独立锁定的 `blk` 配置支持在 `/dev/vda` 挂载 raw 数据盘。`--disk-in` 保持只读，卸载后用 Ctrl+] 原子导出到新的 `--disk-out`，供下次冷启动使用。
 - **CLI / RISC-V Linux**：`--no-fuel-limit` 可取消串口会话的推进总上限；默认预算、分批执行和 Ctrl+] 退出不变。

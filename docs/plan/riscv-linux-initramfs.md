@@ -1,6 +1,6 @@
 # RISC-V Linux 下一步：在固定内核上启动自己的 `/init`
 
-**状态：U1 参考机已在本地验收，U2–U4 待验收。** [固定板启动](riscv-linux.md)和[数据盘 D1–D5](riscv-linux-data-disk.md)已在本地验收。下一步只换启动链的最后一件东西：用户提供 `initramfs.cpio`，不用重编 Hesper、OpenSBI 或内核，就能在串口运行自己的程序。第一个可交付入口是 U3 的原生 CLI。
+**状态：U1 参考机与 U2 共用装载器已在本地验收，U3–U4 待验收。** [固定板启动](riscv-linux.md)和[数据盘 D1–D5](riscv-linux-data-disk.md)已在本地验收。下一步只换启动链的最后一件东西：用户提供 `initramfs.cpio`，不用重编 Hesper、OpenSBI 或内核，就能在串口运行自己的程序。第一个可交付入口是 U3 的原生 CLI。
 
 不先加 hart：多核既不能改变镜像锁，也不能让现有 RV64IMAC 核心执行发行版常见的 `lp64d` 程序。这一轮不开放任意内核、DTB、bootargs、压缩归档、分区系统盘、UEFI 或网络；不发布镜像，不部署 Pages。
 
@@ -39,7 +39,7 @@ hesper linux --images .cache/riscv-linux/images-blk --initramfs ./my-root.cpio \
 
 ## U2 · 在 Rust 装载路径派生 DTB，不放松默认校验
 
-[装载器](../../crates/riscv-linux/src/boot.rs)目前只检查 cpio 魔数；[FDT 检查器](../../crates/riscv-linux/src/fdt.rs)则要求 `/chosen/linux,initrd-end` 的值与实际装载长度**精确相等**。两套锁里的默认 cpio 均为 932864 字节，旧尾址 `0x840e3c00`。仅在 CLI 跳过哈希会使不同长度的新包遭拒；直接删除 FDT 检查会把错误范围交给 Linux。正确顺序是：
+[装载器](../../crates/riscv-linux/src/boot.rs)在默认路径仍只检查 cpio 魔数；[FDT 检查器](../../crates/riscv-linux/src/fdt.rs)要求 `/chosen/linux,initrd-end` 与实际装载长度**精确相等**。两套锁里的默认 cpio 均为 932864 字节，尾址 `0x840e3c00`。显式替换使用 `Machine::boot_with_initramfs` / `reboot_with_initramfs`，不通过跳过哈希或放松 FDT 检查来接受另一个长度：
 
 1. 宿主按原始字节认证基础 DTB，再把原锁的 initrd 长度及“显式替换”意图传给共用的 Rust 装载路径。默认路径仍用原树，长度不合就拒绝；不把自动修正变成所有 `boot` / 重启调用的默认行为。
 2. 替换路径对有界切片顺序检查 `newc` 结构：110 字节头、十六进制字段、含结尾 NUL 的名称、4 字节对齐、数据区、终止项与尾部填充。偏移和对齐用 checked arithmetic，每条记录严格推进；不按条目大小再分配内存，不解包到宿主文件系统。只检查可装载的容器，不复制 Linux 的文件覆盖、链接和 `exec` 语义。结构损坏应在启动前拒绝；结构合法但缺解释器是**客体启动失败**，保留真实内核诊断。

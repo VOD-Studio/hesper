@@ -1,4 +1,6 @@
-use hesper_riscv_linux::{DRAM_BASE, DRAM_SIZE, DataDisk, DiskFault, Machine};
+use hesper_riscv_linux::{
+    BootError, BootImages, DRAM_BASE, DRAM_SIZE, DataDisk, DiskFault, Machine,
+};
 
 const MMIO: u32 = 0x1000_1000;
 const PLIC: u32 = 0x0c00_0000;
@@ -197,6 +199,31 @@ fn transfer(slice: u32) -> (Vec<u8>, u64, u64) {
     let disk = p.machine.data_disk().unwrap().to_vec();
     assert_eq!(disk[..512], [0x55; 512]);
     assert_eq!(&disk[512..], p.bytes(OUTPUT, 512));
+
+    // A rejected host reboot must preserve the dirty disk and the live device,
+    // including a fault latched independently of the already completed write.
+    p.available(11, &[]);
+    p.write(0x50, 0);
+    let fault = Some(DiskFault::AvailableCount);
+    assert_eq!(p.machine.disk_fault(), fault);
+    let state = p.machine.diagnostics();
+    assert_eq!(
+        p.machine.reboot_with_initramfs(
+            BootImages {
+                firmware: &[],
+                firmware_end: DRAM_BASE,
+                kernel: &[],
+                initramfs: &[],
+                fdt: &[],
+            },
+            124,
+        ),
+        Err(BootError::Format("OpenSBI"))
+    );
+    assert_eq!(p.machine.diagnostics(), state);
+    assert_eq!(p.machine.data_disk(), Some(disk.as_slice()));
+    assert!(p.machine.disk_dirty());
+    assert_eq!(p.machine.disk_fault(), fault);
 
     p.write(0x70, 0);
     assert_eq!(p.read(0x44), 0);

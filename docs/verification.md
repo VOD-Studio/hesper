@@ -1623,3 +1623,14 @@ initrd 起点 `0x84000000`、替换尾址 `0x840d8878`（原版 `0x840e3c00`）
 等于预期，bootargs 未变，固件 `no-map` 区覆盖至 `0x80060000`。
 归档与报告保存在 `.cache/riscv-linux/repro-c/initramfs/`，原始串口、输入、
 ELF 及设备树在其 `reference-c4lx9r9q/` 下。此关只验收 QEMU 中的客体。
+
+## RISC-V Linux U2：事务式替换归档与设备树
+
+`cargo test --locked -p hesper-riscv-linux --test boot --test virtio_blk`：
+5 项装载、4 项数据盘测试通过。短、长、等长异内容的测试归档均按实际字节
+装载；RAM 中的 initrd 尾址等于起点加归档长度，DTB 其余字节与原件一致。
+含零填充的 16 MiB 边界装载至 `0x85000000`，多一字节即拒绝；原默认路径的
+initrd 跨 DTB 检查仍独立执行。畸形 `newc`、原树尾址不符和重复属性均拒绝，
+未更改原运行的 CPU、RAM、UART 或盘。不需要准备 Linux 镜像即可运行这组测试。
+
+`make verify` 的格式、全目标检查、debug/release 测试、Clippy 和演示均通过。

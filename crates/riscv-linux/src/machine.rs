@@ -111,16 +111,26 @@ impl Machine {
 
     /// Validate every image and boot a new board in M-mode at the OpenSBI entry.
     pub fn boot(images: BootImages<'_>) -> Result<Self, BootError> {
-        Self::boot_board(images, None)
+        Self::boot_board(Validated::new(images, None)?, None)
     }
 
     /// Validate boot images and start a cold board owning the supplied disk.
     pub fn boot_with_disk(images: BootImages<'_>, disk: DataDisk) -> Result<Self, BootError> {
-        Self::boot_board(images, Some(disk))
+        Self::boot_board(Validated::new(images, None)?, Some(disk))
     }
 
-    fn boot_board(images: BootImages<'_>, disk: Option<DataDisk>) -> Result<Self, BootError> {
-        let images = Validated::new(images)?;
+    /// Cold boot with a replacement `images.initramfs` and an optional disk.
+    /// The host must authenticate the original firmware, kernel and `images.fdt`
+    /// and supply the locked initramfs length, not the replacement length.
+    pub fn boot_with_initramfs(
+        images: BootImages<'_>,
+        locked_initramfs_len: usize,
+        disk: Option<DataDisk>,
+    ) -> Result<Self, BootError> {
+        Self::boot_board(Validated::new(images, Some(locked_initramfs_len))?, disk)
+    }
+
+    fn boot_board(images: Validated<'_>, disk: Option<DataDisk>) -> Result<Self, BootError> {
         let mut machine = Self::try_new_board(disk)?;
         machine.install_boot(images);
         Ok(machine)
@@ -129,7 +139,23 @@ impl Machine {
     /// Cold boot on the existing allocation, retaining data-disk sectors.
     /// Validation failure preserves the old RAM, devices and hart observation.
     pub fn reboot(&mut self, images: BootImages<'_>) -> Result<(), BootError> {
-        let images = Validated::new(images)?;
+        self.reboot_board(Validated::new(images, None)?);
+        Ok(())
+    }
+
+    /// Cold boot with a replacement `images.initramfs`, retaining the current
+    /// data disk. The host has the same authentication obligations as for
+    /// [`Self::boot_with_initramfs`]. Validation failure leaves this machine intact.
+    pub fn reboot_with_initramfs(
+        &mut self,
+        images: BootImages<'_>,
+        locked_initramfs_len: usize,
+    ) -> Result<(), BootError> {
+        self.reboot_board(Validated::new(images, Some(locked_initramfs_len))?);
+        Ok(())
+    }
+
+    fn reboot_board(&mut self, images: Validated<'_>) {
         self.board.reset();
         self.hart = Hart::new();
         self.retired = 0;
@@ -137,7 +163,6 @@ impl Machine {
         self.external_lines = 0;
         self.stalled_traps = 0;
         self.install_boot(images);
-        Ok(())
     }
 
     fn install_boot(&mut self, images: Validated<'_>) {
