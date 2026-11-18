@@ -14,8 +14,8 @@ use std::{
 };
 
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS,
-    MAX_INITRAMFS_BYTES, Machine,
+    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, HartIsa, INITRAMFS_ADDRESS,
+    KERNEL_ADDRESS, MAX_INITRAMFS_BYTES, Machine,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -25,6 +25,7 @@ use crate::terminal::{TerminalGuard, TerminalMode};
 
 const IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images.lock.json");
 const BLK_IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images-blk.lock.json");
+const ALPINE_IMAGE_LOCK: &str = include_str!("../../../tools/riscv-linux/images-alpine.lock.json");
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 const BATCH: u32 = 16_384;
 const STALLED_TRAP_LIMIT: u32 = 32;
@@ -45,6 +46,8 @@ enum LinuxError {
     },
     #[error("{}: manifest differs from the embedded image lock", .0.display())]
     ManifestMismatch(PathBuf),
+    #[error("Alpine images do not support a custom initramfs")]
+    AlpineInitramfs,
     #[error("{operation} {}: {source}", .path.display())]
     File {
         operation: &'static str,
@@ -212,18 +215,26 @@ fn boot(
             path: path.clone(),
             source,
         })?;
-    let lock = if disk.is_some() {
+    let parse_lock = |lock| {
+        serde_json::from_str::<Value>(lock).map_err(|err| LinuxError::ImageLock(err.to_string()))
+    };
+    let standard_lock = if disk.is_some() {
         BLK_IMAGE_LOCK
     } else {
         IMAGE_LOCK
     };
-    let pinned: Value =
-        serde_json::from_str(lock).map_err(|err| LinuxError::ImageLock(err.to_string()))?;
-    if actual != pinned {
+    let isa = if actual == parse_lock(standard_lock)? {
+        HartIsa::Imac
+    } else if disk.is_none() && actual == parse_lock(ALPINE_IMAGE_LOCK)? {
+        if replacement.is_some() {
+            return Err(LinuxError::AlpineInitramfs);
+        }
+        HartIsa::Imafdc
+    } else {
         return Err(LinuxError::ManifestMismatch(path));
-    }
+    };
     let pinned: ImageLock =
-        serde_json::from_value(pinned).map_err(|err| LinuxError::ImageLock(err.to_string()))?;
+        serde_json::from_value(actual).map_err(|err| LinuxError::ImageLock(err.to_string()))?;
     let [firmware, kernel, initramfs, fdt] = pinned.images;
     for (image, name, address) in [
         (&firmware, "fw_jump.bin", DRAM_BASE),
@@ -270,7 +281,7 @@ fn boot(
     }
     Ok(match disk {
         Some(disk) => Machine::boot_with_disk(images, disk)?,
-        None => Machine::boot(images)?,
+        None => Machine::boot_with_isa(images, isa)?,
     })
 }
 
@@ -681,7 +692,7 @@ impl Session {
 pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let Some(options) = Options::parse(args)? else {
         println!(
-            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs to boot an uncompressed newc archive (up to 16 MiB) instead of the pinned root. The firmware, kernel and source DTB stay locked.\nWith paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nThere is no total fuel limit by default. Use --max-fuel N to limit guest transitions."
+            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs to boot an uncompressed newc archive (up to 16 MiB) instead of the pinned root. The firmware, kernel and source DTB stay locked.\nWith paired disk options, use the blk images and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nThe Alpine images have a locked RAM root and do not accept either option.\nThere is no total fuel limit by default. Use --max-fuel N to limit guest transitions."
         );
         return Ok(());
     };

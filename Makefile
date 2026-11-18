@@ -35,6 +35,7 @@
 #   make riscv-linux-alpine-sources / riscv-linux-alpine-data  验签发行版输入 / 复建 Alpine 镜像
 #   make riscv-linux-alpine-reference  固定 QEMU 验收 Alpine 客体
 #   make riscv-linux-fd-reference  对照 QEMU 与 Hesper 的浮点位签名
+#   make riscv-linux-alpine-native  原生管道、PTY、冷启动和镜像拒绝验收
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -176,6 +177,12 @@ riscv-linux-blk-native:
 riscv-linux-initramfs-native:
 	cargo build --locked --release -p hesper
 	python3 tools/riscv-linux/native_initramfs.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper" \
+		$(if $(RISCV_LINUX_BLK_IMAGES),--blk-images "$(RISCV_LINUX_BLK_IMAGES)")
+
+.PHONY: riscv-linux-alpine-native
+riscv-linux-alpine-native:
+	cargo build --locked --release -p hesper
+	python3 tools/riscv-linux/native_alpine.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper" \
 		$(if $(RISCV_LINUX_BLK_IMAGES),--blk-images "$(RISCV_LINUX_BLK_IMAGES)")
 
 riscv-linux-wasm: wasm-build

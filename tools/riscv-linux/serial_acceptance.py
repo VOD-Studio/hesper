@@ -4,6 +4,8 @@ import re
 import time
 
 PROMPT = b"hesper# "
+# Alpine's BusyBox may query the terminal position immediately after PS1.
+PROMPT_WITH_CURSOR_QUERY = PROMPT + b"\x1b[6n"
 STEP_SECONDS = 20
 STEP_BYTES = 256 * 1024
 COMMANDS = (
@@ -13,7 +15,7 @@ COMMANDS = (
 )
 
 
-def session(receive, send, states, boot_seconds, *, step_seconds=STEP_SECONDS):
+def session(receive, send, states, boot_seconds, *, step_seconds=STEP_SECONDS, allow_cursor_query=False):
     """receive(seconds) returns bytes or raises on timeout; send writes literal bytes."""
     started = time.monotonic()
     timings = {}
@@ -22,7 +24,8 @@ def session(receive, send, states, boot_seconds, *, step_seconds=STEP_SECONDS):
         deadline = time.monotonic() + seconds
         buffer = bytearray()
         try:
-            while not buffer.endswith(PROMPT):
+            while not (buffer.endswith(PROMPT) or
+                       (allow_cursor_query and buffer.endswith(PROMPT_WITH_CURSOR_QUERY))):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("deadline reached")

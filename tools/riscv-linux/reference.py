@@ -264,7 +264,8 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
                     wiring = disk_wiring(request, logs, builtin_dtb) if disk is not None else None
                     request("cont")
                     if states is not None:
-                        timings = session(receive, send, states, STEP_SECONDS, step_seconds=step_seconds)
+                        timings = session(receive, send, states, STEP_SECONDS, step_seconds=step_seconds,
+                                          allow_cursor_query=alpine)
                     elif disk is None:
                         timings = drive(receive, send, manifest["kernelrelease"], manifest["isa"])
                     else:

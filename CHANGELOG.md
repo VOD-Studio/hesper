@@ -14,6 +14,7 @@
 - **CLI / RISC-V Linux**：独立锁定的 `blk` 配置支持在 `/dev/vda` 挂载 raw 数据盘。`--disk-in` 保持只读，卸载后用 Ctrl+] 原子导出到新的 `--disk-out`，供下次冷启动使用。
 - **CLI / RISC-V Linux**：`--initramfs <file>` 可在锁定内核上冷启动用户提供的未压缩 `newc` 启动根；不需要原版归档，可与独立的 raw 数据盘合用。
 - **CLI / RISC-V Linux**：串口会话默认不限推进总量，移除 `--no-fuel-limit`；需要上限时使用 `--max-fuel N`。分批执行、异常循环检测和 Ctrl+] 退出不变。
+- **CLI / RISC-V Linux**：`hesper linux --images …/images-alpine` 冷启动锁定的 Alpine 3.24.4；原版 apk 可用自带密钥离线安装签名包。RAM 根不持久化，不支持换根或数据盘。
 - **Wasm**：新增可独立加载的 `RiscvLinux` 绑定，分块推进和收发原始 UART 字节；RV64 地址、寄存器和累计计数使用 `bigint`，不捆绑客体镜像。
 - **Web**：新增独立 RISC-V Linux 串口工作区。选择锁定的本地镜像后可启动、暂停、继续和停止真实 Linux；不上传镜像，不影响 Apple-1 或 CPU 6502 的启动。
 - **Wasm / Web**：RISC-V Linux 可单独选用本地 raw 数据盘。先在客体卸载，再暂停并下载；同一份盘可在原生 CLI 与浏览器之间往返，未导出的写入不会自动保存。

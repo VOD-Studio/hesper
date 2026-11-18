@@ -123,8 +123,8 @@ make riscv-linux-native  # 真实 OpenSBI 探针、CLI 管道与 PTY 验收
 等到 `hesper# ` 再输入命令；Ctrl+] 退出宿主。默认不限制整场会话的推进总量，
 分批执行和异常循环检测仍启用。需要上限时加 `--max-fuel N`，例如用于有界脚本；
 `N` 是客体状态转换次数，不是秒数。`--diagnostics` 输出推进统计，默认显示
-`fuel=<已用>/unlimited`。此入口只支持固定的单 hart RV64IMAC
-板和串口，不声明兼容任意 RISC-V 镜像或外设。
+`fuel=<已用>/unlimited`。仅支持锁定镜像对应的固定单 hart 板和串口，
+不声明兼容任意 RISC-V 镜像或外设。
 
 ### RISC-V Linux 数据盘（本机）
 
@@ -162,6 +162,30 @@ hesper linux --images .cache/riscv-linux/images --initramfs ./my-root.cpio
 `make riscv-linux-initramfs-reference` 生成可运行的示例归档，
 `make riscv-linux-initramfs-native` 验收；准备步骤见[替换根方案](docs/plan/riscv-linux-initramfs.md)。
 
+### RISC-V Linux Alpine（本机与网页）
+
+```sh
+make riscv-linux-data          # 准备原版 OpenSBI 和交叉工具链
+make riscv-linux-alpine-sources # 获取并验签固定发行版输入
+make riscv-linux-alpine-data    # 离线构建、校验 Alpine 四件套
+hesper linux --images .cache/riscv-linux/images-alpine
+```
+
+Alpine 3.24.4 riscv64 使用原版 BusyBox、musl 与 apk；内核启用 RV64F/D。
+在 `hesper# ` 中执行以下命令，用归档内的官方密钥离线安装并运行 `mawk`：
+
+```sh
+PKG=/opt/hesper/mawk-1.3.4_p20260302-r0.apk
+apk --no-network verify "$PKG" &&
+  apk --no-network --no-progress --repositories-file /dev/null --force-non-repository add "$PKG"
+mawk -v n=12 'BEGIN {print sprintf("%.3f", n*1.25/2)}'  # 7.500
+```
+
+只写入当前 RAM 根；下次冷启动需重新安装。Alpine 不支持换根、数据盘或网络。
+构建工具和容器见[参考板构建说明](docs/plan/riscv-linux.md)；
+Alpine 准备阶段另需 `gpg` / `gpgv`。用 `make riscv-linux-alpine-reference`
+（需先执行 `make riscv-linux-qemu`）和 `make riscv-linux-alpine-native` 重放验收。
+
 ## Workspace 结构
 
 ```text
@@ -169,7 +193,7 @@ crates/
 ├── cpu6502/   # NMOS 6502 CPU、Bus/Ram、周期执行器及一致性测试
 ├── cli/       # 中文 TUI、文本 CLI、演示宿主、程序预置与资源加载
 ├── apple1/    # Apple I 主板时钟、地址译码 Bus、PIA、显示与键盘
-└── riscv-linux/ # 固定 RV64IMAC、Sv39、CLINT、PLIC、UART 与可选 virtio-blk
+└── riscv-linux/ # 固定 RV64IMAC / RV64IMAFDC、Sv39、CLINT、PLIC、UART 与可选 virtio-blk
 
 tools/         # 固定外部数据准备及 Visual6502 重放工具
 docs/          # 架构、opcode、路线图、来源和验证记录

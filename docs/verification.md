@@ -1717,3 +1717,24 @@ Hesper release 单步和批处理完全一致。对照覆盖 F/D 指令族、压
 分类错误，修正 `FCLASS` 的架构位判定后与原 QEMU 输出相同。原 IM / AC
 探针仍运行。三份位签名、反汇编与报告在
 `.cache/riscv-linux/repro-c/logs-alpine/fd-reference-r_9frin3/`。
+
+## RISC-V Linux Alpine：原生管道与 PTY
+
+Arch Linux x86-64，release `hesper`。`make riscv-linux-alpine-native` 在管道
+及真实 PTY 中执行与 QEMU 相同的命令。三个发行版 ELF 的指纹、`MUSL_SH:42`、
+`FP_CTX_OK:8`、空 keys/默认 keys 的不同验签状态、离线安装、已装 ELF 的
+指纹及 `4.375` / `7.500` 均通过。各会话的首提示和 Ctrl+] 退出统计：
+
+| 会话 | 到首提示 (s) | 整场 (s) | 已用 transitions |
+| --- | ---: | ---: | ---: |
+| 管道安装 | 29.86 | 64.95 | 758513664 |
+| PTY 安装 | 34.73 | 70.20 | 758513664 |
+| 冷启动验证 | 31.89 | 39.47 | 438468608 |
+
+冷启动未安装 `mawk`，原版 APK 仍可验签。单字节 DTB 损坏、混用内核伪造
+manifest、Alpine 换根和带盘均在固件前拒绝，串口 0 字节。原 `serial`
+与 `blk` 锁仍启动，后者写入测试数据盘并用 `debugfs` 核对。
+首次测量发现原版 BusyBox 会在提示后发送 `ESC[6n`；验收只额外认可
+这一固定提示后缀，原始串口与结果行保留不变。限额仍为 2,000,000,000、
+首提示 180 秒、每命令 60 秒 / 256 KiB。报告：
+`.cache/riscv-linux/repro-c/logs-alpine/native-95pllytt/`。
