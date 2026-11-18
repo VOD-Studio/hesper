@@ -22,6 +22,7 @@
 #   make riscv-linux-data     构建并校验固定的四份参考板镜像（需要 Linux 构建宿主）
 #   make riscv-linux-qemu     从固定源码构建 TCG 参考模拟器
 #   make riscv-linux-reference 用已准备的 QEMU 和锁定镜像做实际串口验收（离线）
+#   make riscv-linux-blk-data / riscv-linux-blk-reference  构建固定块配置 / QEMU 两次冷启动读写
 #   make riscv-linux-firmware  用已验固件交接 S 态探针，验证 SBI TIME 与 UART 中断
 #   make riscv-linux-native   验收实际固件、CLI 的 Linux shell、PTY 与管道
 #   make riscv-linux-wasm     用已验镜像重放实际 Bun / Node.js Wasm 串口
@@ -41,6 +42,7 @@
         wasm wasm-setup wasm-build wasm-test wasm-browser-test wasm-typecheck \
         tools-test riscv-linux-sources riscv-linux-data riscv-linux-qemu riscv-linux-reference \
         riscv-linux-firmware riscv-linux-native riscv-linux-wasm riscv-linux-browser \
+        riscv-linux-blk-data riscv-linux-blk-reference \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -117,11 +119,17 @@ riscv-linux-sources:
 riscv-linux-data: riscv-linux-sources
 	python3 tools/riscv-linux/build_guest.py
 
+riscv-linux-blk-data: riscv-linux-sources
+	python3 tools/riscv-linux/build_guest.py --profile blk
+
 riscv-linux-qemu: riscv-linux-sources
 	python3 tools/riscv-linux/build_qemu.py
 
 riscv-linux-reference:
 	python3 tools/riscv-linux/reference.py
+
+riscv-linux-blk-reference:
+	python3 tools/riscv-linux/reference.py --profile blk
 
 riscv-linux-firmware:
 	python3 tools/riscv-linux/firmware_probe.py

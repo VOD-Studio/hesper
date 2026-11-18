@@ -1,5 +1,6 @@
 """Build the pinned soft-float guest and verify its images before recording a manifest."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -28,6 +29,9 @@ FDT_GROWTH = 0x10000  # Space beyond totalsize for OpenSBI's in-place fixups.
 IMAGE_NAMES = ("fw_jump.bin", "Image", "initramfs.cpio", "board.dtb")
 IMAGE_LOCK = PROFILE / "images.lock.json"
 IMAGE_DIR = CACHE / "images"
+BLK_IMAGE_LOCK = PROFILE / "images-blk.lock.json"
+BLK_IMAGE_DIR = CACHE / "images-blk"
+BLK_LOGS = CACHE / "logs-blk"
 CPU_PROFILE = PROFILE / "qemu-cpu.txt"
 LOGS = CACHE / "logs"
 ENV = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
@@ -42,8 +46,8 @@ def capture(*args, **kwargs):
     return command(*args, stdout=subprocess.PIPE, text=True, **kwargs).stdout.strip()
 
 
-def logged(name, *args, **kwargs):
-    log = LOGS / f"{name}.log"
+def logged(name, *args, logs=LOGS, **kwargs):
+    log = logs / f"{name}.log"
     print(f"{name}: {log}", flush=True)
     with log.open("w") as stream:
         command(*args, stdout=stream, stderr=subprocess.STDOUT, **kwargs)
@@ -68,9 +72,12 @@ def configs(path):
 
 
 def check_config(actual, requested, extra):
-    wanted = configs(requested) | extra
-    for key in re.findall(r"^# (\w+) is not set$", requested.read_text(), re.MULTILINE):
-        wanted[key] = "n"
+    wanted = {}
+    for fragment in requested:
+        wanted.update(configs(fragment))
+        for key in re.findall(r"^# (\w+) is not set$", fragment.read_text(), re.MULTILINE):
+            wanted[key] = "n"
+    wanted.update(extra)
     found = configs(actual)
     for key, expected in wanted.items():
         value = found.get(key, "n")
@@ -78,9 +85,9 @@ def check_config(actual, requested, extra):
             raise ValueError(f"{actual}: {key}: expected {expected}, got {value}")
 
 
-def check_elf(path, readelf, name):
+def check_elf(path, readelf, name, logs):
     report = capture(readelf, "-h", "-A", "-lW", path)
-    (LOGS / f"{name}-elf.txt").write_text(report + "\n")
+    (logs / f"{name}-elf.txt").write_text(report + "\n")
     if "ELF64" not in report or "RISC-V" not in report or "soft-float ABI" not in report:
         raise ValueError(f"{path}: expected ELF64/RISC-V with lp64 ABI")
     if re.search(r"^\s*INTERP\s", report, re.MULTILINE):
@@ -92,7 +99,7 @@ def check_elf(path, readelf, name):
     return report
 
 
-def check_cpio(path):
+def check_cpio(path, blk):
     entries = {}
     with path.open("rb") as stream:
         while True:
@@ -121,47 +128,48 @@ def check_cpio(path):
     if (not shell or not stat.S_ISLNK(shell[0]) or shell[3] not in (b"busybox", b"/bin/busybox")
             or "bin/busybox" not in entries):
         raise ValueError(f"{path}: /bin/sh does not link to BusyBox")
-    for applet in ("mount", "uname", "cat", "printf"):
-        if not any(name in entries for name in [f"bin/{applet}", f"usr/bin/{applet}"]):
+    applets = ("mount", "uname", "cat", "printf") + (("umount", "sync") if blk else ())
+    for applet in applets:
+        if not any(name in entries for name in (f"bin/{applet}", f"usr/bin/{applet}")):
             raise ValueError(f"{path}: missing {applet} applet")
 
 
-def rootfs(source, out, jobs):
+def rootfs(source, out, jobs, logs, blk):
     config = PROFILE / "buildroot.defconfig"
     make = ("make", "-C", source, f"O={out}", f"BR2_DEFCONFIG={config}",
             "SOURCE_DATE_EPOCH=1742837000",
             f"HESPER_RISCV_PROFILE={PROFILE}", f"BR2_DL_DIR={CACHE / 'src/buildroot-dl'}", f"BR2_JLEVEL={jobs}")
-    logged("buildroot-config", *make, "defconfig")
-    check_config(out / ".config", config, {"BR2_RISCV_ISA_RVI": "y", "BR2_GCC_TARGET_ABI": '"lp64"',
+    logged("buildroot-config", *make, "defconfig", logs=logs)
+    check_config(out / ".config", (config,), {"BR2_RISCV_ISA_RVI": "y", "BR2_GCC_TARGET_ABI": '"lp64"',
                                            "BR2_RISCV_ISA_RVF": "n", "BR2_RISCV_ISA_RVD": "n", "BR2_RISCV_ISA_RVV": "n"})
-    logged("buildroot", *make)
+    logged("buildroot", *make, logs=logs)
     gccs = list((out / "host/bin").glob("riscv64-*-linux-musl-gcc"))
     if len(gccs) != 1:
         raise ValueError(f"{out}: expected exactly one Buildroot RISC-V musl compiler, found {gccs}")
     prefix = str(gccs[0]).removesuffix("gcc")
     compiler = capture(gccs[0], "--version").splitlines()[0]
-    check_elf(out / "target/bin/busybox", prefix + "readelf", "busybox")
+    check_elf(out / "target/bin/busybox", prefix + "readelf", "busybox", logs)
     cpio = out / "images/rootfs.cpio"
     with cpio.open("rb") as stream:
-        logged("initramfs-list", "cpio", "-itv", stdin=stream)
-    check_cpio(cpio)
+        logged("initramfs-list", "cpio", "-itv", stdin=stream, logs=logs)
+    check_cpio(cpio, blk)
     return cpio, prefix, compiler
 
 
-def firmware(source, out, prefix, jobs):
+def firmware(source, out, prefix, jobs, logs):
     logged("opensbi", "make", "-C", source, f"O={out}", f"-j{jobs}", f"CROSS_COMPILE={prefix}",
            "PLATFORM=generic", "PLATFORM_RISCV_XLEN=64", f"PLATFORM_RISCV_ISA={FW_ISA}",
            "PLATFORM_RISCV_ABI=lp64", f"FW_TEXT_START={DRAM:#x}", "FW_JUMP=y", f"FW_JUMP_ADDR={KERNEL:#x}",
-           f"FW_JUMP_FDT_ADDR={FDT:#x}", "OPENSBI_VERSION_GIT=", "BUILD_INFO=n", "V=1")
+           f"FW_JUMP_FDT_ADDR={FDT:#x}", "OPENSBI_VERSION_GIT=", "BUILD_INFO=n", "V=1", logs=logs)
     board = out / "platform/generic/firmware"
     binary = board / "fw_jump.bin"
     elf = board / "fw_jump.elf"
-    report = check_elf(elf, prefix + "readelf", "opensbi")
+    report = check_elf(elf, prefix + "readelf", "opensbi", logs)
     segments = re.findall(r"^\s*LOAD\s+\S+\s+\S+\s+(0x[0-9a-f]+)\s+\S+\s+(0x[0-9a-f]+)", report, re.MULTILINE)
     if not segments or any(int(base, 16) < DRAM for base, _ in segments):
         raise ValueError(f"{elf}: LOAD segment below DRAM or no LOAD segments")
     symbols = capture(prefix + "nm", "-n", elf)
-    (LOGS / "opensbi-symbols.txt").write_text(symbols + "\n")
+    (logs / "opensbi-symbols.txt").write_text(symbols + "\n")
     end = re.search(r"^([0-9a-f]+)\s+\w\s+_fw_end$", symbols, re.MULTILINE)
     if not end:
         raise ValueError(f"{elf}: missing _fw_end")
@@ -176,19 +184,21 @@ def firmware(source, out, prefix, jobs):
     return binary, resident
 
 
-def kernel(source, out, prefix, jobs):
+def kernel(source, out, prefix, jobs, logs, blk):
     env = ENV | dict(ARCH="riscv", CROSS_COMPILE=prefix, SOURCE_DATE_EPOCH="1731888000",
                      KBUILD_BUILD_TIMESTAMP="Mon Nov 18 00:00:00 UTC 2024",
                      KBUILD_BUILD_USER="hesper", KBUILD_BUILD_HOST="reference", KBUILD_BUILD_VERSION="1",
                      LOCALVERSION="")
     make = ("make", "-C", source, f"O={out}", f"-j{jobs}")
-    fragment = PROFILE / "linux.fragment"
-    logged("linux-defconfig", *make, "defconfig", env_override=env)
+    fragments = [PROFILE / "linux.fragment"]
+    if blk:
+        fragments.append(PROFILE / "linux-blk.fragment")
+    logged("linux-defconfig", *make, "defconfig", env_override=env, logs=logs)
     logged("linux-fragment", source / "scripts/kconfig/merge_config.sh", "-m", "-O", out,
-           out / ".config", fragment, cwd=source, env_override=env)
-    logged("linux-olddefconfig", *make, "olddefconfig", env_override=env)
-    check_config(out / ".config", fragment, {"CONFIG_OF": "y", "CONFIG_RISCV_M_MODE": "n"})
-    logged("linux-build", *make, "Image", env_override=env)
+           out / ".config", *fragments, cwd=source, env_override=env, logs=logs)
+    logged("linux-olddefconfig", *make, "olddefconfig", env_override=env, logs=logs)
+    check_config(out / ".config", fragments, {"CONFIG_OF": "y", "CONFIG_RISCV_M_MODE": "n"})
+    logged("linux-build", *make, "Image", env_override=env, logs=logs)
     release = capture(*make, "-s", "kernelrelease", env_override=env)
     image = out / "arch/riscv/boot/Image"
     with image.open("rb") as stream:
@@ -201,11 +211,14 @@ def kernel(source, out, prefix, jobs):
     return image, KERNEL + max(size, image.stat().st_size), release
 
 
-def board_dtb(directory, initrd_end):
+def board_dtb(directory, initrd_end, logs, blk):
     dts = directory / "board.dts"
     dtb = directory / "board.dtb"
-    dts.write_text((PROFILE / "board.dts").read_text().replace("@INITRD_END@", f"{initrd_end:#x}"))
-    logged("dtc", "dtc", "-I", "dts", "-O", "dtb", "-p", "4096", "-o", dtb, dts)
+    source = (PROFILE / "board.dts").read_text().replace("@INITRD_END@", f"{initrd_end:#x}")
+    if blk:
+        source += (PROFILE / "board-blk.dtsi").read_text()
+    dts.write_text(source)
+    logged("dtc", "dtc", "-I", "dts", "-O", "dtb", "-p", "4096", "-o", dtb, dts, logs=logs)
     intc = "/cpus/cpu@0/interrupt-controller"
     plic = "/soc/interrupt-controller@c000000"
     uart = "/soc/serial@10000000"
@@ -229,7 +242,9 @@ def board_dtb(directory, initrd_end):
         ("s", uart, "compatible", "ns16550a"), ("x", uart, "interrupt-parent", plic_phandle),
         ("u", uart, "interrupts", "10"), ("u", uart, "reg-shift", "0"), ("u", uart, "reg-io-width", "1"),
     ]
-    with (LOGS / "fdt-readback.txt").open("w") as report:
+    if blk:
+        expected.extend(block_tree(plic_phandle))
+    with (logs / "fdt-readback.txt").open("w") as report:
         for kind, node, prop, value in expected:
             found = capture("fdtget", "-t", kind, dtb, node, prop)
             print(node, prop, found, file=report)
@@ -242,9 +257,16 @@ def board_dtb(directory, initrd_end):
     return dtb, FDT + total + FDT_GROWTH
 
 
-def verified_manifest():
-    manifest = json.loads(IMAGE_LOCK.read_bytes())
-    actual = json.loads((IMAGE_DIR / "manifest.json").read_bytes())
+def block_tree(plic_phandle):
+    node = "/soc/virtio_mmio@10001000"
+    return [("s", node, "compatible", "virtio,mmio"), ("x", node, "reg", "0 10001000 0 1000"),
+            ("x", node, "interrupt-parent", plic_phandle), ("u", node, "interrupts", "1")]
+
+
+def verified_manifest(blk=False):
+    lock, directory = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
+    manifest = json.loads(lock.read_bytes())
+    actual = json.loads((directory / "manifest.json").read_bytes())
     if actual != manifest or sha256(LOCK) != manifest["source_lock_sha256"]:
         raise ValueError("prepared manifest differs from the source or image lock")
     if manifest["qemu_cpu"] != CPU_PROFILE.read_text().strip() or manifest["isa"] != ISA:
@@ -252,21 +274,34 @@ def verified_manifest():
     if [image["path"] for image in manifest["images"]] != list(IMAGE_NAMES):
         raise ValueError("expected the four fixed image names in the image lock")
     for image in manifest["images"]:
-        path = IMAGE_DIR / image["path"]
+        path = directory / image["path"]
         if path.stat().st_size != image["bytes"]:
             raise ValueError(f"{path}: size mismatch")
         check_archive(path, image["sha256"])
     return manifest
 
 
-def guest_build_dir():
+def guest_build_dir(blk=False):
     inputs = [LOCK, PROFILE / "buildroot.defconfig", PROFILE / "linux.fragment", PROFILE / "rootfs/init",
               PROFILE / "board.dts"]
+    if blk:
+        inputs.extend((PROFILE / "linux-blk.fragment", PROFILE / "board-blk.dtsi"))
     stamp = hashlib.sha256("".join(sha256(path) for path in inputs).encode()).hexdigest()[:16]
     return CACHE / "build" / "guest" / stamp
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=("serial", "blk"), default="serial")
+    parser.add_argument("--candidate", action="store_true", help="write an unlocked blk build to images-blk-candidate")
+    args = parser.parse_args()
+    blk = args.profile == "blk"
+    if args.candidate and not blk:
+        parser.error("--candidate requires --profile blk")
+    logs = BLK_LOGS if blk else LOGS
+    lock, output = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
+    if args.candidate:
+        output = CACHE / "images-blk-candidate"
     require_tools("make", "gcc", "g++", "git", "perl", "tar", "wget", "cpio", "unzip", "rsync", "patch",
                   "file", "bzip2", "xz", "bc", "bison", "flex", "dtc", "fdtget")
     known = archives()
@@ -274,20 +309,20 @@ def main():
     if jobs < 1 or os.geteuid() == 0:
         raise ValueError("run as a non-root user and set RISCV_LINUX_JOBS to a positive count")
     start = time.monotonic()
-    LOGS.mkdir(parents=True, exist_ok=True)
-    build = guest_build_dir()
+    logs.mkdir(parents=True, exist_ok=True)
+    build = guest_build_dir(blk)
     build.mkdir(parents=True, exist_ok=True)
     br_out = build / "buildroot"
     k_out = build / "linux"
-    cpio, prefix, compiler = rootfs(unpack(known["buildroot"]), br_out, jobs)
-    fw, fw_end = firmware(unpack(known["opensbi"]), build / "opensbi", prefix, jobs)
-    image, image_end, release = kernel(unpack(known["linux"]), k_out, prefix, jobs)
+    cpio, prefix, compiler = rootfs(unpack(known["buildroot"]), br_out, jobs, logs, blk)
+    fw, fw_end = firmware(unpack(known["opensbi"]), build / "opensbi", prefix, jobs, logs)
+    image, image_end, release = kernel(unpack(known["linux"]), k_out, prefix, jobs, logs, blk)
     rd_end = INITRD + cpio.stat().st_size
     ranges = [(DRAM, fw_end), (KERNEL, image_end), (INITRD, rd_end)]
     for index, ((base, end), limit) in enumerate(zip(ranges, (KERNEL, INITRD, FDT))):
         if not base < end <= limit:
             raise ValueError(f"{IMAGE_NAMES[index]}: invalid or overlapping physical span [{base:#x}, {end:#x})")
-    dtb, dtb_end = board_dtb(build, rd_end)
+    dtb, dtb_end = board_dtb(build, rd_end, logs, blk)
     if dtb_end > DRAM_END:
         raise ValueError(f"{dtb}: FDT growth exceeds DRAM")
     ranges.append((FDT, dtb_end))
@@ -303,12 +338,12 @@ def main():
                     compiler=compiler, config_sha256={"buildroot": hashlib.sha256(buildroot_config).hexdigest(),
                                                       "linux": sha256(k_out / ".config")}, images=artifacts,
                     qemu_cpu=CPU_PROFILE.read_text().strip())
-    expected = json.loads(IMAGE_LOCK.read_bytes())
-    if manifest != expected:
-        differing = [key for key in manifest.keys() | expected.keys() if manifest.get(key) != expected.get(key)]
-        raise ValueError(f"{IMAGE_LOCK}: rebuilt manifest differs in {', '.join(sorted(differing))}; "
-                         f"observed {json.dumps({key: manifest.get(key) for key in differing})}")
-    output = CACHE / "images"
+    if not args.candidate:
+        expected = json.loads(lock.read_bytes())
+        if manifest != expected:
+            differing = [key for key in manifest.keys() | expected.keys() if manifest.get(key) != expected.get(key)]
+            raise ValueError(f"{lock}: rebuilt manifest differs in {', '.join(sorted(differing))}; "
+                             f"observed {json.dumps({key: manifest.get(key) for key in differing})}")
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output) as temp:
         staging = Path(temp)
@@ -318,7 +353,8 @@ def main():
             (staging / name).replace(output / name)
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (staging / "manifest.json").replace(output / "manifest.json")
-    print(f"verified four guest images in {output} ({time.monotonic() - start:.1f} s)")
+    kind = "unlocked candidate" if args.candidate else "verified"
+    print(f"{kind}: four guest images in {output} ({time.monotonic() - start:.1f} s)")
 
 
 if __name__ == "__main__":

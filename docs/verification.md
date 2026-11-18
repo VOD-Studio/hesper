@@ -1488,3 +1488,31 @@ Chromium `155.0.8059.84`、Arch Linux x86_64、Ryzen 7 5800、系统识别约 47
 验收只覆盖这套固定的 RV64IMAC、OpenSBI + Linux + 静态 BusyBox 串口板；
 未声明通用 RISC-V、外设或发行版兼容性。客体镜像只选本地已校验文件，
 未发布、未上传、未部署 Pages；无远程 CI 结论。
+
+## RISC-V Linux D1：固定 QEMU 两次冷启动数据盘
+
+在离线的 Debian 12 构建容器，用不同的空 `build/`、`images-blk-candidate/`
+和 `logs-blk/` 目录（缓存 `blk-a`、`blk-b`）分别执行
+`python3 tools/riscv-linux/build_guest.py --profile blk --candidate`。
+只共享锁定源码归档和 Buildroot 下载缓存；两次用时 764.0 / 755.3 秒，
+生成清单逐字节相同。最终 `.config` 中 `BLOCK`、`VIRTIO`、`VIRTIO_MMIO`、
+`VIRTIO_BLK`、`EXT2_FS` 均内建，BusyBox 的 `mount`、`umount`、`sync`、
+`sh` 可用。正式 `make riscv-linux-blk-data` 匹配
+[`images-blk.lock.json`](../tools/riscv-linux/images-blk.lock.json)；
+Linux config 指纹 `8430512b3688036b0e25506f4c28dbc49fae57c0f521d4a437332f9e8ff8e221`。
+`serial` 原锁的 `make riscv-linux-reference` 也通过。
+
+- `make riscv-linux-blk-reference`，QEMU 9.2.0 TCG。QMP 实测
+  `virtio-mmio-bus.0`、版本 2、设备 ID 2；QEMU 默认树和 OpenSBI
+  交接树都给出 `reg = <0 0x10001000 0 0x1000>`、PLIC source 1。
+- `mke2fs` 1.47.0，`-q -F -t ext2 -b 1024`，8 MiB 无分区种子。
+  两个全新 QEMU 进程分别报告 16384 × 512 B；第一回串口出现
+  `DISK_UNMOUNTED`，第二回出现 `DISK_OK:42` 和 `DISK_UNMOUNTED`，
+  两回都等完整提示符再经 QMP `quit` 成功退出。两次首提示符分别
+  0.900 / 0.906 秒，每状态上限 20 秒、256 KiB。
+- 种子 SHA-256 `876f607e143c499e98b51a877f6ddc7b8206969e2e74a9f7f156b188bc29ff75`
+  未变，写后与只读重开后的工作盘均为
+  `63679ba5b9664feea7c6a6c0289198788a8f99114475163437576699d5a788f2`。
+  只读 `debugfs` 两次核对 `/proof.sh` 精确字节。原始输入与输出、
+  FDT、QMP 和哈希见 `.cache/riscv-linux/blk-a/logs-blk/reference-rwyt32vy/`。
+  这一关只验收参考机，不替代 Hesper 的设备与宿主门禁。
