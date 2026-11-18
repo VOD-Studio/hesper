@@ -20,6 +20,8 @@
 #                  （不在 verify 中：冷缓存首次运行需要联网真实下载）
 #   make riscv-linux-sources  获取并校验参考板的固定源码（显式联网）
 #   make riscv-linux-data     构建并校验固定的四份参考板镜像（需要 Linux 构建宿主）
+#   make riscv-linux-qemu     从固定源码构建 TCG 参考模拟器
+#   make riscv-linux-reference 用已准备的 QEMU 和锁定镜像做实际串口验收（离线）
 #
 # 全量外部一致性（对应 .github/workflows/full-cpu.yml，需 Bun）：
 #   make data      下载并校验固定版本官方数据、Klaus 镜像与 revD 模型到忽略缓存
@@ -33,7 +35,7 @@
 
 .PHONY: verify fmt fix check test test-release clippy demo diff build build-release \
         wasm wasm-setup wasm-build wasm-test wasm-browser-test wasm-typecheck \
-        tools-test riscv-linux-sources riscv-linux-data \
+        tools-test riscv-linux-sources riscv-linux-data riscv-linux-qemu riscv-linux-reference \
         data singlestep functional decimal interrupt visual6502 pins full
 
 .DEFAULT_GOAL := verify
@@ -107,6 +109,12 @@ riscv-linux-sources:
 
 riscv-linux-data: riscv-linux-sources
 	python3 tools/riscv-linux/build_guest.py
+
+riscv-linux-qemu: riscv-linux-sources
+	python3 tools/riscv-linux/build_qemu.py
+
+riscv-linux-reference:
+	python3 tools/riscv-linux/reference.py
 
 # ---- 全量外部一致性（显式准备数据后运行） ----
 

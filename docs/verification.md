@@ -1241,3 +1241,32 @@ Windows x86_64／ARM64 均完成编译，但同一个文件浏览器测试因 `/
   `rdtime`、`rdcycle`、`rdinstret` 的编码，没有改动板上 ISA。
 
 这一关只验证镜像构建；QEMU 串口验收是下一关。
+
+## RISC-V Linux L1c：固定 QEMU 串口验收
+
+用上节的 `repro-c` 缓存，在 Debian 12 容器加 `--network none` 运行
+`make riscv-linux-data riscv-linux-qemu riscv-linux-reference`，全部退出 0。
+`repro-d` 也在断网容器下重跑 `make riscv-linux-data`。两个生成清单均逐字节
+匹配 [`images.lock.json`](../tools/riscv-linux/images.lock.json)；正式锁中的
+Buildroot config 摘要排除仅保存宿主路径的 `BR2_DEFCONFIG` 行。
+
+- QEMU 9.2.0/TCG 二进制 SHA-256：
+  `e4cd59a03e7a8f43e08915efec89ef3f23f45aa0852759460577d4d555d44451`。
+  `qemu-effective-cpu.json` 的 QMP 实测值与锁中的 CPU 参数一致；不传自定义树
+  的 `qemu-default.dtb` 显示 Sv39。QEMU 还上报自身隐式特性（例如 `zic64b`、
+  `sstvala`）；这不是 Hesper 板的扩展声明。
+- 每个状态的预算是 20 秒、256 KiB；实际 0.508 秒到首提示符，0.531 秒到
+  最后提示符。`uname -a` 的结果行含 `6.12.0-hesper` 与 `riscv64`；
+  `/proc/cpuinfo` 返回 `processor : 0`、`hart : 0`、`sv39` 和
+  `rv64imac_zicntr_zicsr_zifencei_zca`（Linux 报告 C 隐含的 Zca）。`printf`
+  的独立结果行恰为 `HESPER_OK:42`。逐字节回放原始记录通过；只删该结果行、
+  保留命令回显与提示符的记录在 `printf` 状态被拒绝。
+- OpenSBI 报告以 S 态进入 `0x80200000`，`a1=0x87800000`。QMP 从客体物理
+  内存转储该地址的运行时 FDT：initrd `[0x84000000, 0x840e3c00)`，固件
+  `no-map` `[0x80000000, 0x80060000)`，不是仅检查编译前的 DTS。
+- 原始输入/输出、运行时 DTB 和机器报告在
+  `.cache/riscv-linux/repro-c/logs/qemu-{input.raw,serial.raw,handoff.dtb,reference.json}`。
+  另在隔离缓存翻转 DTB 最后一个字节，入口以 SHA-256 不符退出且未打开客体串口；
+  日志在 `.cache/riscv-linux/l1c-negative.sPiDtT3b/rejected.log`。
+
+以上只证明固定参考板和客体组合。未分发镜像，也未将 QEMU 加入 Hesper。

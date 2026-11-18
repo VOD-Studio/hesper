@@ -7,6 +7,7 @@
 - **RISC-V 机器库**：新增独立的 `hesper-riscv-linux`，可将客体物理地址区间校验并映射到 128 MiB DRAM 的切片范围。尚不能执行 RISC-V 指令或启动 Linux；后续范围见[实施计划](docs/plan/riscv-linux.md)。
 - **RISC-V 参考板**：新增 `make riscv-linux-sources`，按独立来源的 SHA-256 获取并校验固定的 Buildroot、OpenSBI、Linux 和 QEMU 源码；不依赖发行版 QEMU，也不改变普通 Cargo 验证。
 - **RISC-V 参考板**：新增 `make riscv-linux-data`，用同一整数 ABI 工具链构建 OpenSBI、Linux、静态 BusyBox initramfs 与板级 DTB，并检查镜像格式及装载区间。
+- **RISC-V 参考板**：新增 `make riscv-linux-qemu` 和 `make riscv-linux-reference`；以固定 QEMU/TCG 冷启动同哈希客体并验收 BusyBox 串口。QEMU 仅用于对照，不是 Hesper 运行时依赖。
 - **Web example**：Apple-1 工具栏新增「结束会话，返回启动中心」图标按钮，与清屏、重新上电并列；原先只出现在「关于这间计算机实验室」弹窗中的同名操作已移除。确认弹窗、`stop` 行为与返回启动中心的结果保持不变。
 - **Web example**：`examples/web` 依赖对齐当前上游：`lucide-react` 升至 1.47.0、`@types/node` 升至 24.13.5，并把 `@types/react`、`@types/react-dom`、`oxlint`、`typescript` 的声明范围提升到 `bun.lock` 已解析的版本；未新增依赖，生产构建产物与对齐前逐字节一致。
 - **Web example**：`examples/web` 的 TypeScript 升至 7.0.2 原生编译器，与 `make wasm-typecheck` 的固定版本一致；该版本不再包含 `tsserver`，只依赖命令行 `tsc` 的流程不受影响。

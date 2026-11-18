@@ -2,11 +2,11 @@
 
 **交付目标**：Hesper 用自己的解释器和设备模型，执行真实 OpenSBI、上游 Linux 内核和 BusyBox 用户空间。先在原生 CLI 通过串口操作 shell，再把**同一机器核心、同一组镜像**放入浏览器 Worker。不是模拟 Linux 命令、翻译 Linux 系统调用、连接远程终端，或把 QEMU/v86 嵌入产品。
 
-**本次边界（L0）**：独立 workspace 库 `hesper-riscv-linux` 和固定 DRAM 地址窗口。库只回答“这段客体物理地址能否完整映射到 RAM 切片”，不分配整机内存、不执行指令。以下 L1–L8 都是实施计划，不是已有功能或运行记录。首个开发任务是 L1，不是做终端 UI。
+**起点（L0）**：独立 workspace 库 `hesper-riscv-linux` 和固定 DRAM 地址窗口。L0 只校验 RAM 切片范围，不分配整机内存、不执行指令。各卡实际进度以[验证记录](../verification.md)为准；QEMU 上的启动不是 Hesper 的兼容性证据。
 
 ## 0. 给实施者的入口（6.2 sol 从这里开始）
 
-起点是分支 `feat/riscv-linux` 的 `d3f25f7`。如果分支上已有后续提交，以实际产物和验证记录判断进度，不回退到起点。先看 [现有库](../../crates/riscv-linux/src/lib.rs)、[DRAM 边界测试](../../crates/riscv-linux/tests/dram.rs)和[仓库门禁](../../Makefile)；此时可运行的是 `cargo test --locked -p hesper-riscv-linux --test dram`。下表是**待交付的工作单**，其中的目标路径和命令不是当前已有功能；每次只为当张卡创建用得到的文件。不要另起分支树、重写 README 或先搭一套通用虚拟机框架。
+起点是分支 `feat/riscv-linux` 的 `d3f25f7`。如果分支上已有后续提交，以实际产物和验证记录判断进度，不回退到起点。先看[现有库](../../crates/riscv-linux/src/lib.rs)、[DRAM 边界测试](../../crates/riscv-linux/tests/dram.rs)和[仓库门禁](../../Makefile)。下表按卡列出工作与退出证据；每次只为当张卡创建用得到的文件。不要另起分支树、重写 README 或先搭一套通用虚拟机框架。
 
 | 卡号（依次解锁） | 改动落点与第一个产物 | 交给下一张卡的证据 |
 | --- | --- | --- |
@@ -75,7 +75,7 @@ Buildroot 下载缓存，不共享 `build/` 或 `images/`。构建记录和验�
 4. 独立构建 Linux：先导出 `ARCH=riscv` 和上一步的 `CROSS_COMPILE`，运行 `make -C "$LINUX" O="$KOUT" defconfig`；从内核源码目录运行 `scripts/kconfig/merge_config.sh -m -O "$KOUT" "$KOUT/.config" "$FRAGMENT"`，再执行 `make -C "$LINUX" O="$KOUT" olddefconfig` 和 `make -C "$LINUX" O="$KOUT" Image`。检查**最终** `.config`：RV64、MMU、SBI、`RISCV_ISA_C`、`SIFIVE_PLIC`、`SERIAL_8250`/`SERIAL_8250_CONSOLE` 和 OF 串口驱动、`BLK_DEV_INITRD`、`BINFMT_ELF`/`BINFMT_SCRIPT`、`PROC_FS`、`SYSFS`、`DEVTMPFS` 均为内建；`SMP/FPU/RISCV_ISA_V` 关闭。不要只改 fragment 就宣称选项生效；[v6.12 架构 Makefile](https://github.com/torvalds/linux/blob/v6.12/arch/riscv/Makefile)决定实际 ISA/ABI。取 `"$KOUT/arch/riscv/boot/Image"` 并保留 `vmlinux`。固定 `SOURCE_DATE_EPOCH`、`KBUILD_BUILD_TIMESTAMP/USER/HOST/VERSION` 和本地版本字符串；在另一干净构建目录复验哈希，不把第一次生成的哈希当作可重复构建证明。
 5. 按**实际** cpio 长度生成最终 `board.dts`/`board.dtb`，预留固件修改空间。根节点和 `soc` 用两 cell 地址/大小，`cpus` 用一 cell hart ID、零 size cell。CPU0 标 `mmu-type="riscv,sv39"`，列出真实 ISA，`cpu-intc` 为 hart 本地中断父节点；CLINT 的 `interrupts-extended` 接本地 3/7，PLIC 的 M/S 接 11/9；UART 为 `ns16550a`、`clock-frequency=3686400`、PLIC 源 10。`/memory` 为 128 MiB、`/chosen` 设置 stdout-path、`console=ttyS0 rdinit=/init` 和两项 initrd 地址。`dtc` 编译后用 `fdtget` 逐项读回，确认地址 cell 的高低顺序，检查 `initrd-end - initrd-start` 等于**字节数**。保留 `reserved-memory`、phandle 和设备连线；不复制 QEMU 的 PCI、virtio、RTC。对照 [Linux 的 CPU 节点约束](https://github.com/torvalds/linux/blob/v6.12/Documentation/devicetree/bindings/riscv/cpus.yaml)。
 
-**L1c：一台参考机、同一物理布局。** 在固定 QEMU 可执行文件上查 `-cpu help`，收紧并固化 CPU 参数到 `qemu-cpu.txt`：IMAC、Zicsr/Zifencei/Zicntr、M/S/U、Sv39、PMP；关闭 F/D/V/H、Sstc 和更高分页模式等不在板中的功能。保存 QEMU 有效 CPU 属性及**不传自定义树时** `dumpdtb` 的结果作交叉检查；手写 DTB 宣称“无扩展”不能证明 CPU 真的禁用了该扩展。以下是准备完资源后由 `riscv-linux-reference` 执行的命令形状（不是当前可直接运行的测试）：
+**L1c：一台参考机、同一物理布局。** 在同一构建宿主内运行 `make riscv-linux-qemu` 从锁定源码构建 QEMU/TCG，再运行 `make riscv-linux-reference`。参考门禁不下载、不构建，只消费已准备的 QEMU 和 [`images.lock.json`](../../tools/riscv-linux/images.lock.json) 所列镜像。CPU 参数固定在 `qemu-cpu.txt`；通过 QMP 读回 IMAC、Zicsr/Zifencei/Zicntr、S/U、Sv39、PMP 及禁用的 F/D/V/H、Sstc、Sv48/Sv57。另存**不传自定义树时**的 `dumpdtb`；QEMU 的不可配置隐式特性单独记录，不加入 Hesper 的板描述。参考命令的启动部分为：
 
 ```sh
 qemu-system-riscv64 -machine virt,aclint=off,aia=none -accel tcg -smp 1 -m 128M \

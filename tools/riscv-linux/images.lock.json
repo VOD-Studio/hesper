@@ -1,0 +1,42 @@
+{
+  "source_lock_sha256": "4708cded4c64ea86912e597ee2fab6af82f23a035ada3989c6d906e8a1ad3ff7",
+  "bootargs": "console=ttyS0 rdinit=/init",
+  "isa": "rv64imac_zicntr_zicsr_zifencei",
+  "kernelrelease": "6.12.0-hesper",
+  "compiler": "riscv64-buildroot-linux-musl-gcc.br_real (Buildroot 2024.02.12) 12.4.0",
+  "config_sha256": {
+    "buildroot": "936a0559137b0e73ac2fcf42bb0df360435c16cdd5c3290ef7379398876c88ca",
+    "linux": "725ceb761fd7075ad72f93ad936615066af292571953e2357e88525e6115154b"
+  },
+  "images": [
+    {
+      "path": "fw_jump.bin",
+      "bytes": 273448,
+      "sha256": "7deb77c98522f01069ecda126709d83f1d2b2dc461bb8c97a9ccdee36436f7b9",
+      "address": "0x80000000",
+      "end": "0x80058000"
+    },
+    {
+      "path": "Image",
+      "bytes": 15611116,
+      "sha256": "3e12a3d2e6fb6542d6998d1addc9e1f49b19e2a04c6e667b189afee4dc11690b",
+      "address": "0x80200000",
+      "end": "0x81137f30"
+    },
+    {
+      "path": "initramfs.cpio",
+      "bytes": 932864,
+      "sha256": "1bca2bb956b58cd385033646d78301add0cf96ec4cb62997d6397003c502a2d8",
+      "address": "0x84000000",
+      "end": "0x840e3c00"
+    },
+    {
+      "path": "board.dtb",
+      "bytes": 5921,
+      "sha256": "1695ca9e67920d2a2a46dcb6a6cb9c65d18df9e147527f305160b710089be892",
+      "address": "0x87800000",
+      "end": "0x87811721"
+    }
+  ],
+  "qemu_cpu": "rv64,priv_spec=v1.12.0,debug=off,g=off,b=off,i=on,m=on,a=on,c=on,s=on,u=on,f=off,d=off,v=off,h=off,pmp=on,mmu=on,sv39=on,sv48=off,sv57=off,zicsr=on,zifencei=on,zicntr=on,sstc=off,svadu=off,svvptc=off,zihpm=off,zihintntl=off,zihintpause=off,zawrs=off,zfa=off,zba=off,zbb=off,zbc=off,zbs=off,zicbom=off,zicbop=off,zicboz=off,zaamo=off,zalrsc=off,zca=off,zmmul=off,pmu-mask=0"
+}

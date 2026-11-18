@@ -26,6 +26,8 @@ ISA = "rv64imac_zicntr_zicsr_zifencei"
 FW_ISA = "rv64imac_zicsr_zifencei"
 FDT_GROWTH = 0x10000  # Space beyond totalsize for OpenSBI's in-place fixups.
 IMAGE_NAMES = ("fw_jump.bin", "Image", "initramfs.cpio", "board.dtb")
+IMAGE_LOCK = PROFILE / "images.lock.json"
+CPU_PROFILE = PROFILE / "qemu-cpu.txt"
 LOGS = CACHE / "logs"
 ENV = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
 ENV.update(LC_ALL="C", TZ="UTC", GIT_CEILING_DIRECTORIES=str(CACHE))
@@ -272,15 +274,25 @@ def main():
     for name, path, (base, end) in zip(IMAGE_NAMES, paths, ranges):
         artifacts.append(dict(path=name, bytes=path.stat().st_size, sha256=sha256(path),
                               address=f"{base:#x}", end=f"{end:#x}"))
+    # Kconfig stores the absolute filename used to seed Buildroot; it is not
+    # an effective guest option and must not tie the lock to a checkout path.
+    buildroot_config = re.sub(rb"^BR2_DEFCONFIG=.*\n", b"", (br_out / ".config").read_bytes(), flags=re.M)
     manifest = dict(source_lock_sha256=sha256(LOCK), bootargs=BOOTARGS, isa=ISA, kernelrelease=release,
-                    compiler=compiler, config_sha256={"buildroot": sha256(br_out / ".config"),
-                                                      "linux": sha256(k_out / ".config")}, images=artifacts)
+                    compiler=compiler, config_sha256={"buildroot": hashlib.sha256(buildroot_config).hexdigest(),
+                                                      "linux": sha256(k_out / ".config")}, images=artifacts,
+                    qemu_cpu=CPU_PROFILE.read_text().strip())
+    expected = json.loads(IMAGE_LOCK.read_bytes())
+    if manifest != expected:
+        differing = [key for key in manifest.keys() | expected.keys() if manifest.get(key) != expected.get(key)]
+        raise ValueError(f"{IMAGE_LOCK}: rebuilt manifest differs in {', '.join(sorted(differing))}; "
+                         f"observed {json.dumps({key: manifest.get(key) for key in differing})}")
     output = CACHE / "images"
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output) as temp:
         staging = Path(temp)
         for name, path in zip(IMAGE_NAMES, paths):
             shutil.copyfile(path, staging / name)
+        for name in IMAGE_NAMES:
             (staging / name).replace(output / name)
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (staging / "manifest.json").replace(output / "manifest.json")
