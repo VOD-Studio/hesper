@@ -2,6 +2,7 @@
 
 use core::ops::Range;
 
+mod decode;
 mod hart;
 mod machine;
 

@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-- **RISC-V 机器库**：`hesper-riscv-linux` 提供 128 MiB DRAM、`Machine::run(fuel)` 和寄存器/内存观察；已验证裸机 ADDI、AUIPC、SW 的取指和写回。尚不能启动 Linux；范围见[实施计划](docs/plan/riscv-linux.md)。
+- **RISC-V 机器库**：`hesper-riscv-linux` 提供 128 MiB DRAM、有界 `Machine::run(fuel)`、寄存器/内存观察，以及裸机 RV64I/M 整数、访存和控制转移。尚不能启动 Linux；范围见[实施计划](docs/plan/riscv-linux.md)。
 - **RISC-V 参考板**：新增 `make riscv-linux-sources`，按独立来源的 SHA-256 获取并校验固定的 Buildroot、OpenSBI、Linux 和 QEMU 源码；不依赖发行版 QEMU，也不改变普通 Cargo 验证。
 - **RISC-V 参考板**：新增 `make riscv-linux-data`，用同一整数 ABI 工具链构建 OpenSBI、Linux、静态 BusyBox initramfs 与板级 DTB，并检查镜像格式及装载区间。
 - **RISC-V 参考板**：新增 `make riscv-linux-qemu` 和 `make riscv-linux-reference`；以固定 QEMU/TCG 冷启动同哈希客体并验收 BusyBox 串口。QEMU 仅用于对照，不是 Hesper 运行时依赖。

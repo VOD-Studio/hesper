@@ -1285,3 +1285,31 @@ Buildroot config 摘要排除仅保存宿主路径的 `BR2_DEFCONFIG` 行。
 作为 `-bios` 输入，`-S` 起机，经 GDB `Z1,80000010,4` 下硬件断点后 `c`，
 用 `g` 和 `m80000020,4` 读取寄存器和签名；与预期相同。记录在
 `.cache/riscv-linux/logs/l2a-qemu.json`。这不是完整 RV64I/M 或 Linux 验证。
+
+## RISC-V Linux L2b：RV64I/M 与独立裸机签名
+
+`cargo test --locked -p hesper-riscv-linux --test isa` 8 项通过；覆盖访存宽度、
+符号扩展、非对齐和 DRAM 尾后访问不写回、BEQ/JAL/JALR、DIVW 除零和溢出、
+FENCE.I 后执行改写字节、非法 FENCE 不退休。`make verify` 通过。
+日志在 `.cache/riscv-linux/logs/l2b-{focused,verify}.log`。
+
+独立对照取 [riscv-tests `3df703cd52d5`](https://github.com/riscv-software-src/riscv-tests/tree/3df703cd52d5f0d8224e3c50bf03c6cb70efff98)
+的 ADD #7、LW #7、DIVW #7/#8 的指令主体和操作数。该提交的 `env` 子模块
+锁为 `6de71edb142be36319e380ce782c3d1830c65d68`；本卡不运行环境启动或
+`tohost`。探针源与[许可证](../tools/riscv-linux/isa-upstream.LICENSE)在
+`tools/riscv-linux/`；原始源下载到 `repro-c/logs/isa-upstream/`。
+
+在 L1c 的容器/缓存中执行 `python3 tools/riscv-linux/isa_reference.py "$CROSS_COMPILE"`
+（使用 L1b Buildroot 生成的绝对前缀），再从宿主执行：
+
+```sh
+c=.cache/riscv-linux/repro-c/logs
+cargo run --locked -p hesper-riscv-linux --example isa_probe -- \
+  "$c/isa-im.bin" 15 8000003c 80000050 32
+```
+
+镜像 SHA-256 `0b6d63c11fa1308a14508d96e4e0a583a1d95250b5d1fed3f90c57da0a2c4bb7`；
+入口 `0x80000000`，在 PC `0x8000003c` 停止（Hesper fuel 15；QEMU 硬件断点
+和 10 秒读截止）。两者的 `0x80000050` 32 字节签名相同：
+`0080ff7fffffffff00ff00ffffffffff00000080ffffffffffffffffffffffff`。
+反汇编、QEMU JSON 原始观察和 Hesper 输出在上述 `logs/` 的 `isa-im-*`。
