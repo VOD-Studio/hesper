@@ -224,6 +224,8 @@ printf 'HESPER_OK:%s\n' "$((6 * 7))"
 
 **退出**：固定镜像在 QEMU、原生 Hesper、浏览器 Hesper 三处均留有独立交互证据。浏览器无法通过时保留 L6 的原生结论，不把构建成功或 Node 的通过写成网页已跑通。部署、Release 与新增设备是后续独立决策。
 
+**L8 之后建议先做什么：**见[持久化数据盘实施方案](riscv-linux-data-disk.md)。保留上述无盘配置，先在 QEMU 验证带盘客体，再实现 Hesper 原生 CLI 的跨冷启动读回，最后验收网页与 CLI 交换 raw 盘。该方案尚未实施。
+
 ## 3. 执行纪律与依据
 
 - 每个可独立观察的增量一个提交。L0 的聚焦命令是 `cargo test --locked -p hesper-riscv-linux`；`make verify` 保持现有 workspace 门禁。自 L2 起把首个分歧缩为可离线重放的探针；既不修改 6502 指令/总线契约，也不拿现有 Apple I 测试当作 RISC-V 的验收。
