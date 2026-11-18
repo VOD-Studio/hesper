@@ -12,6 +12,7 @@
 - **CLI / RISC-V Linux**：独立锁定的 `blk` 配置支持在 `/dev/vda` 挂载 raw 数据盘。`--disk-in` 保持只读，卸载后用 Ctrl+] 原子导出到新的 `--disk-out`，供下次冷启动使用。
 - **Wasm**：新增可独立加载的 `RiscvLinux` 绑定，分块推进和收发原始 UART 字节；RV64 地址、寄存器和累计计数使用 `bigint`，不捆绑客体镜像。
 - **Web**：新增独立 RISC-V Linux 串口工作区。选择锁定的本地镜像后可启动、暂停、继续和停止真实 Linux；不上传镜像，不影响 Apple-1 或 CPU 6502 的启动。
+- **Wasm / Web**：RISC-V Linux 可单独选用本地 raw 数据盘。先在客体卸载，再暂停并下载；同一份盘可在原生 CLI 与浏览器之间往返，未导出的写入不会自动保存。
 - **RISC-V 参考板**：新增 `make riscv-linux-sources`，按独立来源的 SHA-256 获取并校验固定的 Buildroot、OpenSBI、Linux 和 QEMU 源码；不依赖发行版 QEMU，也不改变普通 Cargo 验证。
 - **RISC-V 参考板**：新增 `make riscv-linux-data`，用同一整数 ABI 工具链构建 OpenSBI、Linux、静态 BusyBox initramfs 与板级 DTB，并检查镜像格式及装载区间。
 - **RISC-V 参考板**：新增 `make riscv-linux-qemu` 和 `make riscv-linux-reference`；以固定 QEMU/TCG 冷启动同哈希客体并验收 BusyBox 串口。QEMU 仅用于对照，不是 Hesper 运行时依赖。

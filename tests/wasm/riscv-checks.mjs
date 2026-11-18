@@ -33,11 +33,29 @@ export function riscvCases(RiscvLinux, { integer, uart }) {
       try {
         wide.run(1);
         equal(wide.register(3), 0xffffffffffffffffn, "full-width x3");
+        equal(wide.exportDisk(), undefined, "bare disk export");
+        equal(wide.diskFault, undefined, "bare disk fault");
+        equal(wide.diskDirty, false, "bare disk dirty flag");
+        wide.markDiskExported();
+        equal(wide.diskDirty, false, "marking a bare export");
       } finally { wide.free(); }
       let rejected = false;
       try { RiscvLinux.bare(DRAM + 0x100000000n, bytes).free(); }
       catch { rejected = true; }
       equal(rejected, true, "out-of-RAM address must not truncate to Wasm32");
+    }],
+    ["disk boot rejects invalid raw lengths before validating boot image content", () => {
+      // Pass the raw image length bounds but not the boot image content checks.
+      const firmware = Uint8Array.of(0), kernel = new Uint8Array(64);
+      const initramfs = new Uint8Array(6), fdt = new Uint8Array(40);
+      const invalidLength = new Uint8Array(1);
+      Object.defineProperty(invalidLength, "length", { value: 512 });
+      for (const disk of [new Uint8Array(0), invalidLength, new Uint8Array(16 * 1024 * 1024 + 512)]) {
+        let code;
+        try { RiscvLinux.bootWithDisk(firmware, DRAM + 1n, kernel, initramfs, fdt, disk).free(); }
+        catch (error) { code = error.code; }
+        equal(code, "InvalidDisk", "invalid raw disk size");
+      }
     }],
     ["queued UART bytes at the same virtual tick are invariant across Wasm batch sizes", () => {
       for (const batch of [1, 37, 4096]) {

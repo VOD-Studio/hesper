@@ -52,7 +52,16 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 
 待串口出现 `hesper# ` 后，聚焦终端再输入命令。暂停时客体虚拟时钟不推进，
 已输入的字节在继续后投递；停止丢弃当前机器，再启动得到新的 RAM 和终端。
-启动期间可取消。只承诺固定板的 Linux 串口，不提供网络、磁盘、图形或机器存档。
+启动期间可取消。只支持固定板，不提供网络、图形或机器存档。
+
+#### 可选数据盘
+
+在仓库根目录执行 `make riscv-linux-blk-data`，选择 `.cache/riscv-linux/images-blk`
+中配套的四个启动文件，再用单独的选择框加载 raw 盘。磁盘须为 512 字节的
+正整数倍且不超过 16 MiB；可使用 [CLI 建立的 ext2 种子或导出盘](../../README.md#risc-v-linux-数据盘本机)。
+客体的根仍在 RAM；手动挂载 `/dev/vda` 到 `/mnt/data`，写入后 `sync` 并成功卸载。
+随后点「暂停」和「导出数据盘」，浏览器下载独立的 `hesper-data.raw`。不上传、
+不修改源文件、不自动保存；停止时有尚未导出的磁盘写入会要求确认。
 
 ## 数据流与边界
 
@@ -76,11 +85,15 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 - 全部 42 个预置的块大小和加载、扩展 RAM 要求、Blackjack 多段 BASIC 的 LIST。
 - 地址校验、粘贴归一化和固定 40×24 字符投影。
 
-根目录 `make wasm-browser-test` 在 Bun、Node.js 和真实 Chrome 中运行 10 项轻量绑定检查；`make verify` 检查本机 Rust 工作区。这些不等于 42 个程序的完整玩法或硬件 conformance 验收。
+根目录 `make wasm-browser-test` 在 Bun、Node.js 和真实 Chrome 中运行轻量绑定检查；`make verify` 检查本机 Rust 工作区。这些不等于 42 个程序的完整玩法或硬件 conformance 验收。
 
 `make riscv-linux-browser`（可设置 `CHROME_BIN=chromium`）重建并在真实浏览器
 打开生产站点，使用准备好的四份本地镜像，执行同一串口验收和取消/重启测试；
 缺少镜像会失败。结果和原始串口见 `.cache/riscv-linux/logs/`。
+
+`make riscv-linux-blk-browser` 对生产网页执行 CLI 写入 → 浏览器冷启动读回、
+浏览器写入 → 下载 → 新 CLI 进程读回；使用准备好的 `images-blk/` 产物，
+真 Chrome 串口、下载证据与各盘哈希见 `.cache/riscv-linux/logs-blk/`。
 
 ### 2026-09-15 本轮 QA
 

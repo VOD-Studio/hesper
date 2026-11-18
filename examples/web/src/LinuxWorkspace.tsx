@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import {
+  Download,
   Keyboard,
   Pause,
   Play,
@@ -9,6 +10,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
+import { validDiskSize } from "./linux-disk";
 import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
 import "@xterm/xterm/css/xterm.css";
 import "./LinuxWorkspace.css";
@@ -27,11 +29,15 @@ const labels: Record<LinuxState, string> = {
 };
 
 type Status = { state: LinuxState; time?: bigint; retired?: bigint };
+type Pending = "resuming" | "exporting" | "stopping" | null;
+type DiskSelection = "empty" | "selected" | "invalid";
 type Session = {
   id: number;
   worker: Worker;
   ready: boolean;
-  stopping: boolean;
+  state: LinuxState;
+  hasDisk: boolean;
+  pending: Pending;
 };
 type Serial = { terminal: Terminal; dispose: () => void };
 
@@ -87,12 +93,26 @@ function postInput({ id, worker }: Session, bytes: Uint8Array<ArrayBuffer>) {
   }
 }
 
+function downloadDisk(bytes: Uint8Array<ArrayBuffer>) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "hesper-data.raw";
+    link.click();
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
 export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   const [files, setFiles] = useState<File[]>([]);
+  const [diskSelection, setDiskSelection] = useState<DiskSelection>("empty");
   const [status, setStatus] = useState<Status>({ state: "ended" });
-  const [stopping, setStopping] = useState(false);
+  const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState("");
   const [hasTerminal, setHasTerminal] = useState(false);
+  const diskInput = useRef<HTMLInputElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const serial = useRef<Serial | null>(null);
   const session = useRef<Session | null>(null);
@@ -111,16 +131,36 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
     serial.current = null;
   }, [releaseSession]);
 
+  function updatePending(current: Session, action: Pending) {
+    current.pending = action;
+    setPending(action);
+  }
+
+  function selectDisk(input: HTMLInputElement) {
+    const disk = input.files?.[0];
+    if (disk && !validDiskSize(disk.size)) {
+      input.value = "";
+      setDiskSelection("invalid");
+    } else {
+      setDiskSelection(disk ? "selected" : "empty");
+    }
+  }
+
+  function clearDisk() {
+    if (diskInput.current) diskInput.current.value = "";
+    setDiskSelection("empty");
+  }
+
   function fail(message: string) {
     releaseSession();
     setError(message);
-    setStopping(false);
+    setPending(null);
     setStatus((previous) => ({ ...previous, state: "failed" }));
   }
 
   function start() {
-    if (!host.current || session.current || files.length !== imageNames.length)
-      return;
+    if (!host.current || session.current || !canStart) return;
+    const disk = diskInput.current?.files?.[0];
     const id = ++nextId.current;
     serial.current?.dispose();
     serial.current = null;
@@ -131,7 +171,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       // Keep xterm's queued writes and decoder state isolated from the next boot.
       const tty = openSerial(host.current, (bytes) => {
         const current = session.current;
-        if (current?.id === id && current.ready && !current.stopping) {
+        if (current?.id === id && current.ready && current.pending !== "stopping") {
           postInput(current, bytes);
         }
       });
@@ -141,7 +181,14 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       const worker = new Worker(new URL("./linux.worker.ts", import.meta.url), {
         type: "module",
       });
-      const current: Session = { id, worker, ready: false, stopping: false };
+      const current: Session = {
+        id,
+        worker,
+        ready: false,
+        state: "loading",
+        hasDisk: disk !== undefined,
+        pending: null,
+      };
       session.current = current;
       worker.onmessage = ({ data }: MessageEvent<LinuxReply>) => {
         if (session.current !== current || data.sessionId !== id) return;
@@ -154,6 +201,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             terminal.write(data.bytes);
             break;
           case "state":
+            current.state = data.state;
             setStatus({
               state: data.state,
               time: data.time,
@@ -161,9 +209,31 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             });
             if (data.state === "ended" || data.state === "failed") {
               releaseSession();
-              setStopping(false);
+              setPending(null);
+            } else if (current.pending === "resuming" && data.state !== "paused") {
+              updatePending(current, null);
             }
             break;
+          case "disk": {
+            // Stop invalidates the in-flight export even if its reply is queued.
+            if (current.pending !== "exporting" || current.state !== "paused") break;
+            downloadDisk(data.bytes);
+            const command: LinuxCommand = { type: "exported", sessionId: id };
+            worker.postMessage(command);
+            updatePending(current, null);
+            break;
+          }
+          case "discard-required": {
+            if (current.pending !== "stopping") break;
+            if (window.confirm("数据盘有未导出的修改。要丢弃修改并停止会话吗？")) {
+              const command: LinuxCommand = { type: "stop", sessionId: id, discard: true };
+              worker.postMessage(command);
+            } else {
+              terminal.options.disableStdin = false;
+              updatePending(current, null);
+            }
+            break;
+          }
           case "error":
             current.ready = false;
             terminal.options.disableStdin = true;
@@ -179,16 +249,16 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       worker.onmessageerror = () => {
         if (session.current === current) fail("无法读取 Linux Worker 消息。");
       };
-      const command: LinuxCommand = { type: "boot", sessionId: id, files };
+      const command: LinuxCommand = { type: "boot", sessionId: id, files, disk };
       worker.postMessage(command);
     } catch (reason) {
       fail(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
-  function control(type: "pause" | "resume" | "stop") {
+  function control(type: "pause" | "resume" | "stop" | "export") {
     const current = session.current;
-    if (!current || current.stopping) return;
+    if (!current || current.pending === "stopping") return;
     if (!current.ready) {
       // Termination cancels image reads and integrity checks without waiting for a reply.
       if (type === "stop") {
@@ -198,17 +268,24 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       return;
     }
     if (type === "stop") {
-      current.stopping = true;
       if (serial.current) serial.current.terminal.options.disableStdin = true;
-      setStopping(true);
+      updatePending(current, "stopping");
+    } else if (type === "resume" || type === "export") {
+      if (current.state !== "paused" || current.pending || (type === "export" && !current.hasDisk)) {
+        return;
+      }
+      updatePending(current, type === "export" ? "exporting" : "resuming");
     }
     const command: LinuxCommand = { type, sessionId: current.id };
     current.worker.postMessage(command);
   }
 
   const active = status.state !== "ended" && status.state !== "failed";
+  const stopping = pending === "stopping";
   const advancing = status.state === "running" || status.state === "waiting";
   const wrongCount = files.length !== 0 && files.length !== imageNames.length;
+  const canStart = files.length === imageNames.length && diskSelection !== "invalid";
+  const canExport = status.state === "paused" && pending === null && diskSelection === "selected";
 
   return (
     <main className="linux-workspace" hidden={hidden}>
@@ -235,7 +312,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
           <Button
             data-linux-start
             size="sm"
-            disabled={active || files.length !== imageNames.length}
+            disabled={active || !canStart}
             onClick={start}
           >
             <Play /> 启动
@@ -253,10 +330,19 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             data-linux-resume
             variant="ghost"
             size="sm"
-            disabled={status.state !== "paused" || stopping}
+            disabled={status.state !== "paused" || pending !== null}
             onClick={() => control("resume")}
           >
             <Play /> 继续
+          </Button>
+          <Button
+            data-linux-export
+            variant="ghost"
+            size="sm"
+            disabled={!canExport}
+            onClick={() => control("export")}
+          >
+            <Download /> 导出数据盘
           </Button>
           <Button
             data-linux-stop
@@ -305,6 +391,39 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             {wrongCount && (
               <p role="alert">需要四个文件，已选 {files.length} 个。</p>
             )}
+          </section>
+          <section className="linux-disk" aria-labelledby="linux-disk-label">
+            <h2 className="section-label" id="linux-disk-label">
+              本地数据盘（可选）
+            </h2>
+            <p id="linux-disk-help">
+              选用数据盘时需配套的四个块设备启动镜像。先在客体卸载数据盘，再暂停并导出。数据盘不会上传或覆盖原文件。
+            </p>
+            <input
+              data-linux-disk
+              ref={diskInput}
+              type="file"
+              accept=".raw"
+              aria-label="选择 Linux 原始数据盘"
+              aria-describedby="linux-disk-help"
+              aria-invalid={diskSelection === "invalid"}
+              disabled={active}
+              onChange={(event) => selectDisk(event.currentTarget)}
+            />
+            {diskSelection === "invalid" && (
+              <p data-linux-disk-error role="alert">
+                数据盘大小必须是 512 字节的正整数倍，且不得超过 16 MiB。
+              </p>
+            )}
+            <Button
+              data-linux-clear-disk
+              variant="outline"
+              size="sm"
+              disabled={active || diskSelection === "empty"}
+              onClick={clearDisk}
+            >
+              清除数据盘
+            </Button>
           </section>
           <section aria-labelledby="linux-metrics-label">
             <h2 className="section-label" id="linux-metrics-label">

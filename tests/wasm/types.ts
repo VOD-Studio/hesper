@@ -29,9 +29,13 @@ async function example(rom: Uint8Array) {
   const spent: number = linux.run(1);
   const reg: bigint = linux.register(1), pc: bigint = linux.pc, time: bigint = linux.time;
   const uart: Uint8Array = linux.receive(4096);
+  const disk: Uint8Array | undefined = linux.exportDisk();
+  const diskFault: string | undefined = linux.diskFault;
+  const diskDirty: boolean = linux.diskDirty;
+  linux.markDiskExported();
   // @ts-expect-error RV64 addresses must not pass through a JS number
   linux.word(0x80000000);
-  void [spent, reg, pc, time, uart, NodeRiscv];
+  void [spent, reg, pc, time, uart, disk, diskFault, diskDirty, NodeRiscv];
   linux.free();
 }
 void example;

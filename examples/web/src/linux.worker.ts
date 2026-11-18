@@ -1,6 +1,8 @@
 import imageLock from "../../../tools/riscv-linux/images.lock.json";
+import diskImageLock from "../../../tools/riscv-linux/images-blk.lock.json";
 import { initSync, RiscvLinux } from "./generated/riscv-linux/hesper_riscv_linux";
 import wasmUrl from "./generated/riscv-linux/hesper_riscv_linux_bg.wasm?url";
+import { validDiskSize } from "./linux-disk";
 import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
 
 const FUEL_LIMIT = 450_000_000;
@@ -12,17 +14,21 @@ const REPORT_INTERVAL_MS = 250;
 const GUEST_MEMORY_MIB = 128;
 
 const pins = new Map(imageLock.images.map((pin) => [pin.path, pin]));
+const diskPins = new Map(diskImageLock.images.map((pin) => [pin.path, pin]));
 const tasks = new MessageChannel();
 const usedIds = new Set<number>();
 let wasmInitialized = false;
 let active: Session | undefined;
 
+type ImagePin = (typeof imageLock.images)[number];
+type SelectedImages = Map<string, { file: File; pin: ImagePin }>;
 type InputQueue = { bytes: Uint8Array; start: number; length: number };
 type Session = {
   id: number;
   abort: AbortController;
   state: LinuxState;
   pauseRequested: boolean;
+  exportPending: boolean;
   machine?: RiscvLinux;
   input?: InputQueue;
   fuel: number;
@@ -31,8 +37,8 @@ type Session = {
 };
 
 function post(reply: LinuxReply) {
-  if (reply.type === "stdout") {
-    // wasm-bindgen's returned byte array owns its buffer, not a view of guest RAM.
+  if (reply.type === "stdout" || reply.type === "disk") {
+    // Both Wasm exports return copies with independently owned JS buffers.
     self.postMessage(reply, { transfer: [reply.bytes.buffer as ArrayBuffer] });
   } else {
     self.postMessage(reply);
@@ -43,8 +49,8 @@ function detail(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function selectFiles(files: File[]) {
-  const selected = new Map<string, File>();
+function selectFiles(files: File[], pins: ReadonlyMap<string, ImagePin>) {
+  const selected: SelectedImages = new Map();
   for (const file of files) {
     const pin = pins.get(file.name);
     if (!pin) throw new Error(`Unexpected Linux image: ${file.name}.`);
@@ -52,7 +58,7 @@ function selectFiles(files: File[]) {
     if (file.size !== pin.bytes) {
       throw new Error(`${file.name}: expected ${pin.bytes} bytes, got ${file.size}.`);
     }
-    selected.set(file.name, file);
+    selected.set(file.name, { file, pin });
   }
   for (const name of pins.keys()) {
     if (!selected.has(name)) throw new Error(`Missing Linux image: ${name}.`);
@@ -62,13 +68,13 @@ function selectFiles(files: File[]) {
 
 async function verifiedImage(
   name: string,
-  selected: Map<string, File>,
+  selected: SelectedImages,
   subtle: SubtleCrypto,
   signal: AbortSignal,
 ) {
-  const pin = pins.get(name);
-  const file = selected.get(name);
-  if (!pin || !file) throw new Error(`Missing pinned Linux image: ${name}.`);
+  const image = selected.get(name);
+  if (!image) throw new Error(`Missing pinned Linux image: ${name}.`);
+  const { file, pin } = image;
   signal.throwIfAborted();
   let buffer: ArrayBuffer;
   let digest: ArrayBuffer;
@@ -104,8 +110,11 @@ async function initializeWasm(signal: AbortSignal) {
   }
 }
 
-async function loadMachine(files: File[], signal: AbortSignal) {
-  const selected = selectFiles(files);
+async function loadMachine(files: File[], disk: File | undefined, signal: AbortSignal) {
+  if (disk && !validDiskSize(disk.size)) {
+    throw new Error("A data disk must be a positive multiple of 512 bytes and no larger than 16 MiB.");
+  }
+  const selected = selectFiles(files, disk ? diskPins : pins);
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("SHA-256 verification requires a secure browser context (HTTPS or localhost).");
   await initializeWasm(signal);
@@ -116,8 +125,20 @@ async function loadMachine(files: File[], signal: AbortSignal) {
   const kernel = await verifiedImage("Image", selected, subtle, signal);
   const initramfs = await verifiedImage("initramfs.cpio", selected, subtle, signal);
   const fdt = await verifiedImage("board.dtb", selected, subtle, signal);
+  let diskBytes: Uint8Array<ArrayBuffer> | undefined;
+  if (disk) {
+    signal.throwIfAborted();
+    try {
+      diskBytes = new Uint8Array(await disk.arrayBuffer());
+    } catch (error) {
+      throw new Error(`Cannot read data disk ${disk.name}: ${detail(error)}`);
+    }
+  }
   signal.throwIfAborted();
   try {
+    if (diskBytes) {
+      return RiscvLinux.bootWithDisk(firmware.bytes, BigInt(firmware.end), kernel.bytes, initramfs.bytes, fdt.bytes, diskBytes);
+    }
     return RiscvLinux.boot(firmware.bytes, BigInt(firmware.end), kernel.bytes, initramfs.bytes, fdt.bytes);
   } catch (error) {
     throw new Error(`Cannot initialize the Linux guest (${GUEST_MEMORY_MIB} MiB guest RAM plus Wasm and image memory required): ${detail(error)}`);
@@ -169,9 +190,9 @@ function finish(session: Session, reason?: string) {
   post({ type: "state", sessionId, state: reason === undefined ? "ended" : "failed", time, retired });
 }
 
-async function boot(session: Session, files: File[]) {
+async function boot(session: Session, files: File[], disk?: File) {
   try {
-    const machine = await loadMachine(files, session.abort.signal);
+    const machine = await loadMachine(files, disk, session.abort.signal);
     if (active !== session) {
       machine.free();
       return;
@@ -228,6 +249,8 @@ tasks.port1.onmessage = ({ data: id }: MessageEvent<number>) => {
     if (machine.stalledTraps >= STALLED_TRAP_LIMIT) {
       throw new Error(`Guest stalled in a trap loop at PC 0x${machine.pc.toString(16)}.`);
     }
+    const diskFault = machine.diskFault;
+    if (diskFault !== undefined) throw new Error(`Guest data disk fault: ${diskFault}`);
     if (session.fuel === FUEL_LIMIT) throw new Error(`Guest exhausted its ${FUEL_LIMIT} transition budget.`);
     if (spent === 0 && outputLength === 0) {
       if (!session.input?.length) {
@@ -253,13 +276,14 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
       abort: new AbortController(),
       state: "loading",
       pauseRequested: false,
+      exportPending: false,
       fuel: 0,
       batchPending: false,
       nextReport: 0,
     };
     active = session;
     report(session);
-    void boot(session, command.files);
+    void boot(session, command.files, command.disk);
     return;
   }
 
@@ -278,11 +302,37 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
       if (session.state === "running" || session.state === "waiting") setState(session, "paused");
       break;
     case "resume":
+      if (session.exportPending) break;
       session.pauseRequested = false;
       if (session.state === "paused") setState(session, "running");
       break;
+    case "export":
+      if (session.state === "paused" && !session.exportPending && session.machine) {
+        try {
+          const bytes = session.machine.exportDisk();
+          if (bytes) {
+            session.exportPending = true;
+            post({ type: "disk", sessionId: session.id, bytes: bytes as Uint8Array<ArrayBuffer> });
+          }
+        } catch (error) {
+          finish(session, `Cannot export data disk: ${detail(error)}`);
+        }
+      }
+      break;
+    case "exported":
+      if (session.exportPending) {
+        session.machine?.markDiskExported();
+        session.exportPending = false;
+      }
+      break;
     case "stop":
-      finish(session);
+      session.exportPending = false;
+      if (!command.discard && session.machine?.diskDirty) {
+        setState(session, "paused");
+        post({ type: "discard-required", sessionId: session.id });
+      } else {
+        finish(session);
+      }
       break;
   }
 };

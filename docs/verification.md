@@ -1547,3 +1547,50 @@ mke2fs 1.47.4 创建的种子 SHA-256
 原始串口、诊断与哈希见 `.cache/riscv-linux/blk-a/logs-blk/native-mhftu8rm/`。
 原 `repro-c` 缓存的 `make riscv-linux-native`（含 OpenSBI TIME / UART
 和两种串口传输）仍通过。
+
+## RISC-V Linux D5：浏览器与 CLI 互换数据盘
+
+`CHROME_BIN=chromium make wasm-browser-test` 在 Bun、Node.js、Chrome
+各 11 项通过；`examples/web` 的 `bun run check`（类型、lint 和 5 项实际
+Wasm 会话测试）、`bun run build` 通过。原无盘 `make riscv-linux-browser` 用
+`repro-c` 镜像通过 Linux 串口与冷重启，Linux 加载前仍可启动 Apple I。
+
+`CHROME_BIN=chromium make riscv-linux-blk-browser` 使用 `blk-a` 缓存。
+Chrome 155.0.8059.84 打开生产页面，使用原生文件选取、键盘输入和下载；
+客体文件的 HTTP 下载为 0 字节。浏览器冷启动首提示 45.82 / 45.88 秒，
+上限 180 秒，每命令上限 20 秒，串口以独立的结果行和完整提示判定。
+
+| 方向 | 实际读回 | 所用盘 SHA-256 |
+| --- | --- | --- |
+| CLI 写入 → 浏览器冷启动 | `CLI_TO_WEB:42`、`DISK_UNMOUNTED` | `5e72be29624db1dafdf8fbf297eb83d09e3257c4a3b0a1453ba734980f674711` |
+| 浏览器写入 → 下载 → 新 CLI 进程 | `WEB_TO_CLI:42`、`DISK_UNMOUNTED` | `16ae72ac36ced80a3e592b2452a497960626318d5e4bdc4a81ce313c77285683` |
+
+两轮使用各自的 8 MiB 种子，哈希不变。浏览器首份下载和新 CLI 只读挂载
+后再次导出的盘逐字节相同；`debugfs` 核对了脚本，包括浏览器继续运行、
+再次写入并单独下载的 `WEB_AFTER_RESUME`。暂停后排入的命令未改变 tick、
+退休数或串口输出，继续后完成。过大文件选择即拒绝；清除选盘不保留 File。
+实际记录的竞态为 `export → stop → disk → terminate`，没有生成额外下载。
+停止有未导出写入的会话时，取消确认保留暂停会话，再确认才停止。
+串口、下载原件、截图和哈希见 `.cache/riscv-linux/blk-a/logs-blk/`
+的 `hesper-blk-browser.json`、`browser-rv_z5kgl/`。
+
+## RISC-V Linux 数据盘：独立启动成本采样
+
+同一 Arch Linux x86-64 宿主、同一 release 量测构建、管道输入、每种配置
+一次冷启动。临时打点沿原生 CLI 路径，仅在装载、首个完整 `hesper# ` 所在批次
+和发布处读宿主时钟；看到提示符即 Ctrl+]，不挂载盘，不计客体文件系统写入。
+
+| 阶段 | `serial` | `blk`（8 MiB raw） |
+| --- | ---: | ---: |
+| 读取并校验四个启动文件 | 15.07 ms | 19.67 ms |
+| 读取并校验数据盘长度 | — | 3.35 ms |
+| 分配 DRAM、创建机器并装载 | 41.19 ms | 59.73 ms |
+| 启动执行到首提示符 | 32.96 s | 34.65 s |
+| 首提示符批次累计退休 | 336120028 | 371474430 |
+| 数据盘写入、同步并发布 | — | 9.22 ms |
+| 原生进程 `wait4` 峰值 RSS | 149868 KiB | 162164 KiB |
+
+原始打点与串口保留在 `.cache/riscv-linux/data-disk-measure/`。这是单样本，
+能区分秒级客体执行与毫秒级宿主读取、复制和发布，不能归因到某个内核函数。
+浏览器门禁记录到首提示符的实际墙钟时间，未取得 Worker/Wasm 峰值内存；
+以上原生 RSS 不用于推断浏览器内存。未据此调整解释器、预算或镜像分发策略。

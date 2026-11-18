@@ -1,8 +1,8 @@
 # RISC-V Linux 下一步：能在第二次冷启动读回的数据盘
 
-**状态：待实施。** [L8 验收记录](../verification.md#risc-v-linux-l8生产网页与范围冻结)已经证明固定镜像能在浏览器启动真实 Linux。下一项不是再证明一遍能进 shell，而是让用户在 BusyBox 里写一个脚本，结束会话，在全新的机器上挂载同一份磁盘内容并运行它。第一站是原生 CLI，第二站是浏览器与 CLI 互换磁盘。QEMU 只作独立参照。
+**状态：D1–D5 已在本地验收。** 在 BusyBox 写下的脚本可在全新机器挂载同一份盘后运行。验收分为 [QEMU 参考板](../verification.md#risc-v-linux-d1固定-qemu-两次冷启动数据盘)、[原生 CLI](../verification.md#risc-v-linux-d4原生数据盘两次冷启动) 和[浏览器往返](../verification.md#risc-v-linux-d5浏览器与-cli-互换数据盘)。镜像未分发，未部署 Pages。
 
-**第一张工作卡是 D1，不是写设备模拟。** 先证明锁定版本的 Linux 驱动、设备树、参考机插槽和文件系统确实匹配；否则 Hesper 上「没有 `/dev/vda`」无法定位。下文新增的参数、配置名与 Make 目标均为拟议接口，不是当前可运行的入口。
+**第一张工作卡是 D1，不是写设备模拟。** 先证明锁定版本的 Linux 驱动、设备树、参考机插槽和文件系统确实匹配；否则 Hesper 上「没有 `/dev/vda`」无法定位。
 
 ## 交付边界
 
@@ -26,7 +26,7 @@
 
 ## D2 · 接通第二条中断线，不改变纯串口板
 
-[板级 MMIO](../../crates/riscv-linux/src/board.rs) 目前只分发 CLINT、PLIC、UART；[PLIC](../../crates/riscv-linux/src/interrupt_devices.rs) 的 priority、enable、pending 和 in-service 都按单个 UART 编写。先在现有实现内支持固定的两个 source，不引入设备注册表。
+[板级 MMIO](../../crates/riscv-linux/src/board.rs) 原先只分发 CLINT、PLIC、UART；[PLIC](../../crates/riscv-linux/src/interrupt_devices.rs) 原先只支持单个 UART。扩展这一路径，不引入设备注册表。
 
 - 两个 source 各自保存优先级、线电平、pending 和 in-service；M/S 两个 context 分别保存 enable 掩码及 threshold。通知按 threshold 门控；claim 在已使能的非零优先级 pending 中选最高，同优先级取较小 ID。complete 后如果对应线仍高，该源重新 pending，不改变另一源的状态。
 - 扩展[设备测试](../../crates/riscv-linux/tests/devices.rs)：两线同时置位、不同优先级和同优先级、不同 context 屏蔽、先 claim 一个仍能收到另一个、设备清线后 complete 不重复上报；保留原 UART 及 WFI 唤醒场景。
@@ -46,7 +46,7 @@
 
 ## D4 · CLI 交付第一份持久化证明
 
-在[原生串口宿主](../../crates/cli/src/linux.rs)加入成对参数。建议命令如下（`$BLK_IMAGES` 为 D1 产物目录）：
+在[原生串口宿主](../../crates/cli/src/linux.rs)加入成对参数（`$BLK_IMAGES` 为 `make riscv-linux-blk-data` 的产物目录 `images-blk/`）：
 
 ```sh
 hesper linux --images "$BLK_IMAGES" --disk-in seed.raw --disk-out first.raw
@@ -84,6 +84,6 @@ mkdir -p /mnt/data && mount -t ext2 -o ro /dev/vda /mnt/data && \
 
 ## 证据与停止条件
 
-- D1 → D2/D3 → D4 → D5；D2 的中断测试可单独提交，D4 通过即得到可用的原生增量，不等到 UI 完成才验收。每个独立可观察的改动按仓库规则提交；CLI/Web 开始对用户可用时再写 `Unreleased` 和使用说明。本计划不把任何新能力标为已交付。
+- D1 → D2/D3 → D4 → D5；D4 是可独立验收的原生增量。用户入口见 [CLI](../../README.md#risc-v-linux-数据盘本机) 和 [Web](../../examples/web/README.md#可选数据盘)。
 - 镜像和大日志只放 `.cache/riscv-linux/`。各阶段在[验证记录](../verification.md)记命令、配置锁、宿主版本、输入/输出盘哈希、期望与实际串口行、退出原因、fuel/墙钟预算。失败保留首个不同的设备状态或串口行与最小重放命令；缺工具、镜像或超限即失败，不改期望来通过。
 - **性能是单独一张测量卡。** 用同一台宿主、同一构建，分别测纯串口和带盘配置：读取/校验文件、创建机器、运行至首个提示符、导出磁盘的墙钟耗时，以及启动退休数和内存峰值。分清新内核驱动的成本和宿主拷贝成本；浏览器内存指标取不到就注明，不用原生 RSS 代替。只有测量能指向具体瓶颈才安排优化，不把 TLB、JIT 或镜像分发塞进数据盘验收。

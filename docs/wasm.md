@@ -128,6 +128,20 @@ SHA-256；绑定不下载、不分发客体镜像。实例不持有输入数组�
 `make riscv-linux-wasm` 用已准备的锁定镜像在实际 Bun/Node.js 产物中运行同一
 套串口命令，和 `make wasm-browser-test` 的无镜像轻量检查分开。
 
+### 可写数据盘
+
+`RiscvLinux.bootWithDisk(firmware, firmwareEnd, kernel, initramfs, fdt, disk)`
+使用独立的 [`images-blk.lock.json`](../tools/riscv-linux/images-blk.lock.json)。
+宿主必须核对这一组四个镜像，不能混用 `boot` 的纯串口锁。
+`disk` 不参与白名单校验；它是正长度、512 字节对齐、不超过 16 MiB 的
+`Uint8Array`，无效长度报 `InvalidDisk`。会话拥有其副本。
+
+客体卸载后暂停执行，`exportDisk()` 返回可独立传输的 JS 副本；无盘时返回
+`undefined`。`diskDirty` 表示自装载或上次导出以来客体已写入扇区；
+宿主接收导出后、恢复运行前调用 `markDiskExported()` 清除此标记。
+`diskFault` 为需要设备复位的协议错误文本（正常时为 `undefined`）。
+这些接口不处理 ext2，也不保证宿主已保存导出的数据。
+
 ## 类型、错误与生命周期
 
 - 6502/Apple I 的地址和字节，以及各绑定的单次预算是 `number`。绑定先验证有限、整数与范围；RISC-V 的地址使用 `bigint`，不截断到 Wasm32。

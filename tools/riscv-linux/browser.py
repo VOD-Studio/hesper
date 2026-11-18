@@ -1,7 +1,7 @@
 """Boot real pinned Linux in the production workbench using a temporary Chromium."""
 
 import base64
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
@@ -24,23 +24,14 @@ EXIT_SECONDS = 20
 MAX_INTERVAL_MS = 350
 
 
-def run(dist, manifest):
+@contextmanager
+def browser_session(argv, logs, command_count):
     with ExitStack() as stack:
-        corrupt = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="browser-image-", dir=LOGS)))
-        for item in manifest["images"]:
-            name = item["path"]
-            if name == "board.dtb":
-                board = bytearray((IMAGE_DIR / name).read_bytes())
-                board[-1] ^= 1
-                (corrupt / name).write_bytes(board)
-            else:
-                os.link(IMAGE_DIR / name, corrupt / name)
-        argv = ["bun", PROFILE / "browser_session.mjs", dist, IMAGE_DIR, corrupt, LOGS]
-        stderr_path = LOGS / "browser-driver.stderr.log"
+        stderr_path = logs / "browser-driver.stderr.log"
         errors = stack.enter_context(stderr_path.open("wb"))
-        io_path = LOGS / "browser-serial.raw"
+        io_path = logs / "browser-serial.raw"
         output = stack.enter_context(io_path.open("wb"))
-        inputs = stack.enter_context((LOGS / "browser-input.raw").open("wb"))
+        inputs = stack.enter_context((logs / "browser-input.raw").open("wb"))
         guest = stack.enter_context(subprocess.Popen(argv, env=ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                                     stderr=errors, start_new_session=True))
         wire = bytearray()
@@ -71,7 +62,7 @@ def run(dist, manifest):
             data = base64.b64decode(reply["bytes"], validate=True)
             serial.extend(data)
             output.write(data)
-            if len(serial) > (len(COMMANDS) + 2) * STEP_BYTES:
+            if len(serial) > (command_count + 2) * STEP_BYTES:
                 raise ValueError("browser serial transcript exceeded its byte budget")
             return data
 
@@ -83,20 +74,15 @@ def run(dist, manifest):
             send(dict(type="keys", text=data.decode("ascii")))
             inputs.write(data)
 
-        try:
-            start = event(time.monotonic() + SETUP_SECONDS)
-            if start["type"] != "start" or start["imageBytes"] != sum(entry["bytes"] for entry in manifest["images"]):
-                raise ValueError("browser did not select the four pinned local resources")
-            times = drive(receive, keys, manifest["kernelrelease"], manifest["isa"], boot_seconds=BOOT_SECONDS)
-            if len(re.findall(rb"(?:^|\n)Linux \S+ " + re.escape(manifest["kernelrelease"].encode("ascii")), serial)) != 1:
-                raise ValueError("paused uname command must be delivered exactly once")
-            send(dict(type="finish"))
-            finish = event(time.monotonic() + EXIT_SECONDS)
+        def finish():
+            reply = event(time.monotonic() + EXIT_SECONDS)
             guest.stdin.close()
-            if finish["type"] != "done" or guest.wait(timeout=EXIT_SECONDS) != 0:
-                raise ValueError("browser did not complete destruction and clean restart")
-            if finish["maxIntervalMs"] > MAX_INTERVAL_MS:
-                raise ValueError(f"main-thread response gap exceeded {MAX_INTERVAL_MS} ms: {finish['maxIntervalMs']}")
+            if reply["type"] != "done" or guest.wait(timeout=EXIT_SECONDS) != 0:
+                raise ValueError("browser did not complete the acceptance session")
+            return reply
+
+        try:
+            yield event, receive, send, keys, finish, serial
         except (OSError, EOFError, ValueError, subprocess.TimeoutExpired) as error:
             raise ValueError(f"{error}; see {io_path} and {stderr_path}") from error
         finally:
@@ -109,20 +95,50 @@ def run(dist, manifest):
                     os.killpg(guest.pid, signal.SIGKILL)
                     guest.wait()
 
+
+def run(dist, manifest):
+    with tempfile.TemporaryDirectory(prefix="browser-image-", dir=LOGS) as directory:
+        corrupt = Path(directory)
+        for item in manifest["images"]:
+            name = item["path"]
+            if name == "board.dtb":
+                board = bytearray((IMAGE_DIR / name).read_bytes())
+                board[-1] ^= 1
+                (corrupt / name).write_bytes(board)
+            else:
+                os.link(IMAGE_DIR / name, corrupt / name)
+        argv = ["bun", PROFILE / "browser_session.mjs", dist, IMAGE_DIR, LOGS, "serial", corrupt]
+        with browser_session(argv, LOGS, len(COMMANDS)) as (event, receive, send, keys, complete, serial):
+            start = event(time.monotonic() + SETUP_SECONDS)
+            if start["type"] != "start" or start["imageBytes"] != sum(entry["bytes"] for entry in manifest["images"]):
+                raise ValueError("browser did not select the four pinned local resources")
+            times = drive(receive, keys, manifest["kernelrelease"], manifest["isa"], boot_seconds=BOOT_SECONDS)
+            if len(re.findall(rb"(?:^|\n)Linux \S+ " + re.escape(manifest["kernelrelease"].encode("ascii")), serial)) != 1:
+                raise ValueError("paused uname command must be delivered exactly once")
+            send(dict(type="finish"))
+            finish = complete()
+            if finish["maxIntervalMs"] > MAX_INTERVAL_MS:
+                raise ValueError(f"main-thread response gap exceeded {MAX_INTERVAL_MS} ms: {finish['maxIntervalMs']}")
+
     return dict(manifest=manifest, browser=start["browser"], url=start["url"], host=platform.platform(),
                 guest_http_download_bytes=finish["guestDownloadedBytes"], local_image_bytes=start["imageBytes"],
                 serial_timing_seconds=times, boot_deadline_seconds=BOOT_SECONDS,
                 deadline_per_command_seconds=STEP_SECONDS, serial_bytes=len(serial),
                 paused_tick=finish["pausedTick"], guest_exit_tick=finish["tick"], guest_exit_retired=finish["retired"],
                 max_main_interval_ms=finish["maxIntervalMs"], main_interval_limit_ms=MAX_INTERVAL_MS,
-                serial_log=str(io_path), screenshot=str(LOGS / "browser-terminal.png"))
+                serial_log=str(LOGS / "browser-serial.raw"), screenshot=str(LOGS / "browser-terminal.png"))
 
 
-def main():
+def production_dist():
     require_tools("bun", os.environ.get("CHROME_BIN") or "google-chrome")
     dist = PROFILE.parent.parent / "examples/web/dist"
     if not (dist / "index.html").is_file():
         raise ValueError("missing production site; run bun run build in examples/web")
+    return dist
+
+
+def main():
+    dist = production_dist()
     LOGS.mkdir(parents=True, exist_ok=True)
     report = LOGS / "hesper-browser.json"
     report.unlink(missing_ok=True)

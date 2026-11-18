@@ -2,11 +2,11 @@
 
 use core::mem::MaybeUninit;
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, DRAM_SIZE, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS,
-    LoadError, Machine, dram_range,
+    BootError, BootImages, DRAM_BASE, DRAM_SIZE, DataDisk, FDT_ADDRESS, INITRAMFS_ADDRESS,
+    KERNEL_ADDRESS, LoadError, Machine, dram_range,
 };
 use hesper_wasm_support as js;
-use js_sys::{BigInt, Reflect, Uint8Array};
+use js_sys::{Array, BigInt, Function, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
 const PROBE_LIMIT: u64 = 4096;
@@ -28,40 +28,20 @@ impl RiscvLinux {
         initramfs: &Uint8Array,
         fdt: &Uint8Array,
     ) -> Result<RiscvLinux, JsValue> {
-        let firmware_end = address(firmware_end, "firmware_end")?;
-        if !(DRAM_BASE + 1..=KERNEL_ADDRESS).contains(&firmware_end) {
-            return Err(js::error(
-                "InvalidBootImage",
-                "OpenSBI resident end must fit before the Linux Image",
-            ));
-        }
-        // Check every raw length before allocating or copying any image bytes.
-        // Machine::boot additionally validates parsed extents and image contents.
-        let firmware_len = image_len(firmware, "OpenSBI", 1, firmware_end - DRAM_BASE)?;
-        let kernel_len = image_len(
-            kernel,
-            "Linux Image",
-            64,
-            INITRAMFS_ADDRESS - KERNEL_ADDRESS,
-        )?;
-        let initramfs_len = image_len(initramfs, "initramfs", 6, FDT_ADDRESS - INITRAMFS_ADDRESS)?;
-        let fdt_len = image_len(
-            fdt,
-            "DTB",
-            40,
-            DRAM_BASE + DRAM_SIZE as u64 - FDT_ADDRESS - BootImages::FDT_GROWTH,
-        )?;
+        boot(firmware, firmware_end, kernel, initramfs, fdt, None)
+    }
 
-        let [mut fw_buf, mut kernel_buf, mut initrd_buf, mut fdt_buf] = [const { Vec::new() }; 4];
-        let machine = Machine::boot(BootImages {
-            firmware: stage(firmware, firmware_len, "OpenSBI", &mut fw_buf)?,
-            firmware_end,
-            kernel: stage(kernel, kernel_len, "Linux Image", &mut kernel_buf)?,
-            initramfs: stage(initramfs, initramfs_len, "initramfs", &mut initrd_buf)?,
-            fdt: stage(fdt, fdt_len, "DTB", &mut fdt_buf)?,
-        })
-        .map_err(boot_error)?;
-        Ok(Self { machine })
+    /// Boot with a caller-owned raw image, copied once into the machine's private disk.
+    #[wasm_bindgen(js_name = bootWithDisk)]
+    pub fn boot_with_disk(
+        firmware: &Uint8Array,
+        firmware_end: BigInt,
+        kernel: &Uint8Array,
+        initramfs: &Uint8Array,
+        fdt: &Uint8Array,
+        bytes: &Uint8Array,
+    ) -> Result<RiscvLinux, JsValue> {
+        boot(firmware, firmware_end, kernel, initramfs, fdt, Some(bytes))
     }
 
     /// Load a small bare-metal probe. The hart starts at the normal DRAM reset vector.
@@ -113,6 +93,27 @@ impl RiscvLinux {
         Ok(Uint8Array::from(&buffer[..read]))
     }
 
+    /// Return a JS-owned copy, leaving the machine's dirty flag unchanged.
+    #[wasm_bindgen(js_name = exportDisk)]
+    pub fn export_disk(&self) -> Option<Uint8Array> {
+        self.machine.data_disk().map(Uint8Array::from)
+    }
+
+    #[wasm_bindgen(getter, js_name = diskDirty)]
+    pub fn disk_dirty(&self) -> bool {
+        self.machine.disk_dirty()
+    }
+
+    #[wasm_bindgen(js_name = markDiskExported)]
+    pub fn mark_disk_exported(&mut self) {
+        self.machine.mark_disk_exported();
+    }
+
+    #[wasm_bindgen(getter, js_name = diskFault)]
+    pub fn disk_fault(&self) -> Option<String> {
+        self.machine.disk_fault().map(|fault| fault.to_string())
+    }
+
     /// Side-effect-free CPU, trap, device, and queue diagnostics, not a savestate.
     pub fn snapshot(&self) -> String {
         format!("{:#x?}", self.machine.diagnostics())
@@ -159,6 +160,89 @@ impl RiscvLinux {
     pub fn stalled_traps(&self) -> u32 {
         self.machine.diagnostics().stalled_traps
     }
+}
+
+fn boot(
+    firmware: &Uint8Array,
+    firmware_end: BigInt,
+    kernel: &Uint8Array,
+    initramfs: &Uint8Array,
+    fdt: &Uint8Array,
+    disk: Option<&Uint8Array>,
+) -> Result<RiscvLinux, JsValue> {
+    let firmware_end = address(firmware_end, "firmware_end")?;
+    if !(DRAM_BASE + 1..=KERNEL_ADDRESS).contains(&firmware_end) {
+        return Err(js::error(
+            "InvalidBootImage",
+            "OpenSBI resident end must fit before the Linux Image",
+        ));
+    }
+    // Check all raw lengths before allocating or copying any image bytes.
+    // The machine additionally validates parsed extents and image contents.
+    let firmware_len = image_len(firmware, "OpenSBI", 1, firmware_end - DRAM_BASE)?;
+    let kernel_len = image_len(
+        kernel,
+        "Linux Image",
+        64,
+        INITRAMFS_ADDRESS - KERNEL_ADDRESS,
+    )?;
+    let initramfs_len = image_len(initramfs, "initramfs", 6, FDT_ADDRESS - INITRAMFS_ADDRESS)?;
+    let fdt_len = image_len(
+        fdt,
+        "DTB",
+        40,
+        DRAM_BASE + DRAM_SIZE as u64 - FDT_ADDRESS - BootImages::FDT_GROWTH,
+    )?;
+    let disk = disk
+        .map(|bytes| {
+            let bytes = disk_view(bytes)?;
+            // js-sys copies directly into the owned Vec without zeroing scratch.
+            DataDisk::new(bytes.to_vec()).map_err(|err| js::error("InvalidDisk", &err.to_string()))
+        })
+        .transpose()?;
+
+    let [mut fw_buf, mut kernel_buf, mut initrd_buf, mut fdt_buf] = [const { Vec::new() }; 4];
+    let images = BootImages {
+        firmware: stage(firmware, firmware_len, "OpenSBI", &mut fw_buf)?,
+        firmware_end,
+        kernel: stage(kernel, kernel_len, "Linux Image", &mut kernel_buf)?,
+        initramfs: stage(initramfs, initramfs_len, "initramfs", &mut initrd_buf)?,
+        fdt: stage(fdt, fdt_len, "DTB", &mut fdt_buf)?,
+    };
+    let machine = match disk {
+        Some(disk) => Machine::boot_with_disk(images, disk),
+        None => Machine::boot(images),
+    }
+    .map_err(boot_error)?;
+    Ok(RiscvLinux { machine })
+}
+
+fn disk_view(bytes: &Uint8Array) -> Result<Uint8Array, JsValue> {
+    if !bytes.is_instance_of::<Uint8Array>() {
+        return Err(js::error("InvalidArgument", "expected a Uint8Array"));
+    }
+    // Read the actual view extent rather than caller-shadowable properties.
+    // to_vec reads length again, so pass it a plain, fixed-length view.
+    let key = JsValue::from_str("Uint8Array");
+    let constructor = Reflect::get(js_sys::global().as_ref(), &key)?.dyn_into::<Function>()?;
+    let prototype = Reflect::get(&constructor, &JsValue::from_str("prototype"))?;
+    let prototype = Reflect::get_prototype_of(&prototype)?;
+    let get = |key| {
+        let descriptor = Reflect::get_own_property_descriptor(&prototype, &JsValue::from_str(key))?;
+        Reflect::get(&descriptor, &JsValue::from_str("get"))?
+            .dyn_into::<Function>()?
+            .call0(bytes)
+    };
+    let length = get("length")?;
+    let len = length.as_f64().unwrap_or_default();
+    if len > DataDisk::MAX_BYTES as f64 || !DataDisk::valid_size(len as usize) {
+        return Err(js::error(
+            "InvalidDisk",
+            "data disk length must be a positive multiple of 512 up to 16 MiB",
+        ));
+    }
+    let args = Array::of3(&get("buffer")?, &get("byteOffset")?, &length);
+    Reflect::construct(&constructor, &args)?.dyn_into()
 }
 
 fn address(value: BigInt, name: &str) -> Result<u64, JsValue> {
