@@ -1801,3 +1801,25 @@ Buildroot 工具链，无单独的 Linux 源码归档或内核构建目录。旧
 串口输出为零。标准和带盘配置也通过原生对照，后者用 `debugfs` 读回。
 `cargo test --locked -p hesper` 与 `make verify` 通过。报告和原始串口在
 `.cache/riscv-linux/repro-c/logs-alpine/native-tn9ommhe/`。
+
+## RISC-V Linux Alpine 官方内核：生产 Chromium
+
+`CHROME_BIN=chromium make riscv-linux-alpine-browser` 用 Chromium
+155.0.8059.84 打开生产构建，选择本地镜像，实际键入串口验收命令。
+两次官方内核冷启动都报告 `6.18.63-0-lts`，加载官方模块并读回同一配置哈希。
+安装会话通过离线验签和浮点测试，xterm 显示独立的 `7.500`。
+冷启动时 `mawk` 已从 RAM 根清除，离线 APK 仍能验签。
+
+| 会话 | 到首提示 (s) | 到末条结果 (s) | 已用 transitions | 限额 |
+| --- | ---: | ---: | ---: | ---: |
+| 官方 Alpine 安装 | 99.77 | 197.64 | 1768816640 | 2000000000 |
+| 官方 Alpine 冷启动 | 95.96 | 125.55 | 1182334976 | 2000000000 |
+| 旧版 Alpine | 40.85 | 41.15 | 362610688 | 1150000000 |
+| 标准 Linux | 36.47 | 36.85 | 340656128 | 450000000 |
+
+标准镜像误选、官方内核混搭旧版 RAM 根及内核单字节损坏均在固件启动前被拒，
+Worker 未发出 Ready 或串口输出。各通过会话均正常停止，主线程最大观察间隔
+为 94.2 ms，页面和 Worker 的客体文件 HTTP 请求及传输字节均为零。
+`make wasm-browser-test` 在 Bun、Node.js、Chromium 各 12 项通过，
+`bun run check` 与 `bun run build` 通过。截图、原始串口与报告在
+`.cache/riscv-linux/repro-c/logs-alpine/browser-zu5eyaqd/`。

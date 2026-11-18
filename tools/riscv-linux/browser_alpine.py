@@ -1,4 +1,4 @@
-"""Prove the locked Alpine userspace in the production Chromium workbench."""
+"""Prove the locked Alpine kernel, module and userspace in the production Chromium workbench."""
 
 import json
 from pathlib import Path
@@ -8,28 +8,29 @@ import sys
 import tempfile
 import time
 
-from alpine_acceptance import PACKAGE, STATUS, cold_states, states
+from alpine_acceptance import PACKAGE, STATUS, cold_states, kernel_states, states
 from browser import BOOT_SECONDS as STANDARD_BOOT_SECONDS, SETUP_SECONDS, browser_session, production_dist
-from build_guest import ALPINE_IMAGE_DIR, ALPINE_LOGS, IMAGE_DIR, PROFILE, verified_manifest
+from build_guest import ALPINE_IMAGE_DIR, ALPINE_LEGACY_DIR, ALPINE_LOGS, IMAGE_DIR, PROFILE, verified_manifest
 from serial_acceptance import COMMANDS, STEP_BYTES, STEP_SECONDS, drive, session
 from sources import sha256
 
 BOOT_SECONDS = 300
 COMMAND_SECONDS = 60
-ARCHIVE = "initramfs.cpio"
 VERIFY_LINE = (PACKAGE + b": OK").decode("ascii")
 
 
-def run(dist, manifest, standard, logs):
+def run(dist, manifest, legacy, standard, logs):
     started = time.monotonic()
-    archive = bytearray((ALPINE_IMAGE_DIR / ARCHIVE).read_bytes())
-    archive[-1] ^= 1
-    corrupt = logs / ARCHIVE
-    corrupt.write_bytes(archive)
+    corrupt = logs / "Image"
+    kernel = bytearray((ALPINE_IMAGE_DIR / "Image").read_bytes())
+    kernel[-1] ^= 1
+    corrupt.write_bytes(kernel)
 
-    install, cold = states(), cold_states()
-    argv = ["bun", PROFILE / "browser_session.mjs", dist, ALPINE_IMAGE_DIR, logs, "alpine", IMAGE_DIR, corrupt]
-    count = len(install) + len(cold) + len(COMMANDS) + 3  # three independently bounded boot transcripts
+    install, cold = states(manifest), cold_states(manifest)
+    legacy_commands = tuple(kernel_states(legacy))
+    argv = ["bun", PROFILE / "browser_session.mjs", dist, ALPINE_IMAGE_DIR, logs, "alpine",
+            IMAGE_DIR, ALPINE_LEGACY_DIR, corrupt]
+    count = len(install) + len(cold) + len(legacy_commands) + len(COMMANDS) + 4
     phases = {}
     input_offset = 0
     with browser_session(argv, logs, count) as (event, receive, send, keys, complete, serial):
@@ -61,8 +62,10 @@ def run(dist, manifest, standard, logs):
         measure("install", "alpine", manifest, install, BOOT_SECONDS)
         send(dict(type="cold"))
         measure("cold", "alpine", manifest, cold, BOOT_SECONDS)
-        send(dict(type="standard", resultLine=VERIFY_LINE))
-        # This transition also stops Alpine and runs both rejected boots through the UI.
+        send(dict(type="legacy", resultLine=VERIFY_LINE))
+        # This transition also runs the rejected boots through the UI.
+        measure("legacy", "alpine", legacy, legacy_commands, BOOT_SECONDS, setup_seconds=COMMAND_SECONDS)
+        send(dict(type="standard", resultLine=legacy["kernelrelease"]))
         measure("standard", "standard", standard, COMMANDS, STANDARD_BOOT_SECONDS, setup_seconds=COMMAND_SECONDS)
         send(dict(type="finish"))
         finished = complete()
@@ -73,7 +76,7 @@ def run(dist, manifest, standard, logs):
             raise ValueError(f"browser ended a different {phase} session")
         proof.update(worker=details)
     wasm = dist / finished["wasmPath"].removeprefix("/hesper/")
-    return dict(manifest=manifest, standard_manifest=standard, browser=phases["install"]["start"]["browser"],
+    return dict(manifest=manifest, legacy_manifest=legacy, standard_manifest=standard, browser=phases["install"]["start"]["browser"],
                 url=phases["install"]["start"]["url"], host=platform.platform(), production_dist=str(dist),
                 wasm=dict(path=finished["wasmPath"], sha256=sha256(wasm)),
                 phases=phases, rejected=finished["rejected"], command_byte_limit=STEP_BYTES,
@@ -88,10 +91,11 @@ def run(dist, manifest, standard, logs):
 def main():
     dist = production_dist()
     manifest = verified_manifest(alpine=True)
+    legacy = verified_manifest(alpine=True, legacy=True)
     standard = verified_manifest()
     ALPINE_LOGS.mkdir(parents=True, exist_ok=True)
     logs = Path(tempfile.mkdtemp(prefix="browser-", dir=ALPINE_LOGS))
-    result = run(dist, manifest, standard, logs)
+    result = run(dist, manifest, legacy, standard, logs)
     report = logs / "report.json"
     report.write_text(json.dumps(result, indent=2) + "\n")
     print(f"Production Chromium installed and ran signed mawk offline (xterm: 7.500), "

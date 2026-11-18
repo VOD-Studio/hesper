@@ -1,6 +1,7 @@
 import imageLock from "../../../tools/riscv-linux/images.lock.json";
 import diskImageLock from "../../../tools/riscv-linux/images-blk.lock.json";
-import alpineImageLock from "../../../tools/riscv-linux/images-alpine.lock.json";
+import alpineImageLock from "../../../tools/riscv-linux/images-alpine-lts.lock.json";
+import alpineLegacyLock from "../../../tools/riscv-linux/images-alpine.lock.json";
 import { initSync, RiscvLinux } from "./generated/riscv-linux/hesper_riscv_linux";
 import wasmUrl from "./generated/riscv-linux/hesper_riscv_linux_bg.wasm?url";
 import { validDiskSize } from "./linux-disk";
@@ -8,8 +9,9 @@ import { DEFAULT_INITRAMFS_NAME, validInitramfsSize } from "./linux-initramfs";
 import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
 
 const FUEL_LIMIT = 450_000_000;
-// 1.5 × the larger measured native install session, rounded up to 50M.
-const ALPINE_FUEL_LIMIT = 1_150_000_000;
+// Same bounded budget as the native Alpine acceptance run.
+const ALPINE_FUEL_LIMIT = 2_000_000_000;
+const ALPINE_LEGACY_FUEL_LIMIT = 1_150_000_000;
 const FUEL_BATCH = 65_536;
 const STALLED_TRAP_LIMIT = 32;
 const SERIAL_BATCH = 4096;
@@ -20,6 +22,7 @@ const GUEST_MEMORY_MIB = 128;
 const pins = new Map(imageLock.images.map((pin) => [pin.path, pin]));
 const diskPins = new Map(diskImageLock.images.map((pin) => [pin.path, pin]));
 const alpinePins = new Map(alpineImageLock.images.map((pin) => [pin.path, pin]));
+const alpineLegacyPins = new Map(alpineLegacyLock.images.map((pin) => [pin.path, pin]));
 const tasks = new MessageChannel();
 const usedIds = new Set<number>();
 let wasmInitialized = false;
@@ -121,6 +124,13 @@ async function initializeWasm(signal: AbortSignal) {
   }
 }
 
+function alpineImagePins(files: File[]) {
+  // The two locked Images have distinct lengths. Verify all four hashes
+  // against the same lock before starting the selected kernel.
+  const kernel = files.find((file) => file.name === "Image");
+  return kernel && kernel.size === alpineLegacyPins.get("Image")?.bytes ? alpineLegacyPins : alpinePins;
+}
+
 async function loadMachine({ profile, files, initramfs, disk }: BootCommand, signal: AbortSignal) {
   if (profile !== "standard" && profile !== "alpine") {
     throw new Error("Unknown Linux boot profile.");
@@ -134,7 +144,7 @@ async function loadMachine({ profile, files, initramfs, disk }: BootCommand, sig
   if (disk && !validDiskSize(disk.size)) {
     throw new Error("A data disk must be a positive multiple of 512 bytes and no larger than 16 MiB.");
   }
-  const imagePins = profile === "alpine" ? alpinePins : disk ? diskPins : pins;
+  const imagePins = profile === "alpine" ? alpineImagePins(files) : disk ? diskPins : pins;
   const selected = selectFiles(files, imagePins, initramfs !== undefined);
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("SHA-256 verification requires a secure browser context (HTTPS or localhost).");
@@ -327,7 +337,9 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
       pauseRequested: false,
       exportPending: false,
       fuel: 0,
-      fuelLimit: command.profile === "alpine" ? ALPINE_FUEL_LIMIT : FUEL_LIMIT,
+      fuelLimit: command.profile === "alpine"
+        ? (alpineImagePins(command.files) === alpineLegacyPins ? ALPINE_LEGACY_FUEL_LIMIT : ALPINE_FUEL_LIMIT)
+        : FUEL_LIMIT,
       batchPending: false,
       nextReport: 0,
     };

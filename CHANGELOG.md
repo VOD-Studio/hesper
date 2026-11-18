@@ -3,6 +3,7 @@
 记录 Hesper 各版本的用户可见变更。所有 Rust crate 统一版本；未发布的变更记在 `Unreleased`，发布时归入带日期的版本小节。
 
 ## [Unreleased]
+- **Web**：「Alpine」可本地启动官方 `linux-lts` 及配套模块，也接受原有镜像。Worker 在启动前校验整套镜像。
 
 - **CLI / RISC-V Linux**：`hesper linux --images` 接受官方内核镜像 `images-alpine-lts` 和原有 `images-alpine`，在运行固件前拒绝混用或损坏的镜像。
 - **RISC-V 参考板**：Alpine 默认镜像直接使用验签的官方 riscv64 `linux-lts` 内核 `6.18.63-0-lts` 和配套 `configs.ko`，固定 QEMU 对照验证模块加载及内核配置哈希。

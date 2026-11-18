@@ -11,7 +11,7 @@ const initramfsGate = mode === "initramfs";
 const alpineGate = mode === "alpine";
 const [cliDisk, webDisk, oversized] = input;
 const [corrupt] = input;
-const lockName = diskGate ? "images-blk.lock.json" : alpineGate ? "images-alpine.lock.json" : "images.lock.json";
+const lockName = diskGate ? "images-blk.lock.json" : alpineGate ? "images-alpine-lts.lock.json" : "images.lock.json";
 const lock = JSON.parse(readFileSync(new URL(lockName, import.meta.url), "utf8"));
 const root = resolve(dist);
 const profile = mkdtempSync(join(tmpdir(), "hesper-riscv-chrome-"));
@@ -294,7 +294,8 @@ try {
   else await runSerialGate();
 
   async function runAlpineGate() {
-    const [standardImages, damagedArchive] = input;
+    const [standardImages, legacyImages, damagedKernel] = input;
+    const legacyLock = JSON.parse(readFileSync(new URL("images-alpine.lock.json", import.meta.url), "utf8"));
     const standardLock = JSON.parse(readFileSync(new URL("images.lock.json", import.meta.url), "utf8"));
     const profilePicker = 'select[data-linux-profile][aria-label="启动配置"]';
     const files = "[data-linux-files]", initramfs = "[data-linux-initramfs]", disk = "[data-linux-disk]";
@@ -424,11 +425,16 @@ try {
         await closePhase(phase, "7.500");
         phase = "cold";
         await openPhase(phase, "alpine", images, lock, true);
-      } else if (request.type === "standard" && phase === "cold") {
+      } else if (request.type === "legacy" && phase === "cold") {
         await closePhase(phase, request.resultLine);
         await reject("stock-images", standardImages, standardLock, "initramfs.cpio: expected");
-        await reject("corrupt-archive", images, lock, "initramfs.cpio: SHA-256",
-          { "initramfs.cpio": damagedArchive });
+        await reject("old-root", images, lock, "initramfs.cpio: expected",
+          { "initramfs.cpio": join(legacyImages, "initramfs.cpio") });
+        await reject("corrupt-kernel", images, lock, "Image: SHA-256", { Image: damagedKernel });
+        phase = "legacy";
+        await openPhase(phase, "alpine", legacyImages, legacyLock);
+      } else if (request.type === "standard" && phase === "legacy") {
+        await closePhase(phase, request.resultLine);
         await chooseProfile("standard");
         phase = "standard";
         await openPhase(phase, "standard", standardImages, standardLock);
