@@ -3,6 +3,7 @@
 记录 Hesper 各版本的用户可见变更。所有 Rust crate 统一版本；未发布的变更记在 `Unreleased`，发布时归入带日期的版本小节。
 
 ## [Unreleased]
+- **Wasm / Web**：`RiscvLinux.bootImafdcWithDisk` 支持官方 Alpine 的可选数据盘。「Alpine」可使用 CLI 导出的盘，也可暂停下载 raw 盘供 CLI 冷启动。
 - **CLI / RISC-V Linux**：官方 Alpine 可用 `images-alpine-lts-blk` 和 `--disk-in` / `--disk-out` 挂载并导出数据盘，启动根留在 RAM。
 - **RISC-V 参考板**：`images-alpine-lts-blk` 从已验签的官方内核包加入 virtio 和 ext4 模块。固定 QEMU 可挂载 8 MiB raw 数据盘并在冷启动中读回。
 - **Web / RISC-V Linux**：所有启动配置默认不限会话执行总量。Worker 继续分批推进，支持暂停、继续、停止和异常循环检测。

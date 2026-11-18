@@ -73,7 +73,27 @@ impl RiscvLinux {
             kernel,
             initramfs,
             fdt,
-            BootMode::Disk(bytes),
+            BootMode::Disk(HartIsa::Imac, bytes),
+        )
+    }
+
+    /// Boot a fixed RV64IMAFDC board with a private copy of the supplied disk.
+    #[wasm_bindgen(js_name = bootImafdcWithDisk)]
+    pub fn boot_imafdc_with_disk(
+        firmware: &Uint8Array,
+        firmware_end: BigInt,
+        kernel: &Uint8Array,
+        initramfs: &Uint8Array,
+        fdt: &Uint8Array,
+        bytes: &Uint8Array,
+    ) -> Result<RiscvLinux, JsValue> {
+        boot(
+            firmware,
+            firmware_end,
+            kernel,
+            initramfs,
+            fdt,
+            BootMode::Disk(HartIsa::Imafdc, bytes),
         )
     }
 
@@ -224,7 +244,7 @@ impl RiscvLinux {
 
 enum BootMode<'a> {
     Default(HartIsa),
-    Disk(&'a Uint8Array),
+    Disk(HartIsa, &'a Uint8Array),
     Replacement(usize, Option<&'a Uint8Array>),
 }
 
@@ -280,7 +300,7 @@ fn boot(
     )?;
     let disk = match mode {
         BootMode::Default(_) => None,
-        BootMode::Disk(bytes) => Some(bytes),
+        BootMode::Disk(_, bytes) => Some(bytes),
         BootMode::Replacement(_, disk) => disk,
     };
     let disk = disk
@@ -309,7 +329,9 @@ fn boot(
     };
     let machine = match mode {
         BootMode::Default(isa) => Machine::boot_with_isa(images, isa),
-        BootMode::Disk(_) => Machine::boot_with_disk(images, disk.expect("staged data disk")),
+        BootMode::Disk(isa, _) => {
+            Machine::boot_with_isa_and_disk(images, isa, disk.expect("staged data disk"))
+        }
         BootMode::Replacement(locked_len, _) => {
             Machine::boot_with_initramfs(images, locked_len, disk)
         }

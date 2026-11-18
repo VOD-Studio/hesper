@@ -131,9 +131,10 @@ SHA-256；绑定不下载、不分发客体镜像。实例不持有输入数组�
 ### Alpine（显式 RV64IMAFDC）
 
 `RiscvLinux.bootImafdc(firmware, firmwareEnd, kernel, initramfs, fdt)` 使用
-[`images-alpine.lock.json`](../tools/riscv-linux/images-alpine.lock.json) 中的四个镜像。
-调用方负责在启动前核对全部大小和 SHA-256。绑定显式启用 F/D，不根据客体内容推断
-ISA；`boot`、`bare`、换根及数据盘入口仍为 IMAC。这里的根是锁定的默认归档，
+[`images-alpine-lts.lock.json`](../tools/riscv-linux/images-alpine-lts.lock.json) 或
+[`images-alpine.lock.json`](../tools/riscv-linux/images-alpine.lock.json) 中的一整组镜像。
+调用方负责在启动前核对全部大小和 SHA-256。此入口显式启用 F/D。
+`boot`、`bare`、换根及 `bootWithDisk` 使用 IMAC。这里的根是锁定的默认归档，
 使用与 `boot` 相同的 56 MiB 装载窗口，不改变自定义归档的 16 MiB 限制。
 
 ### 可写数据盘
@@ -141,6 +142,12 @@ ISA；`boot`、`bare`、换根及数据盘入口仍为 IMAC。这里的根是锁
 `RiscvLinux.bootWithDisk(firmware, firmwareEnd, kernel, initramfs, fdt, disk)`
 使用独立的 [`images-blk.lock.json`](../tools/riscv-linux/images-blk.lock.json)。
 宿主必须核对这一组四个镜像，不能混用 `boot` 的纯串口锁。
+
+`RiscvLinux.bootImafdcWithDisk(firmware, firmwareEnd, kernel, initramfs, fdt, disk)`
+启用 RV64IMAFDC，宿主校验
+[`images-alpine-lts-blk.lock.json`](../tools/riscv-linux/images-alpine-lts-blk.lock.json)
+的完整镜像组。Alpine 从 RAM 根启动，通过官方 ext4 模块挂载 `/dev/vda`。
+
 `disk` 不参与白名单校验；它是正长度、512 字节对齐、不超过 16 MiB 的
 `Uint8Array`，无效长度报 `InvalidDisk`。会话拥有其副本。
 

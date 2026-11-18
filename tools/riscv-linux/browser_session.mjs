@@ -6,19 +6,23 @@ import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 
 const [dist, images, logs, mode, ...input] = process.argv.slice(2);
-const diskGate = mode === "disk";
+const alpineDiskGate = mode === "alpine-disk";
+const diskGate = mode === "disk" || alpineDiskGate;
 const initramfsGate = mode === "initramfs";
 const alpineGate = mode === "alpine";
-const [cliDisk, webDisk, oversized] = input;
+const [cliDisk, webDisk, oversized, alpineSerialImages, standardImages] = input;
 const [corrupt] = input;
-const lockName = diskGate ? "images-blk.lock.json" : alpineGate ? "images-alpine-lts.lock.json" : "images.lock.json";
-const lock = JSON.parse(readFileSync(new URL(lockName, import.meta.url), "utf8"));
+const lockName = alpineDiskGate ? "images-alpine-lts-blk.lock.json" : diskGate ? "images-blk.lock.json"
+  : alpineGate ? "images-alpine-lts.lock.json" : "images.lock.json";
+const readLock = name => JSON.parse(readFileSync(new URL(name, import.meta.url), "utf8"));
+const lock = readLock(lockName);
 const root = resolve(dist);
 const profile = mkdtempSync(join(tmpdir(), "hesper-riscv-chrome-"));
 const chrome = process.env.CHROME_BIN || "google-chrome";
 const tab = "/hesper/";
 const guestNames = new Set(lock.images.map(entry => entry.path));
 if (initramfsGate) for (const file of input.slice(1)) guestNames.add(basename(file));
+if (diskGate) for (const file of [cliDisk, webDisk]) guestNames.add(basename(file));
 const isGuestPath = path => guestNames.has(basename(path)) || (alpineGate && /\.apk$/i.test(path));
 const alpineWorkerEvents = [], networkTrace = [], networkRequests = new Map(), servedWasm = new Set();
 const guestRequests = [];
@@ -185,6 +189,18 @@ try {
     const control = document.querySelector(${JSON.stringify(selector)});
     return !!control && !control.disabled && control.checkVisibility();
   })()`;
+  const profilePicker = 'select[data-linux-profile][aria-label="启动配置"]';
+  const picker = `document.querySelector(${JSON.stringify(profilePicker)})`;
+  async function selectProfile(value) {
+    const key = value === "alpine" ? "End" : "Home";
+    check(await evaluate(`${enabled(profilePicker)} && (${picker}.focus(), document.activeElement === ${picker})`),
+      "could not focus the launch configuration selector with the session stopped");
+    await call("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: key === "End" ? 35 : 36 });
+    await call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key });
+    await until(`${picker}.value === ${JSON.stringify(value)} &&
+      document.querySelector('[data-linux-files]').files.length === 0 && !${enabled("[data-linux-start]")}`,
+      `keyboard selection of ${value} with cleared local files`);
+  }
   async function controlPoint(selector, scroll) {
     const point = await evaluate(`(() => {
       const target = document.querySelector(${JSON.stringify(selector)});
@@ -297,10 +313,8 @@ try {
     const [standardImages, legacyImages, damagedKernel] = input;
     const legacyLock = JSON.parse(readFileSync(new URL("images-alpine.lock.json", import.meta.url), "utf8"));
     const standardLock = JSON.parse(readFileSync(new URL("images.lock.json", import.meta.url), "utf8"));
-    const profilePicker = 'select[data-linux-profile][aria-label="启动配置"]';
     const files = "[data-linux-files]", initramfs = "[data-linux-initramfs]", disk = "[data-linux-disk]";
     const start = "[data-linux-start]", stop = "[data-linux-stop]", error = "[data-linux-error]";
-    const picker = `document.querySelector(${JSON.stringify(profilePicker)})`;
     const rows = `${tty()}.split('\\n').map(line => line.trimEnd())`;
     const url = `http://127.0.0.1:${server.port}${tab}`;
     const phases = {}, rejected = {};
@@ -309,19 +323,12 @@ try {
     const nextId = () => 1 + (workerEvents.findLast(event => event.request && event.type === "boot")?.sessionId ?? 0);
 
     async function chooseProfile(value) {
-      const key = value === "alpine" ? "End" : "Home";
-      check(await evaluate(`${enabled(profilePicker)} && (${picker}.focus(), document.activeElement === ${picker})`),
-        "could not focus the launch configuration selector with the session stopped");
-      await call("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: key === "End" ? 35 : 36 });
-      await call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key });
-      await until(`${picker}.value === ${JSON.stringify(value)} &&
-        document.querySelector('${files}').files.length === 0 && !${enabled(start)} && !${visible(error)}`,
-        `keyboard selection of ${value} with cleared local files and error`);
-      const available = value === "standard";
-      check(await evaluate(`Boolean(${enabled(initramfs)}) === ${available} &&
-        Boolean(${enabled(disk)}) === ${available}`), `optional pickers did not match the ${value} profile`);
-      if (!available) {
-        check(await evaluate(`!${visible(initramfs)} && !${visible(disk)}`), "Alpine exposed a data disk or root picker");
+      await selectProfile(value);
+      const customRoot = value === "standard";
+      check(await evaluate(`Boolean(${enabled(initramfs)}) === ${customRoot} && ${enabled(disk)} && !${visible(error)}`),
+        `optional pickers did not match the ${value} profile`);
+      if (!customRoot) {
+        check(!await evaluate(visible(initramfs)), "Alpine exposed a custom root picker");
         const required = await evaluate(`Array.from(${picker}.closest('section').querySelectorAll('ul code'), item => item.textContent)`);
         check(JSON.stringify(required?.toSorted()) === JSON.stringify(lock.images.map(item => item.path).toSorted()),
           "Alpine did not list exactly the four required image files");
@@ -602,6 +609,7 @@ try {
     const clear = "[data-linux-clear-disk]";
     const diskError = "[data-linux-disk-error]";
     const exporter = "[data-linux-export]";
+    const startButton = "[data-linux-start]";
     const stop = "[data-linux-stop]";
     const diskFiles = `document.querySelector('${diskInput}').files`;
     const downloadName = "hesper-data.raw";
@@ -609,8 +617,13 @@ try {
     const completed = [];
     const sendRequest = event => event.request && event.sessionId === streaming;
     const pausedSnapshots = [];
+    const nextId = () => 1 + (workerEvents.findLast(event => event.request && event.type === "boot")?.sessionId ?? 0);
+    const alpineSerialLock = alpineDiskGate && readLock("images-alpine-lts.lock.json");
+    const standardLock = alpineDiskGate && readLock("images.lock.json");
     let paused;
     let race;
+    let rejected;
+    let dirtyStop;
 
     async function selectDisk(path) {
       await setFiles(diskInput, [path]);
@@ -618,16 +631,17 @@ try {
         && ${enabled(clear)} && !${visible(diskError)}`, "accepted disk file");
     }
 
-    async function boot(path, phase) {
-      await selectDisk(path);
-      streaming = 1 + (workerEvents.findLast(event => event.request && event.type === "boot")?.sessionId ?? 0);
+    async function boot(path, phase, profile = alpineDiskGate ? "alpine" : "standard") {
+      if (path) await selectDisk(path);
+      streaming = nextId();
       const bytes = await evaluate("Array.from(document.querySelector('[data-linux-files]').files, file => file.size).reduce((a,b) => a+b, 0)");
       emit({ type: "start", phase, browser: version.Browser, imageBytes: bytes,
         url: `http://127.0.0.1:${server.port}${tab}` });
-      await click("[data-linux-start]");
+      await click(startButton);
       const boot = await waitFor(() => workerEvents.find(event => sendRequest(event) && event.type === "boot"), `boot for ${phase}`);
-      check(boot.files.some(file => file.name === path.split(sep).at(-1) && file.size === statSync(path).size),
-        "Worker boot did not use the selected local disk");
+      check(boot.profile === profile && (path
+        ? boot.disk?.name === basename(path) && boot.disk.size === statSync(path).size
+        : boot.disk === undefined), "Worker boot did not use the selected profile and disk");
     }
 
     const counters = () => evaluate(`[document.querySelector('[data-linux-time]')?.dataset.linuxTime,
@@ -739,6 +753,21 @@ try {
       return dialog.message;
     }
 
+    if (alpineDiskGate) {
+      await selectProfile("alpine");
+      await selectFiles(alpineSerialImages, alpineSerialLock);
+      await selectDisk(cliDisk);
+      const id = nextId();
+      await click(startButton);
+      const error = "[data-linux-error]";
+      await until(`${state("failed")} && ${visible(error)}`, "Alpine requires the matching data-disk images");
+      const message = await evaluate(`document.querySelector('${error}').textContent.trim()`);
+      const events = replies.filter(reply => reply.sessionId === id);
+      check(message.includes("requires images-alpine-lts-blk") &&
+        events.some(reply => reply.type === "error" && reply.message === message) &&
+        events.every(reply => !["ready", "stdout"].includes(reply.type)), "Alpine accepted no-disk images with a disk");
+      rejected = { id, message };
+    }
     await selectFiles(images);
     await selectDisk(cliDisk);
     await click(clear);
@@ -751,6 +780,23 @@ try {
     const oversizedError = await evaluate(`document.querySelector('${diskError}').textContent.trim()`);
     check(workerEvents.length === beforeOversize, "oversized disk selection contacted a Worker");
     await boot(cliDisk, "cli-to-web");
+    async function verifyDirtyStop() {
+      check(completed.length === exportLabels.length && race, "missing completed disk exports");
+      const declined = await rejectOrDiscard(false);
+      const accepted = await rejectOrDiscard(true);
+      await delay(350);
+      check(downloads.length === completed.length + race.downloads, "unexpected download during or after dirty Stop");
+      const screenshot = await call("Page.captureScreenshot", { format: "png" });
+      writeFileSync(join(logs, "browser-terminal.png"), Buffer.from(screenshot.data, "base64"));
+      return { declined, accepted };
+    }
+    async function stopSerial() {
+      check(!await evaluate(enabled(exporter)), "disk export enabled for a serial-only guest");
+      await click(stop);
+      await until(state("ended"), "Stop ended the serial-only session");
+      streaming = undefined;
+    }
+
     for await (const line of createInterface({ input: process.stdin })) {
       const request = JSON.parse(line);
       if (request.type === "keys") {
@@ -758,21 +804,33 @@ try {
         else await type(request.text);
       } else if (request.type === "write-phase") {
         check(race === undefined, "repeated write phase");
+        if (alpineDiskGate) {
+          await until(`${tty()}.split('\\n').some(line => line.trimEnd() === 'CLI_TO_WEB:42')`,
+            "xterm rendered the script from the CLI disk");
+        }
         await raceStop();
         await boot(webDisk, "web-to-cli");
       } else if (request.type === "export") {
         await exportDisk(request.label);
+      } else if (request.type === "alpine-serial" && alpineDiskGate) {
+        dirtyStop = await verifyDirtyStop();
+        paused = undefined;
+        await click(clear);
+        await selectFiles(alpineSerialImages, alpineSerialLock);
+        await boot(undefined, "alpine-serial");
+      } else if (request.type === "standard" && alpineDiskGate) {
+        await stopSerial();
+        await selectProfile("standard");
+        await selectFiles(standardImages, standardLock);
+        await boot(undefined, "standard", "standard");
       } else if (request.type === "finish") {
-        check(completed.length === exportLabels.length && race, "missing completed disk exports");
-        const declined = await rejectOrDiscard(false);
-        const accepted = await rejectOrDiscard(true);
-        await delay(350);
-        check(downloads.length === completed.length + race.downloads, "unexpected download during or after dirty Stop");
-        check(replies.every(reply => reply.type !== "error"), "Worker reported an error during disk acceptance");
-        check(guestDownloadedBytes === 0, "the site fetched guest images instead of reading local Files");
-        const screenshot = await call("Page.captureScreenshot", { format: "png" });
-        writeFileSync(join(logs, "browser-terminal.png"), Buffer.from(screenshot.data, "base64"));
-        emit({ type: "done", race, oversizedError, declined, accepted, pausedSnapshots, guestDownloadedBytes });
+        if (alpineDiskGate) await stopSerial();
+        else dirtyStop = await verifyDirtyStop();
+        check(replies.every(reply => reply.type !== "error" || reply.sessionId === rejected?.id),
+          "Worker reported an error during disk acceptance");
+        check(guestDownloadedBytes === 0 && guestRequests.length === 0,
+          "the site requested guest files over HTTP");
+        emit({ type: "done", race, oversizedError, ...dirtyStop, rejected, pausedSnapshots, guestDownloadedBytes });
         break;
       } else throw new Error(`unknown browser disk gate request ${request.type}`);
     }

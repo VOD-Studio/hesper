@@ -1871,3 +1871,24 @@ Alpine 的后台计时器可让管道在 EOF 后继续推进，因此异常退�
 定向 Rust 测试和 `make verify` 通过。官方与旧版无盘 Alpine 均通过原生
 冷启动，标准数据盘也通过 `make riscv-linux-blk-native` 回归。
 Alpine 报告在 `.cache/riscv-linux/repro-c/logs-alpine-blk/native-p2w0ydoa/`。
+
+## RISC-V Linux Alpine 数据盘：生产 Chromium 双向交换
+
+`CHROME_BIN=chromium make riscv-linux-alpine-blk-browser` 在 Chromium
+155.0.8059.84 打开生产构建。CLI 在 PTY 写盘并导出后，网页冷启动，
+只读挂载并在真实 xterm 显示独立的 `CLI_TO_WEB:42` 行。反向会话使用
+另一份种子，网页写入、卸载、暂停并下载，再由新 CLI 进程只读挂载，
+输出独立的 `WEB_TO_CLI:42` 行。
+
+两次带盘网页冷启动到首提示分别为 135.99 和 143.46 秒。
+两个下载均为 8,388,608 字节。`debugfs` 核对脚本内容，输入盘哈希保持一致，
+CLI 只读复导出的哈希与网页下载一致。验收也覆盖继续后再次导出、未导出写入的
+停止确认，以及停止后到达的导出回复。客体文件的 HTTP 请求数为零。
+
+选盘后误用无盘镜像会在 Ready 和串口输出前被拒绝。清除盘选项后，
+无盘 Alpine 报告 `6.18.63-0-lts`，标准 Linux 输出 `HESPER_OK:42`。
+标准数据盘的生产 Chromium 双向交换也通过。
+`make wasm-browser-test` 在 Bun、Node.js、Chromium 各 12 项通过，
+`bun run check` 和 `bun run build` 通过。
+本地双向交换报告在
+`.cache/riscv-linux/repro-c/logs-alpine-blk/hesper-blk-browser.json`。

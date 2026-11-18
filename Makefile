@@ -208,11 +208,16 @@ riscv-linux-browser:
 	cd examples/web && bun run build
 	python3 tools/riscv-linux/browser.py
 
-.PHONY: riscv-linux-blk-browser
+.PHONY: riscv-linux-blk-browser riscv-linux-alpine-blk-browser
 riscv-linux-blk-browser:
 	cargo build --locked --release -p hesper
 	cd examples/web && bun run build
 	python3 tools/riscv-linux/browser_disk.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
+
+riscv-linux-alpine-blk-browser:
+	cargo build --locked --release -p hesper
+	cd examples/web && bun run build
+	python3 tools/riscv-linux/browser_disk.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper" --alpine
 
 .PHONY: riscv-linux-initramfs-browser
 riscv-linux-initramfs-browser:

@@ -213,8 +213,14 @@ hesper linux --images .cache/riscv-linux/images-alpine-lts-blk \
 raw 文件作为下次冷启动的输入，重新挂载后可读回。`images-alpine-lts-blk`
 使用官方内核和固定 RAM 根，并要求成对提供盘选项。
 
+网页选择「Alpine」，加载 `images-alpine-lts-blk` 的四个启动文件，再选 raw 盘。
+在客体卸载后点「暂停」和「导出数据盘」。下载的 `hesper-data.raw`
+可直接作为 CLI 的 `--disk-in`，CLI 导出的盘也可直接在网页选取。
+
 `make riscv-linux-alpine-blk-reference` 在固定 QEMU 验收，
-`make riscv-linux-alpine-blk-native` 用 Hesper 管道和真实 PTY 验收。
+`make riscv-linux-alpine-blk-native` 用 Hesper 管道和真实 PTY 验收，
+`make riscv-linux-alpine-blk-browser` 在生产 Chromium 中验收双向交换
+（另需标准与无盘官方 Alpine 镜像）。
 
 ## Workspace 结构
 

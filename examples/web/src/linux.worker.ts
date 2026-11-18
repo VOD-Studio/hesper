@@ -1,6 +1,7 @@
 import imageLock from "../../../tools/riscv-linux/images.lock.json";
 import diskImageLock from "../../../tools/riscv-linux/images-blk.lock.json";
 import alpineImageLock from "../../../tools/riscv-linux/images-alpine-lts.lock.json";
+import alpineDiskImageLock from "../../../tools/riscv-linux/images-alpine-lts-blk.lock.json";
 import alpineLegacyLock from "../../../tools/riscv-linux/images-alpine.lock.json";
 import { initSync, RiscvLinux } from "./generated/riscv-linux/hesper_riscv_linux";
 import wasmUrl from "./generated/riscv-linux/hesper_riscv_linux_bg.wasm?url";
@@ -18,6 +19,7 @@ const GUEST_MEMORY_MIB = 128;
 const pins = new Map(imageLock.images.map((pin) => [pin.path, pin]));
 const diskPins = new Map(diskImageLock.images.map((pin) => [pin.path, pin]));
 const alpinePins = new Map(alpineImageLock.images.map((pin) => [pin.path, pin]));
+const alpineDiskPins = new Map(alpineDiskImageLock.images.map((pin) => [pin.path, pin]));
 const alpineLegacyPins = new Map(alpineLegacyLock.images.map((pin) => [pin.path, pin]));
 const tasks = new MessageChannel();
 const usedIds = new Set<number>();
@@ -130,8 +132,8 @@ async function loadMachine({ profile, files, initramfs, disk }: BootCommand, sig
   if (profile !== "standard" && profile !== "alpine") {
     throw new Error("Unknown Linux boot profile.");
   }
-  if (profile === "alpine" && (initramfs !== undefined || disk !== undefined)) {
-    throw new Error("The Alpine profile does not support a custom initramfs or data disk.");
+  if (profile === "alpine" && initramfs !== undefined) {
+    throw new Error("The Alpine profile requires a locked initramfs.");
   }
   if (initramfs && !validInitramfsSize(initramfs.size)) {
     throw new InvalidInitramfs("A custom initramfs must be non-empty and no larger than 16 MiB.");
@@ -139,8 +141,16 @@ async function loadMachine({ profile, files, initramfs, disk }: BootCommand, sig
   if (disk && !validDiskSize(disk.size)) {
     throw new Error("A data disk must be a positive multiple of 512 bytes and no larger than 16 MiB.");
   }
-  const imagePins = profile === "alpine" ? alpineImagePins(files) : disk ? diskPins : pins;
-  const selected = selectFiles(files, imagePins, initramfs !== undefined);
+  const imagePins = profile === "alpine" ? (disk ? alpineDiskPins : alpineImagePins(files)) : (disk ? diskPins : pins);
+  let selected: SelectedImages;
+  try {
+    selected = selectFiles(files, imagePins, initramfs !== undefined);
+  } catch (error) {
+    if (imagePins === alpineDiskPins) {
+      throw new Error(`Alpine with a data disk requires images-alpine-lts-blk. ${detail(error)}`);
+    }
+    throw error;
+  }
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("SHA-256 verification requires a secure browser context (HTTPS or localhost).");
   await initializeWasm(signal);
@@ -164,6 +174,9 @@ async function loadMachine({ profile, files, initramfs, disk }: BootCommand, sig
   const firmwareEnd = BigInt(firmware.end);
   try {
     if (profile === "alpine") {
+      if (diskBytes) {
+        return RiscvLinux.bootImafdcWithDisk(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes, diskBytes);
+      }
       return RiscvLinux.bootImafdc(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes);
     }
     if (initramfs) {

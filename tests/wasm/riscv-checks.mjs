@@ -50,11 +50,13 @@ export function riscvCases(RiscvLinux, { integer, uart }) {
       const initramfs = new Uint8Array(6), fdt = new Uint8Array(40);
       const invalidLength = new Uint8Array(1);
       Object.defineProperty(invalidLength, "length", { value: 512 });
-      for (const disk of [new Uint8Array(0), invalidLength, new Uint8Array(16 * 1024 * 1024 + 512)]) {
-        let code;
-        try { RiscvLinux.bootWithDisk(firmware, DRAM + 1n, kernel, initramfs, fdt, disk).free(); }
-        catch (error) { code = error.code; }
-        equal(code, "InvalidDisk", "invalid raw disk size");
+      for (const boot of [RiscvLinux.bootWithDisk, RiscvLinux.bootImafdcWithDisk]) {
+        for (const disk of [new Uint8Array(0), invalidLength, new Uint8Array(16 * 1024 * 1024 + 512)]) {
+          let code;
+          try { boot(firmware, DRAM + 1n, kernel, initramfs, fdt, disk).free(); }
+          catch (error) { code = error.code; }
+          equal(code, "InvalidDisk", "invalid raw disk size");
+        }
       }
     }],
     ["custom initramfs boot bounds the actual byte view and validates the optional disk", () => {

@@ -423,7 +423,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             </label>
             <p id="linux-files-help">
               请一次选择此配置的锁定文件。浏览器只在本地读取并校验，不会上传。
-              {profile === "alpine" && " Alpine 必须使用锁定的 initramfs，不支持自定义根或数据盘。"}
+              {profile === "alpine" && " Alpine 使用锁定的 initramfs。"}
             </p>
             <ul className="linux-images">
               {requiredImages.map((name) => (
@@ -493,13 +493,15 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
           <section
             className="linux-local-input"
             aria-labelledby="linux-disk-label"
-            hidden={profile === "alpine"}
           >
             <h2 className="section-label" id="linux-disk-label">
               本地数据盘（可选）
             </h2>
             <p id="linux-disk-help">
-              选用数据盘时，基础文件须来自块设备配置。先在客体卸载数据盘，再暂停并导出。数据盘不会上传或覆盖原文件。
+              {profile === "alpine"
+                ? "选用数据盘时，请使用 images-alpine-lts-blk 的启动文件。"
+                : "选用数据盘时，请使用 images-blk 的启动文件。"}
+              先在客体卸载数据盘，再暂停并导出。数据盘不会上传或覆盖原文件。
             </p>
             <input
               data-linux-disk
@@ -509,7 +511,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               aria-label="选择 Linux 原始数据盘"
               aria-describedby="linux-disk-help"
               aria-invalid={diskSelection === "invalid"}
-              disabled={active || profile === "alpine"}
+              disabled={active}
               onChange={(event) => selectDisk(event.currentTarget)}
             />
             {diskSelection === "invalid" && (
@@ -521,7 +523,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               data-linux-clear-disk
               variant="outline"
               size="sm"
-              disabled={active || profile === "alpine" || diskSelection === "empty"}
+              disabled={active || diskSelection === "empty"}
               onClick={clearDisk}
             >
               清除数据盘

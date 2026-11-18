@@ -62,8 +62,8 @@ bun run check       # 类型检查、lint、实际 Wasm 会话回归
 默认构建使用 Alpine 官方 `6.18.63-0-lts` 与随包的 `configs.ko`。
 也可选择原来的 `images-alpine` 四件套，浏览器会按完整镜像组校验。
 不需要选择 `manifest.json`。改变配置会清除旧选择；在会话运行期间不能切换。
-Alpine 使用固定的 RAM 根，无自定义归档和数据盘；用内置 apk keys 离线安装的包
-只在当前会话中存在。生产站点不托管镜像或 APK。
+Alpine 使用固定的 RAM 根。用内置 apk keys 离线安装的包只在当前会话中存在。
+生产站点不托管镜像或 APK。
 
 #### 可选自定义启动根
 
@@ -77,10 +77,12 @@ Alpine 使用固定的 RAM 根，无自定义归档和数据盘；用内置 apk 
 
 #### 可选数据盘
 
-在仓库根目录执行 `make riscv-linux-blk-data`，从 `.cache/riscv-linux/images-blk`
-选择配套的启动文件，再用单独的选择框加载 raw 盘。磁盘须为 512 字节的
+「标准」配置用 `make riscv-linux-blk-data` 构建 `images-blk`。
+「Alpine」配置用 `make riscv-linux-alpine-blk-data` 构建 `images-alpine-lts-blk`。
+选择对应目录的四件启动文件，再用数据盘选择框加载 raw 盘。磁盘须为 512 字节的
 正整数倍且不超过 16 MiB；可使用 [CLI 建立的 ext2 种子或导出盘](../../README.md#risc-v-linux-数据盘本机)。
-客体的根仍在 RAM；手动挂载 `/dev/vda` 到 `/mnt/data`，写入后 `sync` 并成功卸载。
+客体的根仍在 RAM。手动挂载 `/dev/vda` 到 `/mnt/data`，标准配置使用
+`mount -t ext2`，Alpine 使用 `mount -t ext4`。写入后 `sync` 并成功卸载。
 随后点「暂停」和「导出数据盘」，浏览器下载独立的 `hesper-data.raw`。不上传、
 不修改源文件、不自动保存；停止时有尚未导出的磁盘写入会要求确认。
 
