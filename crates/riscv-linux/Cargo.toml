@@ -1,0 +1,9 @@
+[package]
+name = "hesper-riscv-linux"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Hesper's RISC-V virtual board for Linux"
+
+[lints]
+workspace = true

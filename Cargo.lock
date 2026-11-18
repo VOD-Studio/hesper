@@ -391,6 +391,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hesper-riscv-linux"
+version = "0.2.1"
+
+[[package]]
 name = "hesper-wasm-support"
 version = "0.2.1"
 dependencies = [
