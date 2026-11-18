@@ -26,6 +26,19 @@ const LSR_OVERRUN: u8 = 0x02;
 const LSR_THRE: u8 = 0x20;
 const LSR_TEMT: u8 = 0x40;
 
+/// Observe serial registers and queues without acknowledging an interrupt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UartDiagnostics {
+    pub ier: u8,
+    pub iir: u8,
+    pub lcr: u8,
+    pub lsr: u8,
+    pub mcr: u8,
+    pub divisor: u16,
+    pub input_queued: u16,
+    pub output_queued: u16,
+}
+
 #[derive(Debug)]
 pub(crate) struct Uart {
     divisor: u16,
@@ -98,31 +111,54 @@ impl Uart {
                 if id == IIR_THRE {
                     self.thre_pending = false;
                 }
-                id | if self.fifo_enabled() { IIR_FIFO } else { 0 }
+                self.interrupt_status(id)
             }
             3 => self.lcr,
             4 => self.mcr,
             5 => {
-                let mut status = 0;
-                if !self.rx.is_empty() {
-                    status |= LSR_DATA;
-                }
-                if self.overrun {
-                    status |= LSR_OVERRUN;
-                    self.overrun = false;
-                }
-                if self.tx.is_empty() {
-                    status |= LSR_THRE;
-                    if self.sending.is_none() {
-                        status |= LSR_TEMT;
-                    }
-                }
+                let status = self.line_status();
+                self.overrun = false;
                 status
             }
             6 => self.modem_status() | core::mem::take(&mut self.modem_delta),
             7 => self.scratch,
             _ => 0,
         }
+    }
+
+    pub(crate) fn diagnostics(&self) -> UartDiagnostics {
+        UartDiagnostics {
+            ier: self.ier,
+            iir: self.interrupt_status(self.interrupt_id()),
+            lcr: self.lcr,
+            lsr: self.line_status(),
+            mcr: self.mcr,
+            divisor: self.divisor,
+            input_queued: (self.input.len + self.rx.len) as u16,
+            output_queued: (self.output.len + self.tx.len + usize::from(self.sending.is_some()))
+                as u16,
+        }
+    }
+
+    fn line_status(&self) -> u8 {
+        let mut status = 0;
+        if !self.rx.is_empty() {
+            status |= LSR_DATA;
+        }
+        if self.overrun {
+            status |= LSR_OVERRUN;
+        }
+        if self.tx.is_empty() {
+            status |= LSR_THRE;
+            if self.sending.is_none() {
+                status |= LSR_TEMT;
+            }
+        }
+        status
+    }
+
+    fn interrupt_status(&self, id: u8) -> u8 {
+        id | if self.fifo_enabled() { IIR_FIFO } else { 0 }
     }
 
     pub(crate) fn write(&mut self, offset: u64, value: u8, now: u64) {

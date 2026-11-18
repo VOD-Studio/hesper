@@ -1421,3 +1421,21 @@ RAM 与 tick 清零。用有效 Image 头但越过 initramfs 起点的 `image_si
 2500 万 fuel，交接后限 256 批各 128 fuel。原始输出为
 `repro-c/logs/l5c-opensbi-probe.log`。`make verify` 通过；本节不是 Linux
 内核启动的验收。
+
+## RISC-V Linux L6：本机 CLI 冷启动与串口
+
+`RISCV_LINUX_CACHE="$PWD/.cache/riscv-linux/repro-c" make riscv-linux-native`
+通过实际固件探针后，分别用管道和真实 raw PTY 启动 `target/release/hesper linux`。
+使用 L1c 同一份 [`images.lock.json`](../tools/riscv-linux/images.lock.json)：
+`fw_jump.bin` `7deb77c9…`、`Image` `3e12a3d2…`、`initramfs.cpio` `1bca2bb9…`、
+`board.dtb` `1695ca9e…`；完整散列也在 `repro-c/logs/hesper-native.json`。
+首次完整提示分别在 28.56 s / 30.97 s；两种传输均收到
+`6.12.0-hesper`、hart 0、`rv64imac_zicntr_zicsr_zifencei_zca`、独立的
+`HESPER_OK:42` 和最后的 `hesper# `，再用 Ctrl+] 正常退出。
+峰值 RSS 53164 / 57656 KiB（Linux `wait4`，不等于分配的 128 MiB RAM）；
+两次退出均为 `339296256/450000000` fuel、`339264653` 退休、`359959255` tick。
+启动限 90 s，每次命令限 20 s / 256 KiB；拒绝缺失 Image、单字节损坏 DTB、
+128 MiB + 1 的 Image，且不输出客体串口。`--max-fuel 1` 另证实独立预算错误
+和冻结诊断；设备与特权聚焦测试 8 项及 `make verify` 通过。
+原始记录 `repro-c/logs/hesper-{pipe,pty}-{serial,input}.raw`。这是本机证明，
+不代表 Wasm 或浏览器。

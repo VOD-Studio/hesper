@@ -208,6 +208,7 @@ pub fn run_demo_with_trace(
 pub mod apple1;
 
 pub(crate) mod config;
+pub mod linux;
 pub mod presets;
 pub(crate) mod terminal;
 #[doc(hidden)]

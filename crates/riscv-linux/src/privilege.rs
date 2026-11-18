@@ -84,7 +84,7 @@ const MVENDORID: u32 = 0xf11;
 const MCONFIGPTR: u32 = 0xf15;
 
 #[derive(Debug, Default)]
-struct TrapCsrs {
+pub(crate) struct TrapCsrs {
     vector: u64,
     scratch: u64,
     epc: u64,
@@ -93,6 +93,14 @@ struct TrapCsrs {
 }
 
 impl TrapCsrs {
+    pub(crate) fn observation(&self) -> Trap {
+        Trap {
+            cause: self.cause,
+            epc: self.epc,
+            value: self.value,
+        }
+    }
+
     fn enter(&mut self, trap: Trap) -> u64 {
         self.epc = trap.epc & !1; // IALIGN is fixed at 16 by C.
         self.cause = trap.cause;
@@ -112,12 +120,12 @@ pub(crate) struct State {
     pub(crate) mstatus: u64,
     pub(crate) satp: u64,
     pub(crate) pmp: Pmp,
-    supervisor: TrapCsrs,
-    machine: TrapCsrs,
+    pub(crate) supervisor: TrapCsrs,
+    pub(crate) machine: TrapCsrs,
     medeleg: u64,
     mideleg: u64,
-    mie: u64,
-    mip_software: u64,
+    pub(crate) mie: u64,
+    pub(crate) mip_software: u64,
     interrupt_lines: u64,
     mcounteren: u64,
     scounteren: u64,
@@ -377,6 +385,10 @@ impl State {
 
     pub(crate) fn set_interrupt_lines(&mut self, mask: u64) {
         self.interrupt_lines = mask & BOARD_INTERRUPT_LINES;
+    }
+
+    pub(crate) fn observe_pending(&self, lines: u64) -> u64 {
+        self.mip_software | (lines & BOARD_INTERRUPT_LINES)
     }
 
     fn pending(&self) -> u64 {

@@ -1,6 +1,6 @@
 use crate::{
-    BootError, BootImages, FDT_ADDRESS, PrivilegeMode, board::Board, boot::Validated, dram_range,
-    hart::Hart,
+    BootError, BootImages, FDT_ADDRESS, PrivilegeMode, UartDiagnostics, board::Board,
+    boot::Validated, dram_range, hart::Hart,
 };
 use core::fmt;
 
@@ -43,6 +43,21 @@ pub struct DebugState {
     pub time: u64,
 }
 
+/// Side-effect-free observation of a stalled or paused board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Diagnostics {
+    pub cpu: DebugState,
+    pub mstatus: u64,
+    pub mie: u64,
+    pub mip: u64,
+    pub machine_trap: Trap,
+    pub supervisor_trap: Trap,
+    pub stalled_traps: u32,
+    pub waiting: bool,
+    pub next_device_event: Option<u64>,
+    pub uart: UartDiagnostics,
+}
+
 /// Fuel spent and instructions retired by a single batch, plus cumulative virtual time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
@@ -58,6 +73,7 @@ pub struct Machine {
     retired: u64,
     cycle: u64,
     external_lines: u64,
+    stalled_traps: u32,
 }
 
 impl Machine {
@@ -69,6 +85,7 @@ impl Machine {
             retired: 0,
             cycle: 0,
             external_lines: 0,
+            stalled_traps: 0,
         }
     }
 
@@ -89,6 +106,7 @@ impl Machine {
         self.retired = 0;
         self.cycle = 0;
         self.external_lines = 0;
+        self.stalled_traps = 0;
         self.install_boot(images);
         Ok(())
     }
@@ -128,6 +146,23 @@ impl Machine {
         }
     }
 
+    /// Snapshot CSRs and queues without consuming IIR, LSR or PLIC claim.
+    pub fn diagnostics(&self) -> Diagnostics {
+        let state = &self.hart.privilege;
+        Diagnostics {
+            cpu: self.debug_state(),
+            mstatus: state.mstatus,
+            mie: state.mie,
+            mip: state.observe_pending(self.external_lines | self.board.pending()),
+            machine_trap: state.machine.observation(),
+            supervisor_trap: state.supervisor.observation(),
+            stalled_traps: self.stalled_traps,
+            waiting: self.hart.waiting,
+            next_device_event: self.board.next_event(),
+            uart: self.board.uart.diagnostics(),
+        }
+    }
+
     /// Add externally driven interrupt lines to the board's device levels.
     pub fn set_interrupt_lines(&mut self, asserted: u64) {
         self.external_lines = asserted;
@@ -148,6 +183,7 @@ impl Machine {
     /// A full serial output queue also stops the batch until the host drains it.
     pub fn run(&mut self, fuel: u32) -> Progress {
         let (mut spent, mut retired) = (0, 0);
+        let mut stalled_traps = self.stalled_traps;
         while spent < fuel && !self.board.uart.output_full() {
             let lines = self.external_lines | self.board.pending();
             self.hart.privilege.set_interrupt_lines(lines);
@@ -157,6 +193,9 @@ impl Machine {
                 if did_retire {
                     retired += 1;
                     self.retired = self.retired.wrapping_add(1);
+                    stalled_traps = 0;
+                } else {
+                    stalled_traps = stalled_traps.saturating_add(1);
                 }
             } else if let Some(ticks) = self.board.next_event() {
                 self.board.advance(ticks);
@@ -165,6 +204,7 @@ impl Machine {
             }
             spent += 1;
         }
+        self.stalled_traps = stalled_traps;
         Progress {
             spent,
             retired,

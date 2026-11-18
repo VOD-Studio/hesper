@@ -110,6 +110,20 @@ TUI 启动配置中可用鼠标或 Tab 选中“扩展 RAM”，按 Enter／空�
 
 镜像来源、逐文件 SHA-256、启动命令与许可证说明见 [`预置资源说明`](crates/cli/assets/README.md)。其中 8 个来源页面声明了许可证，34 个未声明；公开下载、记录来源和哈希不等于再分发授权已明确。
 
+### RISC-V Linux 串口（本机）
+
+```sh
+make riscv-linux-data
+cargo run --locked --release -p hesper -- linux --images .cache/riscv-linux/images
+make riscv-linux-native  # 真实 OpenSBI 探针、CLI 管道与 PTY 验收
+```
+
+镜像未捆绑；构建宿主要求见 [RISC-V Linux 计划](docs/plan/riscv-linux.md)。
+`linux` 核对锁定的 OpenSBI 1.6、Linux 6.12 和 BusyBox initramfs 后冷启动。
+等到 `hesper# ` 再输入命令；Ctrl+] 退出宿主。`--diagnostics` 输出推进统计，
+`--max-fuel` 改变会话的有界推进预算。此入口只支持固定的单 hart RV64IMAC
+板和串口，不声明兼容任意 RISC-V 镜像或外设。
+
 ## Workspace 结构
 
 ```text

@@ -17,7 +17,7 @@ pub(crate) struct Hart {
     pub(crate) x: [u64; 32],
     pub(crate) last_trap: Option<Trap>,
     pub(crate) privilege: privilege::State,
-    waiting: bool,
+    pub(crate) waiting: bool,
     reservation: Option<(u64, usize)>,
 }
 

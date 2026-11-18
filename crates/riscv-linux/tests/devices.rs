@@ -112,13 +112,20 @@ fn uart_timeout_notifies_only_s_context_and_claim_requires_completion() {
     let mut out = [0; 2];
     assert_eq!(m.serial_output(&mut out), 0);
     assert_eq!(m.serial_input(b"K"), 1);
+    assert_eq!(m.run(2).retired, 0); // RX frame arrival, then FIFO timeout
+    let snapshot = m.diagnostics();
+    assert!(snapshot.waiting);
+    assert_eq!(snapshot.mip, 512);
+    assert_eq!((snapshot.uart.iir, snapshot.uart.input_queued), (0xcc, 1));
     assert_eq!(m.run(100).retired, 15);
     let state = m.debug_state();
     assert_eq!(state.x[18..25], [0, 512, 0xcc, 10, 0, 10, u64::from(b'K')]);
     assert_eq!(state.x[25] & 1, 0);
     assert_eq!(state.x[26], 0);
     assert_eq!(state.last_trap, None);
+    assert_eq!(m.diagnostics().uart.output_queued, 1);
     assert_eq!(m.serial_output(&mut out), 1);
     assert_eq!(out[0], b'K');
+    assert_eq!(m.diagnostics().uart.output_queued, 0);
     assert_eq!(m.run(1).spent, 0);
 }

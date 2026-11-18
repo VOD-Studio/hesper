@@ -13,13 +13,13 @@ COMMANDS = (
 )
 
 
-def drive(receive, send, kernelrelease, isa):
+def drive(receive, send, kernelrelease, isa, *, boot_seconds=STEP_SECONDS):
     """receive(seconds) returns bytes or raises on timeout; send writes literal bytes."""
     started = time.monotonic()
     timings = {}
 
-    def wait_prompt(state):
-        deadline = time.monotonic() + STEP_SECONDS
+    def wait_prompt(state, seconds):
+        deadline = time.monotonic() + seconds
         buffer = bytearray()
         try:
             while not buffer.endswith(PROMPT):
@@ -36,11 +36,11 @@ def drive(receive, send, kernelrelease, isa):
             raise ValueError(f"{state}: {error}; completed={list(timings)}; serial tail={bytes(buffer[-2048:])!r}") from error
         return bytes(buffer).replace(b"\r\n", b"\n")
 
-    wait_prompt("boot")
+    wait_prompt("boot", boot_seconds)
     timings["boot"] = time.monotonic() - started
     for index, (state, command) in enumerate(zip(("uname", "cpuinfo", "printf"), COMMANDS)):
         send(command)
-        output = wait_prompt(state)
+        output = wait_prompt(state, STEP_SECONDS)
         if index == 0:
             release = re.escape(kernelrelease.encode("ascii"))
             ok = re.search(rb"^Linux\s+\S+ " + release + rb"\s+[^\n]*\briscv64\b[^\n]*$", output, re.M)

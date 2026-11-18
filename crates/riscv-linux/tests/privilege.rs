@@ -504,3 +504,21 @@ fn wfi_waits_without_spending_fuel_and_wakes_with_global_interrupts_off() {
     );
     assert_eq!(machine.debug_state().last_trap, None);
 }
+
+#[test]
+fn faulting_reset_vector_and_unmapped_trap_vector_are_bounded() {
+    let mut machine = Machine::new();
+    machine.load(DRAM_BASE, &EBREAK.to_le_bytes()).unwrap();
+    let progress = machine.run(32);
+    assert_eq!((progress.spent, progress.retired), (32, 0));
+    let state = machine.diagnostics();
+    assert_eq!(state.stalled_traps, 32);
+    assert_eq!(
+        state.machine_trap,
+        Trap {
+            epc: 0,
+            cause: 1, // instruction access fault at the unmapped mtvec
+            value: 0,
+        }
+    );
+}

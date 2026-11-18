@@ -17,8 +17,9 @@ mod privilege;
 mod uart;
 
 pub use boot::{BootError, BootImages, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS};
-pub use machine::{DebugState, LoadError, Machine, Progress, Trap};
+pub use machine::{DebugState, Diagnostics, LoadError, Machine, Progress, Trap};
 pub use privilege::PrivilegeMode;
+pub use uart::UartDiagnostics;
 
 /// Guest physical address of the first DRAM byte.
 pub const DRAM_BASE: u64 = 0x8000_0000;

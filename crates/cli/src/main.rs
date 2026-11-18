@@ -11,7 +11,7 @@ use std::{
 use hesper::{
     DEFAULT_MAX_STEPS, DemoEvent,
     apple1::{ProgramSource, parse_program_address, run_apple1},
-    format_bus_trace, format_instruction_trace, format_registers,
+    format_bus_trace, format_instruction_trace, format_registers, linux,
     presets::{APPLE1_PRESETS, Category, ProgramPreset},
     run_demo_with_trace,
     tui::{self, Apple1Launch},
@@ -63,7 +63,7 @@ Options:
 
 fn print_usage() {
     println!(
-        "Usage: hesper [demo options] | hesper <demo|tui|apple1> [options]\n\nWith no arguments Hesper opens the TUI on a usable terminal, otherwise it runs the built-in demo. Use 'hesper demo --help' for demo options."
+        "Usage: hesper [demo options] | hesper <demo|tui|apple1|linux> [options]\n\nWith no arguments Hesper opens the TUI on a usable terminal, otherwise it runs the built-in demo. Use 'hesper demo --help' for demo options."
     );
 }
 
@@ -304,6 +304,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             Some(arg) => Err(format!("unknown tui argument: {arg}; use 'tui --help'").into()),
         },
         Some(command) if command == "apple1" => run_apple1_subcommand(args),
+        Some(command) if command == "linux" => linux::run(args),
         Some(command) if command == "--help" || command == "-h" => {
             print_usage();
             Ok(())
