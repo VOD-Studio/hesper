@@ -1270,3 +1270,18 @@ Buildroot config 摘要排除仅保存宿主路径的 `BR2_DEFCONFIG` 行。
   日志在 `.cache/riscv-linux/l1c-negative.sPiDtT3b/rejected.log`。
 
 以上只证明固定参考板和客体组合。未分发镜像，也未将 QEMU 加入 Hesper。
+
+## RISC-V Linux L2a：四指令取指与写回
+
+`cargo test --locked -p hesper-riscv-linux --test isa`：新增探针在实现前因
+缺少 `Machine` 失败；实现后 2 项通过。分别按 `1+1+1+1`、`1+3`、`4`
+分配 fuel，得到同一 `pc=0x80000010`、`x0=0`、`x1=7`、`x2=0x80000004`、
+`[0x80000020..0x80000024)=07 00 00 00`，退休数和虚拟 tick 都是 4。
+`run(0)` 不改状态；非法指令保存原 EPC、cause 2 和指令位，消耗 fuel 而不退休。
+完整 `make verify` 通过；日志在 `.cache/riscv-linux/logs/l2a-{focused,verify}.log`。
+
+独立 QEMU 9.2.0/TCG 对照使用 L1c 同一 CPU 属性。将计划中的四条指令按
+小端打包（SHA-256 `a1f7a422ba177bc6df1a4d797dbe88c4537208da490c855ea7e9a922f30c83f9`），
+作为 `-bios` 输入，`-S` 起机，经 GDB `Z1,80000010,4` 下硬件断点后 `c`，
+用 `g` 和 `m80000020,4` 读取寄存器和签名；与预期相同。记录在
+`.cache/riscv-linux/logs/l2a-qemu.json`。这不是完整 RV64I/M 或 Linux 验证。

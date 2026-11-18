@@ -1,6 +1,11 @@
-//! Physical DRAM window of Hesper's single-hart RISC-V board.
+//! Bare-metal execution and physical memory for Hesper's single-hart RISC-V board.
 
 use core::ops::Range;
+
+mod hart;
+mod machine;
+
+pub use machine::{DebugState, LoadError, Machine, Progress, Trap};
 
 /// Guest physical address of the first DRAM byte.
 pub const DRAM_BASE: u64 = 0x8000_0000;
