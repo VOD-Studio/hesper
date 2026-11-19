@@ -1,0 +1,2 @@
+ttyS0::respawn:/bin/sh -i
+::shutdown:/opt/hesper/shutdown

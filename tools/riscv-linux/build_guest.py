@@ -16,6 +16,7 @@ import time
 
 import alpine_kernel
 import alpine_root
+import alpine_system_disk
 from sources import CACHE, LOCK, PROFILE, archives, check_archive, require_tools, sha256
 
 DRAM = 0x80000000
@@ -24,6 +25,7 @@ INITRD = 0x84000000
 FDT = 0x87800000
 DRAM_END = 0x88000000
 BOOTARGS = "console=ttyS0 rdinit=/init"
+ROOT_BOOTARGS = BOOTARGS + " panic=-1"
 ISA = "rv64imac_zicntr_zicsr_zifencei"
 # Binutils 2.40 encodes the counter CSRs but predates the Zicntr ISA attribute.
 FW_ISA = "rv64imac_zicsr_zifencei"
@@ -45,6 +47,10 @@ ALPINE_BLK_IMAGE_LOCK = PROFILE / "images-alpine-lts-blk.lock.json"
 ALPINE_BLK_IMAGE_DIR = CACHE / "images-alpine-lts-blk"
 ALPINE_BLK_CANDIDATE_DIR = CACHE / "images-alpine-lts-blk-candidate"
 ALPINE_BLK_LOGS = CACHE / "logs-alpine-blk"
+ALPINE_ROOT_IMAGE_LOCK = PROFILE / "images-alpine-lts-root.lock.json"
+ALPINE_ROOT_IMAGE_DIR = CACHE / "images-alpine-lts-root"
+ALPINE_ROOT_CANDIDATE_DIR = CACHE / "images-alpine-lts-root-candidate"
+ALPINE_ROOT_LOGS = CACHE / "logs-alpine-root"
 ALPINE_LEGACY_DIR = CACHE / "images-alpine"
 ALPINE_CANDIDATE_DIR = CACHE / "images-alpine-lts-candidate"
 ALPINE_LOGS = CACHE / "logs-alpine"
@@ -245,7 +251,7 @@ def kernel_end(image):
     return KERNEL + max(size, image.stat().st_size)
 
 
-def board_dtb(directory, initrd_end, logs, blk, *, alpine=False):
+def board_dtb(directory, initrd_end, logs, blk, *, alpine=False, root_disk=False):
     dts = directory / "board.dts"
     dtb = directory / "board.dtb"
     source = (PROFILE / "board.dts").read_text().replace("@INITRD_END@", f"{initrd_end:#x}")
@@ -253,6 +259,8 @@ def board_dtb(directory, initrd_end, logs, blk, *, alpine=False):
         source += (PROFILE / "board-blk.dtsi").read_text()
     if alpine:
         source += (PROFILE / "board-alpine.dtsi").read_text()
+    if root_disk:
+        source += (PROFILE / "board-alpine-root.dtsi").read_text()
     dts.write_text(source)
     logged("dtc", "dtc", "-I", "dts", "-O", "dtb", "-p", "4096", "-o", dtb, dts, logs=logs)
     intc = "/cpus/cpu@0/interrupt-controller"
@@ -262,7 +270,8 @@ def board_dtb(directory, initrd_end, logs, blk, *, alpine=False):
     cpu_phandle = capture("fdtget", "-t", "x", dtb, intc, "phandle")
     plic_phandle = capture("fdtget", "-t", "x", dtb, plic, "phandle")
     expected = [
-        ("s", "/chosen", "bootargs", BOOTARGS), ("s", "/chosen", "stdout-path", uart),
+        ("s", "/chosen", "bootargs", ROOT_BOOTARGS if root_disk else BOOTARGS),
+        ("s", "/chosen", "stdout-path", uart),
         ("x", "/chosen", "linux,initrd-start", f"0 {INITRD:x}"),
         ("x", "/chosen", "linux,initrd-end", f"0 {initrd_end:x}"),
         ("x", "/memory@80000000", "reg", "0 80000000 0 8000000"),
@@ -281,6 +290,8 @@ def board_dtb(directory, initrd_end, logs, blk, *, alpine=False):
     ]
     if blk:
         expected.extend(block_tree(plic_phandle))
+    if root_disk:
+        expected.extend(shutdown_tree(dtb))
     if capture("fdtget", "-l", dtb, "/cpus") != "cpu@0":
         raise ValueError(f"{dtb}: expected a single CPU node")
     if capture("fdtget", "-l", dtb, "/reserved-memory"):
@@ -304,11 +315,24 @@ def block_tree(plic_phandle):
             ("x", node, "interrupt-parent", plic_phandle), ("u", node, "interrupts", "1")]
 
 
-def verified_manifest(blk=False, *, directory=None, alpine=False, candidate=False, legacy=False):
+def shutdown_tree(dtb):
+    node = "/soc/test@100000"
+    phandle = capture("fdtget", "-t", "x", dtb, node, "phandle")
+    return [
+        ("s", node, "compatible", "sifive,test1 sifive,test0 syscon"),
+        ("x", node, "reg", "0 100000 0 1000"),
+        ("s", "/reboot", "compatible", "syscon-reboot"), ("x", "/reboot", "regmap", phandle),
+        ("x", "/reboot", "offset", "0"), ("x", "/reboot", "value", "7777"),
+        ("s", "/poweroff", "compatible", "syscon-poweroff"), ("x", "/poweroff", "regmap", phandle),
+        ("x", "/poweroff", "offset", "0"), ("x", "/poweroff", "value", "5555"),
+    ]
+
+
+def verified_manifest(blk=False, *, directory=None, alpine=False, candidate=False, legacy=False, root_disk=False):
     if (candidate and not alpine) or (legacy and (not alpine or blk or candidate)):
         raise ValueError("candidate verification requires an official Alpine kernel profile")
     if alpine:
-        lock, default_dir = alpine_profile(blk, legacy, candidate)
+        lock, default_dir = alpine_profile(blk, legacy, candidate, root_disk=root_disk)
     else:
         lock, default_dir = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
     directory = default_dir if directory is None else directory
@@ -318,7 +342,7 @@ def verified_manifest(blk=False, *, directory=None, alpine=False, candidate=Fals
     cpu_profile, isa = (ALPINE_CPU_PROFILE, ALPINE_ISA) if alpine else (CPU_PROFILE, ISA)
     if manifest["qemu_cpu"] != cpu_profile.read_text().strip() or manifest["isa"] != isa:
         raise ValueError("prepared manifest differs from the CPU profile")
-    if manifest["bootargs"] != BOOTARGS:
+    if manifest["bootargs"] != (ROOT_BOOTARGS if root_disk else BOOTARGS):
         raise ValueError("prepared manifest differs from the boot arguments")
     if [image["path"] for image in manifest["images"]] != list(IMAGE_NAMES):
         raise ValueError("expected the four fixed image names in the image lock")
@@ -328,11 +352,19 @@ def verified_manifest(blk=False, *, directory=None, alpine=False, candidate=Fals
             raise ValueError(f"{path}: size mismatch")
         check_archive(path, image["sha256"])
     if alpine:
-        check_alpine_manifest(manifest, directory, legacy)
+        check_alpine_manifest(manifest, directory, legacy, root_disk=root_disk)
+    if root_disk:
+        seed = manifest["seed"]
+        path = directory / alpine_system_disk.SEED
+        if seed["path"] != path.name or seed["bytes"] != alpine_system_disk.SIZE or path.stat().st_size != seed["bytes"]:
+            raise ValueError(f"{path}: unexpected seed disk name or size")
+        check_archive(path, seed["sha256"])
     return manifest
 
 
-def alpine_profile(blk, legacy, candidate):
+def alpine_profile(blk, legacy, candidate, *, root_disk=False):
+    if root_disk:
+        return ALPINE_ROOT_IMAGE_LOCK, ALPINE_ROOT_CANDIDATE_DIR if candidate else ALPINE_ROOT_IMAGE_DIR
     if blk:
         return ALPINE_BLK_IMAGE_LOCK, ALPINE_BLK_CANDIDATE_DIR if candidate else ALPINE_BLK_IMAGE_DIR
     if legacy:
@@ -340,7 +372,7 @@ def alpine_profile(blk, legacy, candidate):
     return ALPINE_IMAGE_LOCK, ALPINE_CANDIDATE_DIR if candidate else ALPINE_IMAGE_DIR
 
 
-def check_alpine_manifest(manifest, directory, legacy):
+def check_alpine_manifest(manifest, directory, legacy, *, root_disk=False):
     serial = json.loads(IMAGE_LOCK.read_bytes())
     release = serial["kernelrelease"] if legacy else alpine_kernel.RELEASE
     if (manifest["alpine_source_lock_sha256"] != sha256(alpine_root.ALPINE_SOURCE_LOCK)
@@ -354,9 +386,10 @@ def check_alpine_manifest(manifest, directory, legacy):
                 or manifest["images"][1]["sha256"] != alpine_kernel.PIN["image_sha256"]
                 or manifest["config_sha256"]["linux"] != alpine_kernel.PIN["config_sha256"]):
             raise ValueError("Alpine kernel differs from its official package lock")
-        module = alpine_root.cpio_members(directory / "initramfs.cpio").get(alpine_kernel.MODULE)
-        if module is None or hashlib.sha256(module.data).hexdigest() != alpine_kernel.PIN["module_sha256"]:
-            raise ValueError("Alpine configs module differs from its official package lock")
+        if not root_disk:
+            module = alpine_root.cpio_members(directory / "initramfs.cpio").get(alpine_kernel.MODULE)
+            if module is None or hashlib.sha256(module.data).hexdigest() != alpine_kernel.PIN["module_sha256"]:
+                raise ValueError("Alpine configs module differs from its official package lock")
     spans = [(KERNEL, kernel_end(directory / "Image"), INITRD),
              (INITRD, INITRD + (directory / "initramfs.cpio").stat().st_size, FDT),
              (FDT, FDT + (directory / "board.dtb").stat().st_size + FDT_GROWTH, DRAM_END)]
@@ -381,17 +414,18 @@ def guest_build_dir(blk=False, *, alpine=False, legacy=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("serial", "blk", "alpine", "alpine-legacy", "alpine-blk"),
+    parser.add_argument("--profile", choices=("serial", "blk", "alpine", "alpine-legacy", "alpine-blk", "alpine-root"),
                         default="serial")
     parser.add_argument("--candidate", action="store_true", help="write an unlocked blk or Alpine build")
     args = parser.parse_args()
     legacy = args.profile == "alpine-legacy"
-    blk, alpine = args.profile in ("blk", "alpine-blk"), args.profile.startswith("alpine")
-    if args.candidate and args.profile not in ("blk", "alpine", "alpine-blk"):
-        parser.error("--candidate requires --profile blk, alpine or alpine-blk")
+    root_disk = args.profile == "alpine-root"
+    blk, alpine = args.profile in ("blk", "alpine-blk", "alpine-root"), args.profile.startswith("alpine")
+    if args.candidate and args.profile not in ("blk", "alpine", "alpine-blk", "alpine-root"):
+        parser.error("--candidate requires --profile blk, alpine, alpine-blk or alpine-root")
     if alpine:
-        logs = ALPINE_BLK_LOGS if blk else ALPINE_LOGS
-        lock, output = alpine_profile(blk, legacy, args.candidate)
+        logs = ALPINE_ROOT_LOGS if root_disk else ALPINE_BLK_LOGS if blk else ALPINE_LOGS
+        lock, output = alpine_profile(blk, legacy, args.candidate, root_disk=root_disk)
     else:
         logs = BLK_LOGS if blk else LOGS
         lock, output = (BLK_IMAGE_LOCK, BLK_IMAGE_DIR) if blk else (IMAGE_LOCK, IMAGE_DIR)
@@ -405,7 +439,8 @@ def main():
         raise ValueError("run as a non-root user and set RISCV_LINUX_JOBS to a positive count")
     start = time.monotonic()
     logs.mkdir(parents=True, exist_ok=True)
-    build = guest_build_dir(blk, alpine=alpine, legacy=legacy)
+    build = (CACHE / "build/guest/alpine-root" if root_disk
+             else guest_build_dir(blk, alpine=alpine, legacy=legacy))
     build.mkdir(parents=True, exist_ok=True)
     k_out = build / "linux"
     if alpine:
@@ -441,8 +476,12 @@ def main():
             image.write_bytes(image_data)
             image_end, release = kernel_end(image), alpine_kernel.RELEASE
             linux_config = alpine_kernel.PIN["config_sha256"]
-            modules = alpine_kernel.module_overlay(kernel_modules)
-        cpio = alpine_root.build_root(build, prefix, paths, logs, modules=modules, disk=blk)
+            modules = kernel_modules
+        if root_disk:
+            cpio, seed = alpine_system_disk.build(build, prefix, paths, logs, modules, ENV)
+        else:
+            overlay = alpine_kernel.module_overlay(modules) if modules is not None else None
+            cpio = alpine_root.build_root(build, prefix, paths, logs, modules=overlay, disk=blk)
     else:
         br_out = build / "buildroot"
         cpio, prefix, compiler = rootfs(unpack(known["buildroot"]), br_out, jobs, logs, blk)
@@ -454,7 +493,7 @@ def main():
     for index, ((base, end), limit) in enumerate(zip(ranges, (KERNEL, INITRD, FDT))):
         if not base < end <= limit:
             raise ValueError(f"{IMAGE_NAMES[index]}: invalid or overlapping physical span [{base:#x}, {end:#x})")
-    dtb, dtb_end = board_dtb(build, rd_end, logs, blk, alpine=alpine)
+    dtb, dtb_end = board_dtb(build, rd_end, logs, blk, alpine=alpine, root_disk=root_disk)
     if dtb_end > DRAM_END:
         raise ValueError(f"{dtb}: FDT growth exceeds DRAM")
     ranges.append((FDT, dtb_end))
@@ -466,7 +505,8 @@ def main():
     # Kconfig stores the absolute filename used to seed Buildroot; it is not
     # an effective guest option and must not tie the lock to a checkout path.
     buildroot_config = re.sub(rb"^BR2_DEFCONFIG=.*\n", b"", (br_out / ".config").read_bytes(), flags=re.M)
-    manifest = dict(source_lock_sha256=sha256(LOCK), bootargs=BOOTARGS, isa=ALPINE_ISA if alpine else ISA,
+    manifest = dict(source_lock_sha256=sha256(LOCK), bootargs=ROOT_BOOTARGS if root_disk else BOOTARGS,
+                    isa=ALPINE_ISA if alpine else ISA,
                     kernelrelease=release,
                     compiler=compiler, config_sha256={"buildroot": hashlib.sha256(buildroot_config).hexdigest(),
                                                       "linux": linux_config}, images=artifacts,
@@ -477,6 +517,11 @@ def main():
             manifest["alpine_kernel_lock_sha256"] = sha256(alpine_kernel.LOCK)
         if manifest["config_sha256"]["buildroot"] != serial["config_sha256"]["buildroot"]:
             raise ValueError("Buildroot toolchain config differs from serial image lock")
+    names = IMAGE_NAMES
+    if root_disk:
+        names += (alpine_system_disk.SEED,)
+        paths.append(seed)
+        manifest["seed"] = dict(path=seed.name, bytes=seed.stat().st_size, sha256=sha256(seed))
     if not args.candidate:
         expected = json.loads(lock.read_bytes())
         if manifest != expected:
@@ -486,14 +531,14 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output) as temp:
         staging = Path(temp)
-        for name, path in zip(IMAGE_NAMES, paths):
+        for name, path in zip(names, paths):
             shutil.copyfile(path, staging / name)
-        for name in IMAGE_NAMES:
+        for name in names:
             (staging / name).replace(output / name)
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (staging / "manifest.json").replace(output / "manifest.json")
     kind = "unlocked candidate" if args.candidate else "verified"
-    print(f"{kind}: four guest images in {output} ({time.monotonic() - start:.1f} s)")
+    print(f"{kind}: {len(names)} guest artifacts in {output} ({time.monotonic() - start:.1f} s)")
 
 
 if __name__ == "__main__":

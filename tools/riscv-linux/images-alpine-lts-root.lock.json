@@ -1,0 +1,49 @@
+{
+  "source_lock_sha256": "4708cded4c64ea86912e597ee2fab6af82f23a035ada3989c6d906e8a1ad3ff7",
+  "bootargs": "console=ttyS0 rdinit=/init panic=-1",
+  "isa": "rv64imafdc_zicntr_zicsr_zifencei",
+  "kernelrelease": "6.18.63-0-lts",
+  "compiler": "riscv64-buildroot-linux-musl-gcc.br_real (Buildroot 2024.02.12) 12.4.0",
+  "config_sha256": {
+    "buildroot": "936a0559137b0e73ac2fcf42bb0df360435c16cdd5c3290ef7379398876c88ca",
+    "linux": "a2bbacb5ba169cb09e53da04a8677d7b5b67f8bf4e99484cd0414801cdedda59"
+  },
+  "images": [
+    {
+      "path": "fw_jump.bin",
+      "bytes": 273448,
+      "sha256": "7deb77c98522f01069ecda126709d83f1d2b2dc461bb8c97a9ccdee36436f7b9",
+      "address": "0x80000000",
+      "end": "0x80058000"
+    },
+    {
+      "path": "Image",
+      "bytes": 22386176,
+      "sha256": "d42ed161a88ccc5906546a7de1805e585966f623a24cedc0cdc3c8a8dab1606c",
+      "address": "0x80200000",
+      "end": "0x817d9000"
+    },
+    {
+      "path": "initramfs.cpio",
+      "bytes": 2806792,
+      "sha256": "076bc4ec90b5142267679ae231af3064cdeb2667a3086858a3234e4293e18b90",
+      "address": "0x84000000",
+      "end": "0x842ad408"
+    },
+    {
+      "path": "board.dtb",
+      "bytes": 6373,
+      "sha256": "cfa19a4cdcc144959689a2224d298728ec46d30a44749035e2af66435f8e32c0",
+      "address": "0x87800000",
+      "end": "0x878118e5"
+    }
+  ],
+  "qemu_cpu": "rv64,priv_spec=v1.12.0,debug=off,g=off,b=off,i=on,m=on,a=on,c=on,s=on,u=on,f=on,d=on,v=off,h=off,pmp=on,mmu=on,sv39=on,sv48=off,sv57=off,zicsr=on,zifencei=on,zicntr=on,sstc=off,svadu=off,svvptc=off,zihpm=off,zihintntl=off,zihintpause=off,zawrs=off,zfa=off,zba=off,zbb=off,zbc=off,zbs=off,zicbom=off,zicbop=off,zicboz=off,zaamo=off,zalrsc=off,zca=on,zcd=on,zmmul=off,pmu-mask=0",
+  "alpine_source_lock_sha256": "7bd5900777b8ada9df14fccbf991551e8c3efdb91c275251c3f2e611b850a1e8",
+  "alpine_kernel_lock_sha256": "8f4d3304ce8ede95ea5dd825bd00e8fcad36497cb0381508ab5d3df5dce8e628",
+  "seed": {
+    "path": "seed.raw",
+    "bytes": 16777216,
+    "sha256": "2281477166eb8ba46575c82742c39a65553b0b255a310232e327ae29168e5b27"
+  }
+}

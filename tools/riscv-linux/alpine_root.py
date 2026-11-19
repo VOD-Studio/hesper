@@ -226,7 +226,7 @@ def check_elfs(entries, readelf, logs):
                 pending.add(found)
 
 
-def build_root(directory, prefix, paths, logs, *, modules=None, disk=False):
+def root_members(directory, prefix, paths, logs):
     directory.mkdir(parents=True, exist_ok=True)
     entries = tar_members(paths["root"])
     if not stat.S_ISREG(entries["lib/apk/db/installed"].mode) or not stat.S_ISDIR(entries["etc/apk/keys"].mode):
@@ -238,22 +238,38 @@ def build_root(directory, prefix, paths, logs, *, modules=None, disk=False):
     subprocess.run([f"{prefix}as", "-march=rv64imafdc_zicsr_zifencei", "-mabi=lp64d", "-o", obj,
                     PROFILE / "fp-context.S"], check=True)
     subprocess.run([f"{prefix}ld", "-static", "-e", "_start", "--build-id=none", "-o", probe, obj], check=True)
-    overlay = {"init": Member(stat.S_IFREG | 0o755, 0, 0, (PROFILE / "rootfs/init").read_bytes()),
-               "dev/console": Member(stat.S_IFCHR | 0o600, 0, 0, major=5, minor=1),
-               "opt/hesper": Member(stat.S_IFDIR | 0o755, 0, 0),
+    overlay = {"opt/hesper": Member(stat.S_IFDIR | 0o755, 0, 0),
                f"opt/hesper/{paths['package'].name}": Member(stat.S_IFREG | 0o644, 0, 0, paths["package"].read_bytes()),
                "opt/hesper/fp-context": Member(stat.S_IFREG | 0o755, 0, 0, probe.read_bytes())}
+    return add_overlay(entries, overlay)
+
+
+def add_overlay(entries, overlay):
+    if overlap := entries.keys() & overlay.keys():
+        raise ValueError(f"Alpine overlay conflicts: {sorted(overlap)}")
+    return entries | overlay
+
+
+def build_root(directory, prefix, paths, logs, *, modules=None, disk=False):
+    entries = root_members(directory, prefix, paths, logs)
+    overlay = {"init": Member(stat.S_IFREG | 0o755, 0, 0, (PROFILE / "rootfs/init").read_bytes()),
+               "dev/console": Member(stat.S_IFCHR | 0o600, 0, 0, major=5, minor=1)}
     if modules:
         overlay.update(modules)
     if disk:
         overlay["opt/hesper/serial-init"] = overlay["init"]
         overlay["init"] = Member(stat.S_IFREG | 0o755, 0, 0, (PROFILE / "rootfs/alpine-blk-init").read_bytes())
-    if overlap := entries.keys() & overlay.keys():
-        raise ValueError(f"Alpine overlay conflicts: {sorted(overlap)}")
-    expected = entries | overlay
+    return pack_newc(directory, add_overlay(entries, overlay))
+
+
+def ordered_paths(entries):
+    return sorted(entries, key=lambda name: (name != ".", name.count("/"), name))
+
+
+def pack_newc(directory, expected):
     check_parents(expected)
     owners = {name: (item.uid, item.gid) for name, item in expected.items()}
-    ordered = sorted(expected, key=lambda name: (name != ".", name.count("/"), name))
+    ordered = ordered_paths(expected)
     records = [(name, item.mode, item.data, item.major, item.minor) for name in ordered for item in (expected[name],)]
     cpio = directory / "initramfs.cpio"
     write_newc(cpio, [*records, ("TRAILER!!!", 0, b"", 0, 0)], owners=owners)

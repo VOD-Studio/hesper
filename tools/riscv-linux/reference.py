@@ -11,11 +11,14 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 from alpine_acceptance import cold_states as alpine_cold_states, states as alpine_states
+from alpine_system_acceptance import POWER_OFF, cold_states as system_cold_states, install_states
+from alpine_system_disk import SEED, check_filesystem
 from build_guest import (ALPINE_BLK_LOGS, ALPINE_CANDIDATE_DIR, ALPINE_IMAGE_DIR, ALPINE_LOGS, BLK_IMAGE_DIR, BLK_LOGS,
-                         DRAM, DRAM_END, ENV, FDT, FDT_GROWTH, IMAGE_DIR, INITRD, LOGS, block_tree,
-                         alpine_profile, capture, logged, verified_manifest)
+                         ALPINE_ROOT_LOGS, DRAM, DRAM_END, ENV, FDT, FDT_GROWTH, IMAGE_DIR, INITRD, LOGS, block_tree,
+                         alpine_profile, capture, logged, shutdown_tree, verified_manifest)
 from build_qemu import QEMU, version
 from disk_acceptance import check_proof, drive_disk, make_seed
 from serial_acceptance import STEP_SECONDS, STEP_BYTES, drive, session
@@ -39,7 +42,18 @@ def qmp(channel):
                 raise ValueError(f"QMP {operation}: {reply['error']}")
 
     request("qmp_capabilities")
-    return request
+
+    def wait_shutdown():
+        for line in wire:
+            reply = json.loads(line)
+            if reply.get("event") == "SHUTDOWN":
+                reason = reply.get("data", {}).get("reason")
+                if reason != "guest-shutdown":
+                    raise ValueError(f"QEMU shutdown reason was {reason}")
+                return reason
+        raise ValueError("missing QMP guest shutdown event")
+
+    return request, wait_shutdown
 
 
 def cpu_readback(request, cpu, logs):
@@ -121,6 +135,9 @@ def alpine_tree(dtb, manifest, phase, *, disk=False):
         if disk:
             devices.add("virtio_mmio@10001000")
             properties.extend(block_tree(plic_phandle))
+        if "seed" in manifest:
+            devices.add("test@100000")
+            properties.extend(shutdown_tree(dtb))
         if soc != devices:
             raise ValueError(f"{dtb}: unexpected guest devices: {sorted(soc)}")
         properties.extend([
@@ -213,7 +230,7 @@ def disk_wiring(request, logs, builtin_dtb):
 
 
 def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write=False,
-        replacement=None, states=None, alpine=False, step_seconds=STEP_SECONDS):
+        replacement=None, states=None, alpine=False, step_seconds=STEP_SECONDS, poweroff=False):
     if replacement is None:
         initramfs = images / "initramfs.cpio"
         fdt = images / "board.dtb"
@@ -245,6 +262,8 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
                          "-blockdev", json.dumps(dict(driver="file", filename=str(disk), **{"node-name": "data-file"})),
                          "-blockdev", "driver=raw,file=data-file,node-name=data-raw",
                          "-device", f"virtio-blk-device,drive=data-raw,bus={BUS},id=data-disk"]
+            if poweroff:
+                argv += ["-no-reboot"]
             with subprocess.Popen(argv, env=ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
                                   pass_fds=(child.fileno(),)) as guest:
                 child.close()
@@ -262,7 +281,7 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
                     guest.stdin.flush()
 
                 try:
-                    request = qmp(host)
+                    request, wait_shutdown = qmp(host)
                     cpu_readback(request, manifest["qemu_cpu"], logs)
                     startup = startup_tree(request, manifest, logs, fdt_bytes, disk=disk is not None) if alpine else None
                     wiring = disk_wiring(request, logs, builtin_dtb) if disk is not None else None
@@ -283,7 +302,24 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
                     if wiring is not None:
                         wiring["guest_tree"] = disk_tree(logs / "qemu-handoff.dtb", "/soc/interrupt-controller@c000000")
                         handoff["disk"] = wiring
-                    request("quit")
+                    if poweroff:
+                        request("cont")
+                        send(POWER_OFF)
+                        deadline = time.monotonic() + step_seconds
+                        tail = bytearray()
+                        while remaining := max(0, deadline - time.monotonic()):
+                            data = receive(remaining)
+                            if not data:
+                                break
+                            tail.extend(data)
+                            if len(tail) > STEP_BYTES:
+                                raise ValueError("QEMU exceeded the poweroff output budget")
+                        else:
+                            raise TimeoutError("QEMU did not power off")
+                        exit_reason = wait_shutdown()
+                    else:
+                        request("quit")
+                        exit_reason = "QMP quit"
                     guest.wait(timeout=5)
                     if guest.returncode != 0:
                         raise ValueError(f"QEMU exited with status {guest.returncode}; see qemu-stderr.log")
@@ -294,7 +330,7 @@ def run(manifest, qemu_version, *, logs=LOGS, images=IMAGE_DIR, disk=None, write
     report = dict(qemu=qemu_version, qemu_sha256=sha256(QEMU), default_isa=default_isa,
                   kernelrelease=manifest["kernelrelease"],
                   serial_timing_seconds=timings, deadline_per_state_seconds=step_seconds,
-                  byte_budget_per_state=STEP_BYTES, handoff=handoff, exit_reason="QMP quit", exit_status=guest.returncode)
+                  byte_budget_per_state=STEP_BYTES, handoff=handoff, exit_reason=exit_reason, exit_status=guest.returncode)
     if alpine:
         report.update(boot_deadline_seconds=STEP_SECONDS, automatic_tree=automatic, startup_tree=startup)
     (logs / "qemu-reference.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -337,21 +373,47 @@ def run_alpine(manifest, qemu_version, candidate):
     print(f"QEMU booted Alpine, installed and ran signed mawk offline, then verified a clean cold boot: {report_path}")
 
 
+def run_system_disk(manifest, qemu_version, candidate):
+    require_tools("e2fsck")
+    ALPINE_ROOT_LOGS.mkdir(parents=True, exist_ok=True)
+    logs = Path(tempfile.mkdtemp(prefix="reference-", dir=ALPINE_ROOT_LOGS))
+    images = alpine_profile(True, False, candidate, root_disk=True)[1]
+    seed = images / SEED
+    disk = logs / "system.raw"
+    shutil.copyfile(seed, disk)
+    first = run(manifest, qemu_version, logs=logs / "first", images=images, disk=disk, alpine=True,
+                states=install_states(), step_seconds=60, poweroff=True)
+    check_filesystem(disk, logs / "first-e2fsck.log", ENV)
+    installed = sha256(disk)
+    second = run(manifest, qemu_version, logs=logs / "second", images=images, disk=disk, alpine=True,
+                 states=system_cold_states(), step_seconds=60, poweroff=True)
+    check_filesystem(disk, logs / "second-e2fsck.log", ENV)
+    if sha256(seed) != manifest["seed"]["sha256"] or installed == manifest["seed"]["sha256"]:
+        raise ValueError(f"unexpected seed or system disk changes; see {logs}")
+    report = dict(manifest=manifest, first_boot=first, second_boot=second, installed_sha256=installed,
+                  final_sha256=sha256(disk))
+    (logs / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(f"QEMU installed and ran signed mawk across two ext4 root boots and guest shutdowns: {logs / 'report.json'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("serial", "blk", "alpine", "alpine-blk"), default="serial")
+    parser.add_argument("--profile", choices=("serial", "blk", "alpine", "alpine-blk", "alpine-root"), default="serial")
     parser.add_argument("--candidate", action="store_true", help="qualify the unlocked Alpine candidate")
     args = parser.parse_args()
-    if args.candidate and args.profile not in ("alpine", "alpine-blk"):
-        parser.error("--candidate requires --profile alpine or alpine-blk")
+    if args.candidate and not args.profile.startswith("alpine"):
+        parser.error("--candidate requires an Alpine profile")
     require_tools("dtc", "fdtget")
     if not QEMU.is_file():
         raise FileNotFoundError(f"{QEMU}: run make riscv-linux-qemu first")
     qemu_version = version()
-    blk = args.profile in ("blk", "alpine-blk")
-    alpine = args.profile in ("alpine", "alpine-blk")
-    manifest = verified_manifest(blk, alpine=alpine, candidate=args.candidate)
-    if blk:
+    root_disk = args.profile == "alpine-root"
+    blk = args.profile in ("blk", "alpine-blk", "alpine-root")
+    alpine = args.profile.startswith("alpine")
+    manifest = verified_manifest(blk, alpine=alpine, candidate=args.candidate, root_disk=root_disk)
+    if root_disk:
+        run_system_disk(manifest, qemu_version, args.candidate)
+    elif blk:
         run_disk(manifest, qemu_version, alpine=alpine, candidate=args.candidate)
     elif alpine:
         run_alpine(manifest, qemu_version, args.candidate)

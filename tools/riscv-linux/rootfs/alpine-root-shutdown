@@ -1,0 +1,8 @@
+#!/bin/sh
+sync
+if ! mount -o remount,ro /dev/vda /; then
+    echo "Hesper Alpine root: cannot remount /dev/vda read-only" >&2
+    reboot -f
+    exit 1
+fi
+sync

@@ -3,6 +3,7 @@
 记录 Hesper 各版本的用户可见变更。所有 Rust crate 统一版本；未发布的变更记在 `Unreleased`，发布时归入带日期的版本小节。
 
 ## [Unreleased]
+- **RISC-V 参考板**：`images-alpine-lts-root` 可复建 16 MiB raw ext4 系统盘。固定 QEMU 从 `/dev/vda` 启动，在正常关机后冷启动并读回已安装的 `mawk` 和系统配置。
 - **CLI / Wasm / Web**：RISC-V 物理内存保护预解码地址区间，缩短官方 Alpine 从启动到交互提示符的等待时间。
 - **Wasm / Web**：`RiscvLinux.bootImafdcWithDisk` 支持官方 Alpine 的可选数据盘。「Alpine」可使用 CLI 导出的盘，也可暂停下载 raw 盘供 CLI 冷启动。
 - **CLI / RISC-V Linux**：官方 Alpine 可用 `images-alpine-lts-blk` 和 `--disk-in` / `--disk-out` 挂载并导出数据盘，启动根留在 RAM。

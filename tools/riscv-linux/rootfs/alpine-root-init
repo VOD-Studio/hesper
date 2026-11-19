@@ -1,0 +1,25 @@
+#!/bin/sh
+fail() {
+    echo "Hesper Alpine root: $*" >&2
+    /bin/busybox reboot -f
+    exit 1
+}
+
+/bin/busybox mount -t devtmpfs devtmpfs /dev || fail "cannot mount devtmpfs"
+# The board has no RTC. Keep ext4 deletion timestamps out of the inode-number range.
+/bin/busybox date -u -s @1700000000 >/dev/null || fail "cannot initialize the clock"
+while IFS= read -r module; do
+    /bin/busybox insmod "$module" || fail "cannot load $module"
+done </opt/hesper/disk-modules
+[ -b /dev/vda ] || fail "/dev/vda is missing"
+/bin/busybox mount -t ext4 -o noatime,errors=remount-ro /dev/vda /mnt ||
+    fail "cannot mount /dev/vda as ext4"
+for path in dev proc sys; do
+    [ -d "/mnt/$path" ] || fail "the root disk lacks /$path"
+done
+[ -x /mnt/bin/busybox ] && [ -r /mnt/etc/inittab ] || fail "the root disk lacks Alpine init files"
+/bin/busybox mount -t proc proc /mnt/proc || fail "cannot mount proc"
+/bin/busybox mount -t sysfs sysfs /mnt/sys || fail "cannot mount sysfs"
+/bin/busybox mount -o move /dev /mnt/dev || fail "cannot move devtmpfs to the root disk"
+export PS1='hesper# '
+exec /bin/busybox switch_root -c /dev/console /mnt /sbin/init
