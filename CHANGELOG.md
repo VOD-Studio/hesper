@@ -3,6 +3,7 @@
 记录 Hesper 各版本的用户可见变更。所有 Rust crate 统一版本；未发布的变更记在 `Unreleased`，发布时归入带日期的版本小节。
 
 ## [Unreleased]
+- **CLI / RISC-V Linux**：`hesper linux` 可从 `images-alpine-lts-root` 的 ext4 系统盘冷启动，并在客体执行 `poweroff` 后原子导出。下一次启动可直接使用导出盘中的软件包与配置。Ctrl+] 放弃本次写入。
 - **RISC-V 机器库**：Alpine 系统盘板型接入 SiFive test 设备，向宿主报告客体的关机、重启和失败请求，并在收到请求时停止推进。
 - **RISC-V 参考板**：`images-alpine-lts-root` 可复建 16 MiB raw ext4 系统盘。固定 QEMU 从 `/dev/vda` 启动，在正常关机后冷启动并读回已安装的 `mawk` 和系统配置。
 - **CLI / Wasm / Web**：RISC-V 物理内存保护预解码地址区间，缩短官方 Alpine 从启动到交互提示符的等待时间。

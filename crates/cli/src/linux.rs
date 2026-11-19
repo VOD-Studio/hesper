@@ -14,7 +14,7 @@ use std::{
 };
 
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, HartIsa, INITRAMFS_ADDRESS,
+    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, GuestExit, HartIsa, INITRAMFS_ADDRESS,
     KERNEL_ADDRESS, MAX_INITRAMFS_BYTES, Machine, Progress,
 };
 use serde::Deserialize;
@@ -29,6 +29,8 @@ const ALPINE_IMAGE_LOCK: &str =
     include_str!("../../../tools/riscv-linux/images-alpine-lts.lock.json");
 const ALPINE_BLK_IMAGE_LOCK: &str =
     include_str!("../../../tools/riscv-linux/images-alpine-lts-blk.lock.json");
+const ALPINE_ROOT_IMAGE_LOCK: &str =
+    include_str!("../../../tools/riscv-linux/images-alpine-lts-root.lock.json");
 const ALPINE_LEGACY_LOCK: &str = include_str!("../../../tools/riscv-linux/images-alpine.lock.json");
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 const BATCH: u32 = 16_384;
@@ -80,8 +82,8 @@ enum LinuxError {
     ManifestMismatch(PathBuf),
     #[error("Alpine images do not support a custom initramfs")]
     AlpineInitramfs,
-    #[error("images-alpine-lts-blk requires --disk-in and --disk-out")]
-    AlpineDiskRequired,
+    #[error("{0} requires --disk-in and --disk-out")]
+    AlpineDiskRequired(&'static str),
     #[error("{operation} {}: {source}", .path.display())]
     File {
         operation: &'static str,
@@ -125,6 +127,10 @@ enum LinuxError {
     TrapLoop(u32),
     #[error("Linux guest is idle with serial bytes still pending")]
     IdleWithPendingSerial,
+    #[error("Linux guest stopped with {0:?}. See the serial output for the guest's error")]
+    GuestStopped(GuestExit),
+    #[error("Linux guest powered off with an unclean ext4 system disk")]
+    UncleanSystemDisk,
 }
 
 #[derive(Clone, Copy)]
@@ -227,6 +233,7 @@ impl Options {
 #[derive(Deserialize)]
 struct ImageLock {
     images: [Image; 4],
+    seed: Option<DiskSeed>,
 }
 
 #[derive(Deserialize)]
@@ -238,12 +245,19 @@ struct Image {
     end: String,
 }
 
+#[derive(Deserialize)]
+struct DiskSeed {
+    path: String,
+    bytes: u64,
+    sha256: String,
+}
+
 fn boot(
     directory: &Path,
     replacement: Option<&Path>,
-    disk: Option<DataDisk>,
+    disk_paths: Option<&(PathBuf, PathBuf)>,
     images_started: Option<Instant>,
-) -> Result<Machine, LinuxError> {
+) -> Result<(Machine, bool), LinuxError> {
     let path = directory.join("manifest.json");
     let actual = serde_json::from_slice::<Value>(&read_bounded(&path, MAX_MANIFEST_BYTES, false)?)
         .map_err(|source| LinuxError::ManifestJson {
@@ -253,19 +267,24 @@ fn boot(
     let parse_lock = |lock| {
         serde_json::from_str::<Value>(lock).map_err(|err| LinuxError::ImageLock(err.to_string()))
     };
-    let standard_lock = if disk.is_some() {
+    let standard_lock = if disk_paths.is_some() {
         BLK_IMAGE_LOCK
     } else {
         IMAGE_LOCK
     };
+    let system_disk = actual == parse_lock(ALPINE_ROOT_IMAGE_LOCK)?;
     let isa = if actual == parse_lock(standard_lock)? {
         HartIsa::Imac
-    } else if actual == parse_lock(ALPINE_BLK_IMAGE_LOCK)? {
-        if disk.is_none() {
-            return Err(LinuxError::AlpineDiskRequired);
+    } else if system_disk || actual == parse_lock(ALPINE_BLK_IMAGE_LOCK)? {
+        if disk_paths.is_none() {
+            return Err(LinuxError::AlpineDiskRequired(if system_disk {
+                "images-alpine-lts-root"
+            } else {
+                "images-alpine-lts-blk"
+            }));
         }
         HartIsa::Imafdc
-    } else if disk.is_none()
+    } else if disk_paths.is_none()
         && (actual == parse_lock(ALPINE_IMAGE_LOCK)? || actual == parse_lock(ALPINE_LEGACY_LOCK)?)
     {
         HartIsa::Imafdc
@@ -277,6 +296,19 @@ fn boot(
     }
     let pinned: ImageLock =
         serde_json::from_value(actual).map_err(|err| LinuxError::ImageLock(err.to_string()))?;
+    let disk = disk_paths
+        .map(|(input, output)| {
+            // The named seed is a build artifact. A separate raw input can be
+            // a previously exported disk, even in a directory with no seed.
+            let seed = pinned.seed.filter(|seed| {
+                directory
+                    .join(&seed.path)
+                    .canonicalize()
+                    .is_ok_and(|locked| input.canonicalize().is_ok_and(|path| path == locked))
+            });
+            load_disk(input, output, seed)
+        })
+        .transpose()?;
     let [firmware, kernel, initramfs, fdt] = pinned.images;
     for (image, name, address) in [
         (&firmware, "fw_jump.bin", DRAM_BASE),
@@ -318,21 +350,24 @@ fn boot(
     if let Some(path) = replacement {
         let locked_initramfs_len = usize::try_from(locked_initramfs_len)
             .map_err(|_| LinuxError::ImageLock("invalid initramfs length".into()))?;
-        return Machine::boot_with_initramfs(images, locked_initramfs_len, disk).map_err(
-            |source| LinuxError::InitramfsBoot {
-                path: path.into(),
-                source,
-            },
-        );
+        let machine =
+            Machine::boot_with_initramfs(images, locked_initramfs_len, disk).map_err(|source| {
+                LinuxError::InitramfsBoot {
+                    path: path.into(),
+                    source,
+                }
+            })?;
+        return Ok((machine, system_disk));
     }
     let machine = match disk {
+        Some(disk) if system_disk => Machine::boot_with_system_disk(images, disk)?,
         Some(disk) => Machine::boot_with_isa_and_disk(images, isa, disk)?,
         None => Machine::boot_with_isa(images, isa)?,
     };
     if let Some(started) = load_started {
         bench_phase("load", started);
     }
-    Ok(machine)
+    Ok((machine, system_disk))
 }
 
 fn hex_address(text: &str) -> Option<u64> {
@@ -342,20 +377,25 @@ fn hex_address(text: &str) -> Option<u64> {
 fn verified_image(directory: &Path, image: Image) -> Result<Vec<u8>, LinuxError> {
     let path = directory.join(image.path);
     let bytes = read_bounded(&path, image.bytes, true)?;
+    check_hash(&path, &bytes, image.sha256)?;
+    Ok(bytes)
+}
+
+fn check_hash(path: &Path, bytes: &[u8], expected: String) -> Result<(), LinuxError> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let actual = Sha256::digest(&bytes);
+    let actual = Sha256::digest(bytes);
     let matches = actual
         .iter()
         .flat_map(|&byte| [HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]])
-        .eq(image.sha256.bytes());
+        .eq(expected.bytes());
     if !matches {
         return Err(LinuxError::HashMismatch {
-            path,
-            expected: image.sha256,
+            path: path.into(),
+            expected,
             actual: format!("{actual:x}"),
         });
     }
-    Ok(bytes)
+    Ok(())
 }
 
 fn open_image(path: &Path) -> io::Result<File> {
@@ -433,7 +473,7 @@ fn path_error(operation: &'static str, path: &Path, source: io::Error) -> LinuxE
     }
 }
 
-fn load_disk(input: &Path, output: &Path) -> Result<DataDisk, LinuxError> {
+fn load_disk(input: &Path, output: &Path, seed: Option<DiskSeed>) -> Result<DataDisk, LinuxError> {
     match fs::symlink_metadata(output) {
         Ok(_) => return Err(LinuxError::OutputExists(output.into())),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -443,14 +483,28 @@ fn load_disk(input: &Path, output: &Path) -> Result<DataDisk, LinuxError> {
         path: input.into(),
         bytes,
     };
-    let bytes = read_file(input, DataDisk::MAX_BYTES as u64, |bytes| {
-        (!usize::try_from(bytes).is_ok_and(DataDisk::valid_size)).then(|| invalid_size(bytes))
-    })?;
+    let bytes = if let Some(seed) = seed {
+        let bytes = read_bounded(input, seed.bytes, true)?;
+        check_hash(input, &bytes, seed.sha256)?;
+        bytes
+    } else {
+        read_file(input, DataDisk::MAX_BYTES as u64, |bytes| {
+            (!usize::try_from(bytes).is_ok_and(DataDisk::valid_size)).then(|| invalid_size(bytes))
+        })?
+    };
     let size = bytes.len() as u64;
     DataDisk::new(bytes).map_err(|_| invalid_size(size))
 }
 
-fn save_disk(output: &Path, bytes: &[u8]) -> Result<(), LinuxError> {
+fn save_disk(output: &Path, bytes: &[u8], system_disk: bool) -> Result<(), LinuxError> {
+    let operation = if system_disk {
+        if !clean_ext4(bytes) {
+            return Err(LinuxError::UncleanSystemDisk);
+        }
+        "saving system disk to"
+    } else {
+        "saving data disk to"
+    };
     let parent = output
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -465,7 +519,22 @@ fn save_disk(output: &Path, bytes: &[u8]) -> Result<(), LinuxError> {
         // the destination. The temporary file is removed on both paths.
         fs::hard_link(temp.path(), output)
     };
-    save().map_err(|source| path_error("saving data disk to", output, source))
+    save().map_err(|source| path_error(operation, output, source))
+}
+
+fn clean_ext4(disk: &[u8]) -> bool {
+    let Some(superblock) = disk.get(1024..2048) else {
+        return false;
+    };
+    let word = |offset| u16::from_le_bytes([superblock[offset], superblock[offset + 1]]);
+    let dword = |offset| u32::from(word(offset)) | u32::from(word(offset + 2)) << 16;
+    // The shutdown action remounts the root read-only. A forced poweroff can
+    // reach the same device with the journal still marked for recovery.
+    word(0x38) == 0xef53 // s_magic
+        && word(0x3a) == 0x0001 // s_state: EXT4_VALID_FS
+        && dword(0x60) & 0x0004 == 0 // s_feature_incompat: RECOVER
+        && dword(0x64) & 0x0001_0000 == 0 // s_feature_ro_compat: ORPHAN_PRESENT
+        && dword(0xe8) == 0 // s_last_orphan
 }
 
 type InputBuffer = [u8; IO_BYTES];
@@ -591,6 +660,7 @@ enum Exit {
     Eof,
     Quit,
     Signal,
+    PowerOff,
 }
 
 impl Exit {
@@ -599,6 +669,7 @@ impl Exit {
             Self::Eof => "eof",
             Self::Quit => "quit",
             Self::Signal => "signal",
+            Self::PowerOff => "poweroff",
         }
     }
 }
@@ -688,6 +759,18 @@ impl Session {
             if let Some(fault) = self.machine.disk_fault() {
                 return Err(fault.into());
             }
+            if let Some(exit) = self.machine.guest_exit() {
+                if terminated
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                {
+                    return Ok(Exit::Signal);
+                }
+                return match exit {
+                    GuestExit::PowerOff(0) => Ok(Exit::PowerOff),
+                    _ => Err(LinuxError::GuestStopped(exit)),
+                };
+            }
             idle = progress.spent == 0 && !output;
             if matches!(input_end, Some(Exit::Eof))
                 && pending.is_empty()
@@ -763,33 +846,30 @@ impl Session {
 pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     let Some(options) = Options::parse(args)? else {
         println!(
-            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs to boot an uncompressed newc archive (up to 16 MiB) instead of the pinned root. The firmware, kernel and source DTB stay locked.\nWith paired disk options, use images-blk or images-alpine-lts-blk and unmount the data disk before Ctrl-] exports it. Without a disk, Ctrl-] just exits.\nAlpine uses a locked RAM root. Only images-alpine-lts-blk accepts and requires paired disk options.\nThere is no total fuel limit by default. Use --max-fuel N to limit guest transitions."
+            "Usage: hesper linux --images <dir> [--initramfs <file>] [--disk-in <raw> --disk-out <raw>] [--max-fuel N] [--diagnostics]\n\nRun the pinned guest over raw serial stdin/stdout.\nUse --initramfs with the standard images to boot an uncompressed newc archive (up to 16 MiB).\nUse images-blk or images-alpine-lts-blk with paired disk options for a data disk. Unmount it before Ctrl-] exports it.\nUse images-alpine-lts-root with paired disk options for a persistent ext4 root. Guest poweroff exports the disk. Ctrl-] discards the session.\nDisk output paths must be new. Use --max-fuel N to limit guest transitions."
         );
         return Ok(());
     };
     let images_started = ALPINE_BENCH.then(Instant::now);
-    let disk = options
-        .disk
-        .as_ref()
-        .map(|(input, output)| load_disk(input, output))
-        .transpose()?;
+    let (machine, system_disk) = boot(
+        &options.images,
+        options.initramfs.as_deref(),
+        options.disk.as_ref(),
+        images_started,
+    )?;
     let mut session = Session {
-        machine: boot(
-            &options.images,
-            options.initramfs.as_deref(),
-            disk,
-            images_started,
-        )?,
+        machine,
         spent: 0,
         tail: SerialTail::new(),
     };
     let result = session.run(options.fuel_limit);
-    if let (Ok(Exit::Quit), Some((_, output))) = (&result, &options.disk) {
-        let bytes = session
-            .machine
-            .data_disk()
-            .expect("booted with a data disk");
-        if let Err(error) = save_disk(output, bytes) {
+    if matches!(
+        (&result, system_disk),
+        (Ok(Exit::PowerOff), true) | (Ok(Exit::Quit), false)
+    ) && let Some((_, output)) = &options.disk
+    {
+        let bytes = session.machine.data_disk().expect("booted with a disk");
+        if let Err(error) = save_disk(output, bytes, system_disk) {
             session.report("export-error", options.fuel_limit);
             return Err(error.into());
         }
@@ -798,6 +878,10 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
         Ok(exit) if options.diagnostics => session.report(exit.name(), options.fuel_limit),
         Err(LinuxError::FuelExhausted(_)) => session.report("fuel", options.fuel_limit),
         Err(LinuxError::TrapLoop(_)) => session.report("trap-loop", options.fuel_limit),
+        Err(LinuxError::GuestStopped(GuestExit::Reboot)) => {
+            session.report("guest-reboot", options.fuel_limit)
+        }
+        Err(LinuxError::GuestStopped(_)) => session.report("guest-failure", options.fuel_limit),
         Err(_) => session.report("error", options.fuel_limit),
         Ok(_) => {}
     }

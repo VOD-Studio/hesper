@@ -2040,3 +2040,45 @@ PMP、Sv39 和压缩取指定向测试通过，覆盖 PMP 优先级及访问范�
 报告相对于本次的 `RISCV_LINUX_CACHE=.cache/riscv-linux/repro-c`。
 无盘原生门禁通过 `RISCV_LINUX_BLK_IMAGES=.cache/riscv-linux/blk-a/images-blk`
 指定单独缓存的标准数据盘控制镜像。浏览器使用 `CHROME_BIN=chromium`。
+
+## RISC-V Linux Alpine 持久化系统盘
+
+2026-11-19 本地验证。官方 `linux-lts` 和 OpenSBI 的哈希与 Alpine 数据盘配置一致。
+新的 2.7 MiB initramfs 加载 virtio-blk 和 ext4 模块，通过 `switch_root`
+启动盘上的 BusyBox init。板上没有 RTC，早期 init 使用固定时间初始化客体时钟，
+保证 ext4 记录的删除时间落在有效范围内。
+
+`make riscv-linux-alpine-root-data` 使用 e2fsprogs 1.47.4 构建两份 16 MiB
+ext4 种子盘，比较完整 SHA-256 并执行 `e2fsck -fn`。在 `repro-c` 和
+`repro-d` 两套缓存复建后，`cmp` 逐字节一致。种子盘 SHA-256 为
+`2281477166eb8ba46575c82742c39a65553b0b255a310232e327ae29168e5b27`。
+
+`make riscv-linux-alpine-root-reference` 在固定 QEMU 9.2.0 中完成两次冷启动。
+两次 `/proc/mounts` 均报告根来自 `/dev/vda` 且类型为 `ext4`。首次离线验签
+安装 `mawk`，写入 `/etc/hesper-persistence`，由 BusyBox init 同步并只读重挂载。
+第二次直接运行已安装的 `mawk` 得到 `4.375`，用 `cmp` 校验配置字节。两次
+都有 QMP `guest-shutdown` 事件和退出码 0，磁盘均通过 `e2fsck -fn`。
+
+`make riscv-linux-alpine-root-native` 使用两个独立 release CLI 进程和真实 PTY
+重放同一流程。第二个进程只加载四个启动文件、清单和第一次导出的盘。
+两个导出盘均为 16 MiB，均通过 `e2fsck -fn`。首次种子和第二次输入的
+SHA-256 在各自会话前后相同。管道验收在发送 `poweroff` 后关闭 stdin，
+CLI 收到客体关机请求后正常退出并导出。
+
+失败控制覆盖：缺少成对的盘选项、具名种子哈希错误、输出预先存在、输出发布时
+同名文件出现、Ctrl+] 放弃、燃料耗尽、无效 ext4 根、客体 panic 和
+`poweroff -f`。拒绝、错误及放弃路径均保留输入和已存在的文件。
+发布竞态只留下原有的同名文件，其余失败目录没有导出盘或临时文件。
+
+板级定向测试涵盖 SiFive test 的读取、半字和字写入、关机状态锁存、停止推进
+与冷重启。CLI 定向测试、`make verify` 和 `make wasm` 在本机通过。
+下列报告路径相对于 `RISCV_LINUX_CACHE=.cache/riscv-linux/repro-c`。
+
+| 命令 | 本地报告 |
+| --- | --- |
+| `make riscv-linux-alpine-root-reference` | `logs-alpine-root/reference-9knxxljk/report.json` |
+| `make riscv-linux-alpine-root-native` | `logs-alpine-root/native-f5nd2_i6/report.json` |
+| `make riscv-linux-alpine-reference` | `logs-alpine/reference-se25w568/report.json` |
+| `make riscv-linux-alpine-blk-reference` | `logs-alpine-blk/reference-mlolcldu/report.json` |
+| `make riscv-linux-alpine-native` | `logs-alpine/native-0zvjsjqj/report.json` |
+| `make riscv-linux-alpine-blk-native` | `logs-alpine-blk/native-gm3w2r5f/report.json` |

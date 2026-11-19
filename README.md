@@ -222,6 +222,50 @@ raw 文件作为下次冷启动的输入，重新挂载后可读回。`images-al
 `make riscv-linux-alpine-blk-browser` 在生产 Chromium 中验收双向交换
 （另需标准与无盘官方 Alpine 镜像）。
 
+#### Alpine 持久化系统盘（CLI）
+
+构建需要带 libarchive 支持的 `mke2fs`。镜像锁使用 e2fsprogs 1.47.4，
+生成 16 MiB、无分区表的 raw ext4 种子盘。客体直接从 `/dev/vda` 挂载根目录。
+
+```sh
+make riscv-linux-alpine-sources
+make riscv-linux-alpine-root-data
+cargo build --locked --release -p hesper
+IMAGES=.cache/riscv-linux/images-alpine-lts-root
+target/release/hesper linux --images "$IMAGES" \
+  --disk-in "$IMAGES/seed.raw" --disk-out alpine-first.raw
+```
+
+在客体串口离线验签、安装软件包并写入配置。
+
+```sh
+awk '$2 == "/" {print $1, $3}' /proc/mounts  # /dev/vda ext4
+PKG=/opt/hesper/mawk-1.3.4_p20260302-r0.apk
+apk --no-network verify "$PKG" &&
+  apk --no-network --no-progress --repositories-file /dev/null --force-non-repository add "$PKG" &&
+  printf 'enabled=1\nlabel=Hesper Alpine\n' > /etc/hesper-persistence &&
+  poweroff
+```
+
+客体正常关机后，CLI 将系统盘原子保存到新的输出路径。按 Ctrl+] 会放弃本次
+会话。每次启动都在输入盘的内存副本上运行。再次启动时使用上一轮的导出盘。
+
+```sh
+target/release/hesper linux --images "$IMAGES" \
+  --disk-in alpine-first.raw --disk-out alpine-second.raw
+```
+
+在第二次启动的客体中，直接运行已安装的程序并核对配置。
+
+```sh
+mawk 'BEGIN {print sprintf("%.3f", 7*1.25/2)}'  # 4.375
+printf 'enabled=1\nlabel=Hesper Alpine\n' | cmp - /etc/hesper-persistence
+poweroff
+```
+
+`make riscv-linux-alpine-root-reference` 对照固定 QEMU。
+`make riscv-linux-alpine-root-native` 验收 release CLI、真实 PTY、管道和关机导出。
+
 ## Workspace 结构
 
 ```text

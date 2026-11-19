@@ -37,6 +37,7 @@
 #   make riscv-linux-alpine-reference  固定 QEMU 验收 Alpine 客体
 #   make riscv-linux-alpine-blk-data / riscv-linux-alpine-blk-reference  复建并验证官方 Alpine 数据盘配置
 #   make riscv-linux-alpine-root-data / riscv-linux-alpine-root-reference  复建 ext4 系统盘并用固定 QEMU 验证
+#   make riscv-linux-alpine-root-native  release CLI 的 PTY 持久化、管道与失败验收
 #   make riscv-linux-fd-reference  对照 QEMU 与 Hesper 的浮点位签名
 #   make riscv-linux-alpine-native  原生管道、PTY、冷启动和镜像拒绝验收
 #   make riscv-linux-alpine-bench   同一宿主的官方 Alpine 冷启动基准（手动执行）
@@ -165,12 +166,16 @@ riscv-linux-alpine-blk-data:
 riscv-linux-alpine-blk-reference:
 	python3 tools/riscv-linux/reference.py --profile alpine-blk
 
-.PHONY: riscv-linux-alpine-root-data riscv-linux-alpine-root-reference
+.PHONY: riscv-linux-alpine-root-data riscv-linux-alpine-root-reference riscv-linux-alpine-root-native
 riscv-linux-alpine-root-data:
 	python3 tools/riscv-linux/build_guest.py --profile alpine-root
 
 riscv-linux-alpine-root-reference:
 	python3 tools/riscv-linux/reference.py --profile alpine-root
+
+riscv-linux-alpine-root-native:
+	cargo build --locked --release -p hesper
+	python3 tools/riscv-linux/native_alpine_root.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
 
 riscv-linux-fd-reference:
 	cargo build --locked --release -p hesper-riscv-linux --example isa_probe
