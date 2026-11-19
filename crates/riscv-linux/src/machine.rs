@@ -1,6 +1,10 @@
 use crate::{
-    BootError, BootImages, DataDisk, DiskFault, FDT_ADDRESS, PrivilegeMode, UartDiagnostics,
-    board::Board, boot::Validated, dram_range, hart::Hart,
+    BootError, BootImages, DataDisk, DiskFault, FDT_ADDRESS, GuestExit, PrivilegeMode,
+    UartDiagnostics,
+    board::{Board, SifiveTest},
+    boot::{BootProfile, Validated},
+    dram_range,
+    hart::Hart,
 };
 use core::fmt;
 
@@ -131,7 +135,11 @@ impl Machine {
     /// Validate and cold boot the default images with the specified hart ISA.
     /// The host authenticates the images and chooses the matching hardware.
     pub fn boot_with_isa(images: BootImages<'_>, isa: HartIsa) -> Result<Self, BootError> {
-        Self::boot_board(Validated::new(images, None)?, None, isa)
+        Self::boot_board(
+            Validated::new(images, None, BootProfile::Standard)?,
+            None,
+            isa,
+        )
     }
 
     /// Validate boot images and start a cold board owning the supplied disk.
@@ -145,7 +153,23 @@ impl Machine {
         isa: HartIsa,
         disk: DataDisk,
     ) -> Result<Self, BootError> {
-        Self::boot_board(Validated::new(images, None)?, Some(disk), isa)
+        Self::boot_board(
+            Validated::new(images, None, BootProfile::Standard)?,
+            Some(disk),
+            isa,
+        )
+    }
+
+    /// Cold boot the authenticated Alpine ext4 root profile with its SiFive test device.
+    pub fn boot_with_system_disk(
+        images: BootImages<'_>,
+        disk: DataDisk,
+    ) -> Result<Self, BootError> {
+        Self::boot_board(
+            Validated::new(images, None, BootProfile::SystemDisk)?,
+            Some(disk),
+            HartIsa::Imafdc,
+        )
     }
 
     /// Cold boot with a replacement `images.initramfs` and an optional disk.
@@ -157,7 +181,7 @@ impl Machine {
         disk: Option<DataDisk>,
     ) -> Result<Self, BootError> {
         Self::boot_board(
-            Validated::new(images, Some(locked_initramfs_len))?,
+            Validated::new(images, Some(locked_initramfs_len), BootProfile::Standard)?,
             disk,
             HartIsa::Imac,
         )
@@ -169,6 +193,9 @@ impl Machine {
         isa: HartIsa,
     ) -> Result<Self, BootError> {
         let mut machine = Self::try_new_board(disk, isa)?;
+        if images.profile == BootProfile::SystemDisk {
+            machine.board.test = Some(SifiveTest::default());
+        }
         machine.install_boot(images);
         Ok(machine)
     }
@@ -176,7 +203,12 @@ impl Machine {
     /// Cold boot on the existing allocation, retaining data-disk sectors.
     /// Validation failure preserves the old RAM, devices and hart observation.
     pub fn reboot(&mut self, images: BootImages<'_>) -> Result<(), BootError> {
-        self.reboot_board(Validated::new(images, None)?);
+        let profile = if self.board.test.is_some() {
+            BootProfile::SystemDisk
+        } else {
+            BootProfile::Standard
+        };
+        self.reboot_board(Validated::new(images, None, profile)?);
         Ok(())
     }
 
@@ -188,7 +220,14 @@ impl Machine {
         images: BootImages<'_>,
         locked_initramfs_len: usize,
     ) -> Result<(), BootError> {
-        self.reboot_board(Validated::new(images, Some(locked_initramfs_len))?);
+        if self.board.test.is_some() {
+            return Err(BootError::Format("system disk replacement initramfs"));
+        }
+        self.reboot_board(Validated::new(
+            images,
+            Some(locked_initramfs_len),
+            BootProfile::Standard,
+        )?);
         Ok(())
     }
 
@@ -295,13 +334,18 @@ impl Machine {
         self.board.uart.drain_output(bytes)
     }
 
+    /// Return the latched guest exit request. The hart stays stopped until reboot.
+    pub fn guest_exit(&self) -> Option<GuestExit> {
+        self.board.test.as_ref()?.exit
+    }
+
     /// Execute at most `fuel` transitions. A trap consumes a tick but does not
     /// retire. WFI jumps to the next device event or returns when none exists.
-    /// A full serial output queue also stops the batch until the host drains it.
+    /// A full serial output queue or a guest exit request also stops the batch.
     pub fn run(&mut self, fuel: u32) -> Progress {
         let (mut spent, mut retired) = (0, 0);
         let mut stalled_traps = self.stalled_traps;
-        while spent < fuel && !self.board.uart.output_full() {
+        while spent < fuel && !self.board.uart.output_full() && self.guest_exit().is_none() {
             let lines = self.external_lines | self.board.pending();
             self.hart.privilege.set_interrupt_lines(lines);
             if let Some(did_retire) = self.hart.step(&mut self.board, self.cycle, self.retired) {

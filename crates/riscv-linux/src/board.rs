@@ -10,6 +10,38 @@ const CLINT: u64 = 0x0200_0000;
 const PLIC: u64 = 0x0c00_0000;
 const UART: u64 = 0x1000_0000;
 const VIRTIO_BLK: u64 = 0x1000_1000;
+const SIFIVE_TEST: u64 = 0x0010_0000;
+
+/// Terminal requests from the SiFive test device on the system-disk board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestExit {
+    /// Poweroff with the guest's 16-bit exit code.
+    PowerOff(u16),
+    /// Guest reset request. The host may start a new boot.
+    Reboot,
+    /// Guest failure with the device's 16-bit exit code.
+    Failure(u16),
+}
+
+#[derive(Default)]
+pub(crate) struct SifiveTest {
+    pub(crate) exit: Option<GuestExit>,
+}
+
+impl SifiveTest {
+    fn write(&mut self, offset: u64, width: usize, value: u64) {
+        if offset != 0 {
+            return;
+        }
+        let code = if width == 4 { (value >> 16) as u16 } else { 0 };
+        self.exit = match value as u16 {
+            0x5555 => Some(GuestExit::PowerOff(code)),
+            0x7777 => Some(GuestExit::Reboot),
+            0x3333 => Some(GuestExit::Failure(code)),
+            _ => None,
+        };
+    }
+}
 
 pub(crate) struct Board {
     pub(crate) ram: Vec<u8>,
@@ -17,6 +49,7 @@ pub(crate) struct Board {
     clint: Clint,
     plic: Plic,
     pub(crate) block: Option<VirtioBlk>,
+    pub(crate) test: Option<SifiveTest>,
     pub(crate) ticks: u64,
 }
 
@@ -39,6 +72,7 @@ impl Board {
             clint: Clint::new(),
             plic: Plic::new(),
             block: disk.map(VirtioBlk::new),
+            test: None,
             ticks: 0,
         }
     }
@@ -54,6 +88,9 @@ impl Board {
         self.plic = Plic::new();
         if let Some(block) = &mut self.block {
             block.reset();
+        }
+        if let Some(test) = &mut self.test {
+            test.exit = None;
         }
         self.ticks = 0;
     }
@@ -89,6 +126,11 @@ impl Board {
             && let Some(offset) = offset(address, width, UART, 0x100)
         {
             u64::from(self.uart.read(offset, self.ticks))
+        } else if self.test.is_some()
+            && matches!(width, 2 | 4)
+            && offset(address, width, SIFIVE_TEST, 0x1000).is_some()
+        {
+            0
         } else {
             let offset = offset(address, width, VIRTIO_BLK, 0x1000)?;
             self.block.as_ref()?.read(offset, width)?
@@ -108,6 +150,11 @@ impl Board {
             && let Some(offset) = offset(address, width, UART, 0x100)
         {
             self.uart.write(offset, value as u8, self.ticks);
+        } else if let Some(test) = &mut self.test
+            && matches!(width, 2 | 4)
+            && let Some(offset) = offset(address, width, SIFIVE_TEST, 0x1000)
+        {
+            test.write(offset, width, value);
         } else {
             let offset = offset(address, width, VIRTIO_BLK, 0x1000)?;
             let block = self.block.as_mut()?;

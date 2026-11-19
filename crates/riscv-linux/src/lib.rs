@@ -19,6 +19,7 @@ mod privilege;
 mod uart;
 mod virtio_blk;
 
+pub use board::GuestExit;
 pub use boot::{
     BootError, BootImages, FDT_ADDRESS, INITRAMFS_ADDRESS, KERNEL_ADDRESS, MAX_INITRAMFS_BYTES,
 };

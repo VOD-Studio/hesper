@@ -7,7 +7,12 @@ const FDT_NOP: u32 = 4;
 const FDT_END: u32 = 9;
 
 /// Validate the tree and return the byte offset of the unique 8-byte initrd end.
-pub(crate) fn check(bytes: &[u8], initrd_start: u64, initrd_end: u64) -> Option<usize> {
+pub(crate) fn check(
+    bytes: &[u8],
+    initrd_start: u64,
+    initrd_end: u64,
+    bootargs: &[u8],
+) -> Option<usize> {
     let mut header = bytes.get(..HEADER_SIZE)?;
     if word(&mut header)? != FDT_MAGIC || size(&mut header)? != bytes.len() {
         return None;
@@ -100,7 +105,7 @@ pub(crate) fn check(bytes: &[u8], initrd_start: u64, initrd_end: u64) -> Option<
                 padding(&mut structure, len)?;
                 if depth == 2 && in_chosen {
                     let (bit, expected): (u8, &[u8]) = match name {
-                        b"bootargs" => (1, b"console=ttyS0 rdinit=/init\0"),
+                        b"bootargs" => (1, bootargs),
                         b"linux,initrd-start" => (2, &initrd_start),
                         b"linux,initrd-end" => (4, &initrd_end),
                         _ => continue,

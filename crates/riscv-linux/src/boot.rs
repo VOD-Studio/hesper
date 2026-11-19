@@ -53,15 +53,23 @@ impl fmt::Display for BootError {
 
 impl std::error::Error for BootError {}
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BootProfile {
+    Standard,
+    SystemDisk,
+}
+
 pub(crate) struct Validated<'a> {
     images: BootImages<'a>,
     initrd_end_patch: Option<(usize, [u8; 8])>,
+    pub(crate) profile: BootProfile,
 }
 
 impl<'a> Validated<'a> {
     pub(crate) fn new(
         images: BootImages<'a>,
         locked_initramfs_len: Option<usize>,
+        profile: BootProfile,
     ) -> Result<Self, BootError> {
         const FW: &str = "OpenSBI";
         const KERNEL: &str = "Linux Image";
@@ -113,8 +121,12 @@ impl<'a> Validated<'a> {
             }
             None => initrd.end,
         };
-        let offset =
-            fdt::check(images.fdt, initrd.start, expected_end).ok_or(BootError::Format(DTB))?;
+        let bootargs: &[u8] = match profile {
+            BootProfile::Standard => b"console=ttyS0 rdinit=/init\0",
+            BootProfile::SystemDisk => b"console=ttyS0 rdinit=/init panic=-1\0",
+        };
+        let offset = fdt::check(images.fdt, initrd.start, expected_end, bootargs)
+            .ok_or(BootError::Format(DTB))?;
         // The validated property has exactly eight bytes. Changing only those
         // bytes preserves every FDT check except the expected end value, which
         // now describes the already validated replacement range.
@@ -123,6 +135,7 @@ impl<'a> Validated<'a> {
         Ok(Self {
             images,
             initrd_end_patch,
+            profile,
         })
     }
 

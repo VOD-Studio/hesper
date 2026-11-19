@@ -1,5 +1,5 @@
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, HartIsa, INITRAMFS_ADDRESS,
+    BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, GuestExit, HartIsa, INITRAMFS_ADDRESS,
     KERNEL_ADDRESS, MAX_INITRAMFS_BYTES, Machine, PrivilegeMode,
 };
 use std::ops::Range;
@@ -9,6 +9,7 @@ const STALE_ADDRESS: u64 = KERNEL_ADDRESS + 0x100;
 const STALE_BYTES: &[u8] = b"old guest RAM";
 const LOCKED_INITRAMFS_LEN: usize = 512;
 const LOCKED_INITRD_END: u64 = INITRAMFS_ADDRESS + LOCKED_INITRAMFS_LEN as u64;
+const BOOTARGS: &[u8] = b"console=ttyS0 rdinit=/init\0";
 
 fn image(first_instruction: u32) -> [u8; 64] {
     let mut header = [0; 64];
@@ -23,10 +24,15 @@ fn image(first_instruction: u32) -> [u8; 64] {
 }
 
 fn dtb(initrd: Range<u64>, firmware_end: u64) -> Vec<u8> {
-    test_dtb(initrd, firmware_end, false)
+    test_dtb(initrd, firmware_end, false, BOOTARGS)
 }
 
-fn test_dtb(initrd: Range<u64>, firmware_end: u64, duplicate_initrd_end: bool) -> Vec<u8> {
+fn test_dtb(
+    initrd: Range<u64>,
+    firmware_end: u64,
+    duplicate_initrd_end: bool,
+    bootargs: &[u8],
+) -> Vec<u8> {
     const STRINGS: &str = concat!(
         "#address-cells\0#size-cells\0bootargs\0",
         "linux,initrd-start\0linux,initrd-end\0ranges\0reg\0no-map\0",
@@ -63,7 +69,7 @@ fn test_dtb(initrd: Range<u64>, firmware_end: u64, duplicate_initrd_end: bool) -
         &LOCKED_INITRD_END.to_be_bytes(),
     );
     node(&mut tree, "chosen");
-    property(&mut tree, "bootargs", b"console=ttyS0 rdinit=/init\0");
+    property(&mut tree, "bootargs", bootargs);
     property(&mut tree, "linux,initrd-start", &initrd.start.to_be_bytes());
     property(&mut tree, "linux,initrd-end", &initrd.end.to_be_bytes());
     if duplicate_initrd_end {
@@ -543,6 +549,7 @@ fn replacement_rejects_invalid_archives_without_changing_the_running_board() {
         INITRAMFS_ADDRESS..INITRAMFS_ADDRESS + locked_len as u64,
         next.firmware_end,
         true,
+        BOOTARGS,
     );
     for (case, fdt, len) in [
         ("DTB already describes replacement", &wrong_dtb, locked_len),
@@ -550,6 +557,57 @@ fn replacement_rejects_invalid_archives_without_changing_the_running_board() {
         ("duplicate chosen end", &duplicate_dtb, locked_len),
     ] {
         reject(case, &archive, fdt, len, BootError::Format("DTB"));
+    }
+}
+
+#[test]
+fn system_disk_finisher_halts_at_the_request_and_clears_on_cold_boot() {
+    let mut boot = Fixture::new(1, FIRMWARE_END);
+    let disk = || DataDisk::new(vec![0x42; 512]).unwrap();
+    assert!(matches!(
+        Machine::boot_with_system_disk(boot.images(), disk()),
+        Err(BootError::Format("DTB"))
+    ));
+    boot.fdt = test_dtb(
+        INITRAMFS_ADDRESS..INITRAMFS_ADDRESS + boot.initramfs.len() as u64,
+        boot.firmware_end,
+        false,
+        b"console=ttyS0 rdinit=/init panic=-1\0",
+    );
+    assert!(matches!(
+        Machine::boot_with_isa_and_disk(boot.images(), HartIsa::Imafdc, disk()),
+        Err(BootError::Format("DTB"))
+    ));
+    let mut machine = Machine::boot_with_system_disk(boot.images(), disk()).unwrap();
+    for (value, store, exit) in [
+        (0x0055_5555u32, 0x0020_a023, GuestExit::PowerOff(0x55)), // sw x2,0(x1)
+        (0x0055_7777, 0x0020_9023, GuestExit::Reboot),            // sh x2,0(x1)
+        (0x0009_3333, 0x0020_a023, GuestExit::Failure(9)),
+        (0x0055_5555, 0x0020_9023, GuestExit::PowerOff(0)),
+    ] {
+        let words = [
+            0x0010_00b7,                        // lui x1,0x100
+            0x0000_a023,                        // sw x0,0(x1), ignored value
+            0x0000_a183,                        // lw x3,0(x1), reads zero
+            ((value + 0x800) & !0xfff) | 0x137, // lui x2,upper
+            (value << 20) | 0x0001_0113,        // addi x2,x2,lower
+            0x0020_a223,                        // sw x2,4(x1), ignored offset
+            store,
+            0x0010_0213, // addi x4,x0,1, never retires
+        ];
+        machine
+            .load(DRAM_BASE, words.map(u32::to_le_bytes).as_flattened())
+            .unwrap();
+        let progress = machine.run(100);
+        assert_eq!((progress.spent, progress.retired), (7, 7));
+        assert_eq!(machine.guest_exit(), Some(exit));
+        let state = machine.debug_state();
+        assert_eq!((state.x[3], state.x[4]), (0, 0));
+        assert_eq!(machine.run(100).spent, 0);
+        assert_eq!(machine.debug_state(), state);
+        machine.reboot(boot.images()).unwrap();
+        assert_eq!(machine.guest_exit(), None);
+        assert_eq!(machine.data_disk(), Some([0x42; 512].as_slice()));
     }
 }
 
