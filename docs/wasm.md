@@ -157,6 +157,18 @@ SHA-256；绑定不下载、不分发客体镜像。实例不持有输入数组�
 `diskFault` 为需要设备复位的协议错误文本（正常时为 `undefined`）。
 这些接口不处理 ext2，也不保证宿主已保存导出的数据。
 
+### Alpine 持久化系统盘
+
+`RiscvLinux.bootWithSystemDisk(firmware, firmwareEnd, kernel, initramfs, fdt, disk)`
+使用 [`images-alpine-lts-root.lock.json`](../tools/riscv-linux/images-alpine-lts-root.lock.json)
+中锁定的四个启动文件。客体从 `/dev/vda` 挂载 ext4 根。原始盘参数与数据盘
+使用同样的长度限制，机器持有独立副本。
+
+客体请求关机、重启或报告失败时，`run` 停止推进，`systemDiskExit` 报告
+`SystemDiskExit` 枚举中的结果。仅当结果为 `PoweredOff` 时，`exportDisk()`
+返回系统盘副本。这个结果要求成功关机且 ext4 超级块标记为干净；强制关机留下
+待恢复日志时结果为 `UncleanPowerOff`。
+
 ### 自定义启动根
 
 `RiscvLinux.bootWithInitramfs(firmware, firmwareEnd, kernel, initramfs, fdt, lockedInitramfsLen, disk?)`

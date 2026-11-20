@@ -33,6 +33,22 @@ pub const DRAM_BASE: u64 = 0x8000_0000;
 /// Size of the board's contiguous DRAM in bytes.
 pub const DRAM_SIZE: usize = 128 * 1024 * 1024;
 
+/// Check the ext4 superblock flags expected after a normal system-disk shutdown.
+pub fn clean_ext4_superblock(disk: &[u8]) -> bool {
+    let Some(superblock) = disk.get(1024..2048) else {
+        return false;
+    };
+    let word = |offset| u16::from_le_bytes([superblock[offset], superblock[offset + 1]]);
+    let dword = |offset| u32::from(word(offset)) | u32::from(word(offset + 2)) << 16;
+    // The shutdown action remounts the root read-only. A forced poweroff can
+    // reach the same device with the journal still marked for recovery.
+    word(0x38) == 0xef53 // s_magic
+        && word(0x3a) == 0x0001 // s_state: EXT4_VALID_FS
+        && dword(0x60) & 0x0004 == 0 // s_feature_incompat: RECOVER
+        && dword(0x64) & 0x0001_0000 == 0 // s_feature_ro_compat: ORPHAN_PRESENT
+        && dword(0xe8) == 0 // s_last_orphan
+}
+
 /// Maps a complete guest physical span to byte offsets in the board's DRAM.
 /// An empty span may start one past the last byte; no nonempty span may do so.
 pub fn dram_range(address: u64, length: usize) -> Option<Range<usize>> {

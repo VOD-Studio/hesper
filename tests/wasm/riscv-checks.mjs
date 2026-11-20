@@ -35,6 +35,7 @@ export function riscvCases(RiscvLinux, { integer, uart }) {
         equal(wide.register(3), 0xffffffffffffffffn, "full-width x3");
         equal(wide.exportDisk(), undefined, "bare disk export");
         equal(wide.diskFault, undefined, "bare disk fault");
+        equal(wide.systemDiskExit, undefined, "bare system disk exit");
         equal(wide.diskDirty, false, "bare disk dirty flag");
         wide.markDiskExported();
         equal(wide.diskDirty, false, "marking a bare export");
@@ -50,7 +51,7 @@ export function riscvCases(RiscvLinux, { integer, uart }) {
       const initramfs = new Uint8Array(6), fdt = new Uint8Array(40);
       const invalidLength = new Uint8Array(1);
       Object.defineProperty(invalidLength, "length", { value: 512 });
-      for (const boot of [RiscvLinux.bootWithDisk, RiscvLinux.bootImafdcWithDisk]) {
+      for (const boot of [RiscvLinux.bootWithDisk, RiscvLinux.bootImafdcWithDisk, RiscvLinux.bootWithSystemDisk]) {
         for (const disk of [new Uint8Array(0), invalidLength, new Uint8Array(16 * 1024 * 1024 + 512)]) {
           let code;
           try { boot(firmware, DRAM + 1n, kernel, initramfs, fdt, disk).free(); }

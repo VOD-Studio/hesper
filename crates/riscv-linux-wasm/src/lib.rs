@@ -2,8 +2,9 @@
 
 use core::mem::MaybeUninit;
 use hesper_riscv_linux::{
-    BootError, BootImages, DRAM_BASE, DRAM_SIZE, DataDisk, FDT_ADDRESS, HartIsa, INITRAMFS_ADDRESS,
-    KERNEL_ADDRESS, LoadError, MAX_INITRAMFS_BYTES, Machine, dram_range,
+    BootError, BootImages, DRAM_BASE, DRAM_SIZE, DataDisk, FDT_ADDRESS, GuestExit, HartIsa,
+    INITRAMFS_ADDRESS, KERNEL_ADDRESS, LoadError, MAX_INITRAMFS_BYTES, Machine,
+    clean_ext4_superblock, dram_range,
 };
 use hesper_wasm_support as js;
 use js_sys::{Array, BigInt, Function, Reflect, Uint8Array};
@@ -12,10 +13,21 @@ use wasm_bindgen::prelude::*;
 const PROBE_LIMIT: u64 = 4096;
 const SERIAL_LIMIT: u32 = 4096;
 
+/// The outcome of a terminal request on the Alpine system-disk board.
+#[wasm_bindgen]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SystemDiskExit {
+    PoweredOff,
+    UncleanPowerOff,
+    Reboot,
+    Failure,
+}
+
 /// Owns a single machine. Guest images are provided and authenticated by the host.
 #[wasm_bindgen]
 pub struct RiscvLinux {
     machine: Machine,
+    system_disk: bool,
 }
 
 #[wasm_bindgen]
@@ -97,6 +109,26 @@ impl RiscvLinux {
         )
     }
 
+    /// Boot the Alpine ext4 root profile from an independent copy of a raw disk.
+    #[wasm_bindgen(js_name = bootWithSystemDisk)]
+    pub fn boot_with_system_disk(
+        firmware: &Uint8Array,
+        firmware_end: BigInt,
+        kernel: &Uint8Array,
+        initramfs: &Uint8Array,
+        fdt: &Uint8Array,
+        disk: &Uint8Array,
+    ) -> Result<RiscvLinux, JsValue> {
+        boot(
+            firmware,
+            firmware_end,
+            kernel,
+            initramfs,
+            fdt,
+            BootMode::SystemDisk(disk),
+        )
+    }
+
     /// Explicitly replace the initramfs, using the authenticated DTB and its locked length.
     #[wasm_bindgen(js_name = bootWithInitramfs)]
     pub fn boot_with_initramfs(
@@ -138,7 +170,10 @@ impl RiscvLinux {
         let program = program.copy_to_uninit(&mut buffer[..len]);
         let mut machine = Machine::try_new().map_err(boot_error)?;
         machine.load(address, program).map_err(load_error)?;
-        Ok(Self { machine })
+        Ok(Self {
+            machine,
+            system_disk: false,
+        })
     }
 
     /// Run at most one million transitions synchronously; return the fuel spent.
@@ -173,9 +208,29 @@ impl RiscvLinux {
         Ok(Uint8Array::from(&buffer[..read]))
     }
 
+    /// Report a latched exit on the system-disk board. Only a clean poweroff permits export.
+    #[wasm_bindgen(getter, js_name = systemDiskExit)]
+    pub fn system_disk_exit(&self) -> Option<SystemDiskExit> {
+        Some(match self.machine.guest_exit()? {
+            GuestExit::PowerOff(0) if self.machine.disk_fault().is_none() => {
+                if self.machine.data_disk().is_some_and(clean_ext4_superblock) {
+                    SystemDiskExit::PoweredOff
+                } else {
+                    SystemDiskExit::UncleanPowerOff
+                }
+            }
+            GuestExit::Reboot => SystemDiskExit::Reboot,
+            GuestExit::PowerOff(_) | GuestExit::Failure(_) => SystemDiskExit::Failure,
+        })
+    }
+
     /// Return a JS-owned copy, leaving the machine's dirty flag unchanged.
+    /// A system disk is available only after a clean poweroff.
     #[wasm_bindgen(js_name = exportDisk)]
     pub fn export_disk(&self) -> Option<Uint8Array> {
+        if self.system_disk && self.system_disk_exit() != Some(SystemDiskExit::PoweredOff) {
+            return None;
+        }
         self.machine.data_disk().map(Uint8Array::from)
     }
 
@@ -245,6 +300,7 @@ impl RiscvLinux {
 enum BootMode<'a> {
     Default(HartIsa),
     Disk(HartIsa, &'a Uint8Array),
+    SystemDisk(&'a Uint8Array),
     Replacement(usize, Option<&'a Uint8Array>),
 }
 
@@ -298,9 +354,10 @@ fn boot(
         40,
         DRAM_BASE + DRAM_SIZE as u64 - FDT_ADDRESS - BootImages::FDT_GROWTH,
     )?;
+    let system_disk = matches!(mode, BootMode::SystemDisk(_));
     let disk = match mode {
         BootMode::Default(_) => None,
-        BootMode::Disk(_, bytes) => Some(bytes),
+        BootMode::Disk(_, bytes) | BootMode::SystemDisk(bytes) => Some(bytes),
         BootMode::Replacement(_, disk) => disk,
     };
     let disk = disk
@@ -309,7 +366,7 @@ fn boot(
                 if len > DataDisk::MAX_BYTES as f64 || !DataDisk::valid_size(len as usize) {
                     return Err(js::error(
                         "InvalidDisk",
-                        "data disk length must be a positive multiple of 512 up to 16 MiB",
+                        "raw disk length must be a positive multiple of 512 up to 16 MiB",
                     ));
                 }
                 Ok(len as usize)
@@ -332,12 +389,18 @@ fn boot(
         BootMode::Disk(isa, _) => {
             Machine::boot_with_isa_and_disk(images, isa, disk.expect("staged data disk"))
         }
+        BootMode::SystemDisk(_) => {
+            Machine::boot_with_system_disk(images, disk.expect("staged system disk"))
+        }
         BootMode::Replacement(locked_len, _) => {
             Machine::boot_with_initramfs(images, locked_len, disk)
         }
     }
     .map_err(boot_error)?;
-    Ok(RiscvLinux { machine })
+    Ok(RiscvLinux {
+        machine,
+        system_disk,
+    })
 }
 
 fn fixed_byte_view(

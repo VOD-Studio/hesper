@@ -15,7 +15,7 @@ use std::{
 
 use hesper_riscv_linux::{
     BootError, BootImages, DRAM_BASE, DataDisk, FDT_ADDRESS, GuestExit, HartIsa, INITRAMFS_ADDRESS,
-    KERNEL_ADDRESS, MAX_INITRAMFS_BYTES, Machine, Progress,
+    KERNEL_ADDRESS, MAX_INITRAMFS_BYTES, Machine, Progress, clean_ext4_superblock,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -498,7 +498,7 @@ fn load_disk(input: &Path, output: &Path, seed: Option<DiskSeed>) -> Result<Data
 
 fn save_disk(output: &Path, bytes: &[u8], system_disk: bool) -> Result<(), LinuxError> {
     let operation = if system_disk {
-        if !clean_ext4(bytes) {
+        if !clean_ext4_superblock(bytes) {
             return Err(LinuxError::UncleanSystemDisk);
         }
         "saving system disk to"
@@ -520,21 +520,6 @@ fn save_disk(output: &Path, bytes: &[u8], system_disk: bool) -> Result<(), Linux
         fs::hard_link(temp.path(), output)
     };
     save().map_err(|source| path_error(operation, output, source))
-}
-
-fn clean_ext4(disk: &[u8]) -> bool {
-    let Some(superblock) = disk.get(1024..2048) else {
-        return false;
-    };
-    let word = |offset| u16::from_le_bytes([superblock[offset], superblock[offset + 1]]);
-    let dword = |offset| u32::from(word(offset)) | u32::from(word(offset + 2)) << 16;
-    // The shutdown action remounts the root read-only. A forced poweroff can
-    // reach the same device with the journal still marked for recovery.
-    word(0x38) == 0xef53 // s_magic
-        && word(0x3a) == 0x0001 // s_state: EXT4_VALID_FS
-        && dword(0x60) & 0x0004 == 0 // s_feature_incompat: RECOVER
-        && dword(0x64) & 0x0001_0000 == 0 // s_feature_ro_compat: ORPHAN_PRESENT
-        && dword(0xe8) == 0 // s_last_orphan
 }
 
 type InputBuffer = [u8; IO_BYTES];

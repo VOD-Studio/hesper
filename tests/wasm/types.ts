@@ -3,8 +3,8 @@ import init, { Cpu6502Ram, type RegistersSnapshot, type CycleSnapshot } from "..
 import initApple, { Apple1, type TickSnapshot } from "../../target/wasm-packages/apple1/web/hesper_apple1.js";
 import { Cpu6502Ram as NodeCpu } from "../../target/wasm-packages/cpu6502/nodejs/hesper_cpu6502.js";
 import { Apple1 as NodeApple } from "../../target/wasm-packages/apple1/nodejs/hesper_apple1.js";
-import initRiscv, { RiscvLinux } from "../../target/wasm-packages/riscv-linux/web/hesper_riscv_linux.js";
-import { RiscvLinux as NodeRiscv } from "../../target/wasm-packages/riscv-linux/nodejs/hesper_riscv_linux.js";
+import initRiscv, { RiscvLinux, SystemDiskExit } from "../../target/wasm-packages/riscv-linux/web/hesper_riscv_linux.js";
+import { RiscvLinux as NodeRiscv, SystemDiskExit as NodeSystemDiskExit } from "../../target/wasm-packages/riscv-linux/nodejs/hesper_riscv_linux.js";
 
 function bootAlpine(firmware: Uint8Array, end: bigint, kernel: Uint8Array, root: Uint8Array, fdt: Uint8Array, disk: Uint8Array) {
   const web: RiscvLinux = RiscvLinux.bootImafdc(firmware, end, kernel, root, fdt);
@@ -13,6 +13,12 @@ function bootAlpine(firmware: Uint8Array, end: bigint, kernel: Uint8Array, root:
   const webDisk: RiscvLinux = RiscvLinux.bootImafdcWithDisk(firmware, end, kernel, root, fdt, disk);
   const nodeDisk: NodeRiscv = NodeRiscv.bootImafdcWithDisk(firmware, end, kernel, root, fdt, disk);
   webDisk.free(); nodeDisk.free();
+  const webRoot = RiscvLinux.bootWithSystemDisk(firmware, end, kernel, root, fdt, disk);
+  const nodeRoot = NodeRiscv.bootWithSystemDisk(firmware, end, kernel, root, fdt, disk);
+  const webExit: SystemDiskExit | undefined = webRoot.systemDiskExit;
+  const nodeExit: NodeSystemDiskExit | undefined = nodeRoot.systemDiskExit;
+  void [webExit, nodeExit];
+  webRoot.free(); nodeRoot.free();
 }
 void bootAlpine;
 
