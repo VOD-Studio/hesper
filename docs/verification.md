@@ -2082,3 +2082,33 @@ CLI 收到客体关机请求后正常退出并导出。
 | `make riscv-linux-alpine-blk-reference` | `logs-alpine-blk/reference-mlolcldu/report.json` |
 | `make riscv-linux-alpine-native` | `logs-alpine/native-0zvjsjqj/report.json` |
 | `make riscv-linux-alpine-blk-native` | `logs-alpine-blk/native-gm3w2r5f/report.json` |
+
+## RISC-V Linux Alpine 系统盘在 CLI 和 Chromium 间往返
+
+2026-11-20 在 Arch Linux x86-64 上，以 Chromium 155.0.8059.84 运行生产构建。
+使用 `RISCV_LINUX_CACHE=$PWD/.cache/riscv-linux/repro-c` 执行
+`CHROME_BIN=chromium make riscv-linux-alpine-root-browser`。
+
+1. release CLI 在真实 PTY 中从锁定种子盘冷启动，验签并离线安装 `mawk`，
+   写入 `/etc/hesper-persistence`，正常关机并导出。
+2. Chromium 通过文件选择加载 CLI 导出的盘，在 xterm 内读回配置并运行
+   `mawk` 得到 `4.375`。修改配置后执行 `poweroff`，等待「已关机」，
+   点击「导出系统盘」，下载完整的 16 MiB `hesper-system.raw`。
+3. 第二个 CLI 进程从下载盘冷启动，再次运行同一软件包，核对网页修改后的
+   配置字节。三个导出盘通过 `e2fsck -fn`，每份输入盘的 SHA-256 都保持一致。
+
+Chromium 拒绝混用 RAM 根启动文件和哈希错误的 `seed.raw`，缺盘时禁用启动。
+测试还验证了暂停时无法导出、强制关机留下待恢复日志时拒绝导出、直接停止时
+可以取消或确认丢弃。整场只产生一次用户点击触发的下载，客体文件 HTTP 请求
+为零。CLI、Chromium、CLI 三次往返启动到首提示分别为 55.15、68.08、53.34 秒。
+
+同一生产构建通过既有 Alpine 数据盘双向交换验收，含无盘 Alpine、标准 Linux
+回归。原生系统盘门禁、`make verify`、`make wasm-browser-test`、
+`bun run check` 和 `bun run build` 均在本机通过。
+
+| 本地记录 | 相对于 `RISCV_LINUX_CACHE` |
+| --- | --- |
+| 系统盘 CLI 与 Chromium 往返 | `logs-alpine-root/browser-tbwkmujv/report.json` |
+| 关机后浏览器截图 | `logs-alpine-root/browser-tbwkmujv/browser/browser-system-disk.png` |
+| 原生系统盘门禁 | `logs-alpine-root/native-rip97gf2/report.json` |
+| Alpine 数据盘浏览器回归 | `logs-alpine-blk/hesper-blk-browser.json` |

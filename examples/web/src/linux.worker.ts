@@ -2,12 +2,13 @@ import imageLock from "../../../tools/riscv-linux/images.lock.json";
 import diskImageLock from "../../../tools/riscv-linux/images-blk.lock.json";
 import alpineImageLock from "../../../tools/riscv-linux/images-alpine-lts.lock.json";
 import alpineDiskImageLock from "../../../tools/riscv-linux/images-alpine-lts-blk.lock.json";
+import alpineRootImageLock from "../../../tools/riscv-linux/images-alpine-lts-root.lock.json";
 import alpineLegacyLock from "../../../tools/riscv-linux/images-alpine.lock.json";
-import { initSync, RiscvLinux } from "./generated/riscv-linux/hesper_riscv_linux";
+import { initSync, RiscvLinux, SystemDiskExit } from "./generated/riscv-linux/hesper_riscv_linux";
 import wasmUrl from "./generated/riscv-linux/hesper_riscv_linux_bg.wasm?url";
 import { validDiskSize } from "./linux-disk";
 import { DEFAULT_INITRAMFS_NAME, validInitramfsSize } from "./linux-initramfs";
-import type { LinuxCommand, LinuxReply, LinuxState } from "./linux-messages";
+import { canExportDisk, type LinuxCommand, type LinuxProfile, type LinuxReply, type LinuxState } from "./linux-messages";
 
 const FUEL_BATCH = 65_536;
 const STALLED_TRAP_LIMIT = 32;
@@ -22,6 +23,7 @@ const pins = new Map(imageLock.images.map((pin) => [pin.path, pin]));
 const diskPins = new Map(diskImageLock.images.map((pin) => [pin.path, pin]));
 const alpinePins = new Map(alpineImageLock.images.map((pin) => [pin.path, pin]));
 const alpineDiskPins = new Map(alpineDiskImageLock.images.map((pin) => [pin.path, pin]));
+const alpineRootPins = new Map(alpineRootImageLock.images.map((pin) => [pin.path, pin]));
 const alpineLegacyPins = new Map(alpineLegacyLock.images.map((pin) => [pin.path, pin]));
 const tasks = new MessageChannel();
 const usedIds = new Set<number>();
@@ -34,6 +36,7 @@ type BootCommand = Extract<LinuxCommand, { type: "boot" }>;
 type InputQueue = { bytes: Uint8Array; start: number; length: number };
 type Session = {
   id: number;
+  profile: LinuxProfile;
   abort: AbortController;
   state: LinuxState;
   pauseRequested: boolean;
@@ -89,6 +92,10 @@ async function verifiedImage(
   const image = selected.get(name);
   if (!image) throw new Error(`Missing pinned Linux image: ${name}.`);
   const { file, pin } = image;
+  return { bytes: await verifiedFile(file, pin.sha256, subtle, signal), end: pin.end };
+}
+
+async function verifiedFile(file: File, expected: string, subtle: SubtleCrypto, signal: AbortSignal) {
   signal.throwIfAborted();
   let buffer: ArrayBuffer;
   let digest: ArrayBuffer;
@@ -97,12 +104,12 @@ async function verifiedImage(
     signal.throwIfAborted();
     digest = await subtle.digest("SHA-256", buffer);
   } catch (error) {
-    throw new Error(`Cannot read or verify ${name} (check file access and available memory): ${detail(error)}`);
+    throw new Error(`Cannot read or verify ${file.name} (check file access and available memory): ${detail(error)}`);
   }
   signal.throwIfAborted();
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  if (hash !== pin.sha256) throw new Error(`${name}: SHA-256 does not match the pinned image.`);
-  return { bytes: new Uint8Array(buffer), end: pin.end };
+  if (hash !== expected) throw new Error(`${file.name}: SHA-256 does not match the pinned image.`);
+  return new Uint8Array(buffer);
 }
 
 async function initializeWasm(signal: AbortSignal) {
@@ -131,26 +138,43 @@ function alpineImagePins(files: File[]) {
   return kernel && kernel.size === alpineLegacyPins.get("Image")?.bytes ? alpineLegacyPins : alpinePins;
 }
 
+async function readDisk(file: File, profile: LinuxProfile, subtle: SubtleCrypto, signal: AbortSignal) {
+  const seed = alpineRootImageLock.seed;
+  if (profile === "alpine-root" && file.name === seed.path) {
+    if (file.size !== seed.bytes) throw new Error(`${file.name}: expected ${seed.bytes} bytes, got ${file.size}.`);
+    return verifiedFile(file, seed.sha256, subtle, signal);
+  }
+  return readLocal(file, "raw disk", signal);
+}
+
 async function loadMachine({ sessionId, profile, files, initramfs, disk }: BootCommand, signal: AbortSignal) {
-  if (profile !== "standard" && profile !== "alpine") {
+  if (profile !== "standard" && profile !== "alpine" && profile !== "alpine-root") {
     throw new Error("Unknown Linux boot profile.");
   }
-  if (profile === "alpine" && initramfs !== undefined) {
+  if (profile !== "standard" && initramfs !== undefined) {
     throw new Error("The Alpine profile requires a locked initramfs.");
   }
   if (initramfs && !validInitramfsSize(initramfs.size)) {
     throw new InvalidInitramfs("A custom initramfs must be non-empty and no larger than 16 MiB.");
   }
   if (disk && !validDiskSize(disk.size)) {
-    throw new Error("A data disk must be a positive multiple of 512 bytes and no larger than 16 MiB.");
+    throw new Error("A raw disk must be a positive multiple of 512 bytes and no larger than 16 MiB.");
   }
-  const imagePins = profile === "alpine" ? (disk ? alpineDiskPins : alpineImagePins(files)) : (disk ? diskPins : pins);
+  if (profile === "alpine-root" && !disk) {
+    throw new Error("Alpine system disk boot requires a raw disk.");
+  }
+  const imagePins = profile === "alpine-root" ? alpineRootPins
+    : profile === "alpine" ? (disk ? alpineDiskPins : alpineImagePins(files))
+    : (disk ? diskPins : pins);
   let selected: SelectedImages;
   try {
     selected = selectFiles(files, imagePins, initramfs !== undefined);
   } catch (error) {
     if (imagePins === alpineDiskPins) {
       throw new Error(`Alpine with a data disk requires images-alpine-lts-blk. ${detail(error)}`);
+    }
+    if (imagePins === alpineRootPins) {
+      throw new Error(`Alpine system disk boot requires images-alpine-lts-root. ${detail(error)}`);
     }
     throw error;
   }
@@ -173,12 +197,15 @@ async function loadMachine({ sessionId, profile, files, initramfs, disk }: BootC
     ? await readLocal(initramfs, "custom initramfs", signal)
     : (await verifiedImage(DEFAULT_INITRAMFS_NAME, selected, subtle, signal)).bytes;
   signal.throwIfAborted();
-  const diskBytes = disk ? await readLocal(disk, "data disk", signal) : undefined;
+  const diskBytes = disk ? await readDisk(disk, profile, subtle, signal) : undefined;
   signal.throwIfAborted();
   const firmwareEnd = BigInt(firmware.end);
   if (ALPINE_BENCH) benchmarkPhase(sessionId, "images", imagesStarted);
   const loadStarted = ALPINE_BENCH ? performance.now() : 0;
   try {
+    if (profile === "alpine-root" && diskBytes) {
+      return RiscvLinux.bootWithSystemDisk(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes, diskBytes);
+    }
     if (profile === "alpine") {
       if (diskBytes) {
         return RiscvLinux.bootImafdcWithDisk(firmware.bytes, firmwareEnd, kernel.bytes, initrd, fdt.bytes, diskBytes);
@@ -352,7 +379,21 @@ tasks.port1.onmessage = ({ data: id }: MessageEvent<number>) => {
       throw new Error(`Guest stalled in a trap loop at PC 0x${machine.pc.toString(16)}.`);
     }
     const diskFault = machine.diskFault;
-    if (diskFault !== undefined) throw new Error(`Guest data disk fault: ${diskFault}`);
+    if (diskFault !== undefined) throw new Error(`Guest disk fault: ${diskFault}`);
+    if (session.profile === "alpine-root") {
+      switch (machine.systemDiskExit) {
+        case SystemDiskExit.PoweredOff:
+          session.input = undefined;
+          setState(session, "powered-off");
+          return;
+        case SystemDiskExit.UncleanPowerOff:
+          throw new Error("Guest powered off with an unclean ext4 system disk.");
+        case SystemDiskExit.Reboot:
+          throw new Error("Guest requested a reboot.");
+        case SystemDiskExit.Failure:
+          throw new Error("Guest reported a shutdown failure.");
+      }
+    }
     if (spent === 0 && outputLength === 0) {
       if (!session.input?.length) {
         setState(session, "waiting");
@@ -374,6 +415,7 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
     if (active) finish(active);
     const session: Session = {
       id: command.sessionId,
+      profile: command.profile,
       abort: new AbortController(),
       state: "loading",
       pauseRequested: false,
@@ -392,6 +434,7 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
   if (!session || command.sessionId !== session.id) return;
   switch (command.type) {
     case "stdin":
+      if (session.state === "powered-off") break;
       try {
         enqueue(session, command.bytes);
       } catch (error) {
@@ -408,7 +451,7 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
       if (session.state === "paused") setState(session, "running");
       break;
     case "export":
-      if (session.state === "paused" && !session.exportPending && session.machine) {
+      if (canExportDisk(session.profile, session.state) && !session.exportPending && session.machine) {
         try {
           const bytes = session.machine.exportDisk();
           if (bytes) {
@@ -416,7 +459,7 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
             post({ type: "disk", sessionId: session.id, bytes: bytes as Uint8Array<ArrayBuffer> });
           }
         } catch (error) {
-          finish(session, `Cannot export data disk: ${detail(error)}`);
+          finish(session, `Cannot export disk: ${detail(error)}`);
         }
       }
       break;
@@ -429,7 +472,7 @@ self.onmessage = ({ data: command }: MessageEvent<LinuxCommand>) => {
     case "stop":
       session.exportPending = false;
       if (!command.discard && session.machine?.diskDirty) {
-        setState(session, "paused");
+        if (session.state !== "powered-off") setState(session, "paused");
         post({ type: "discard-required", sessionId: session.id });
       } else {
         finish(session);

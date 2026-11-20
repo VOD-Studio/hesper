@@ -3,10 +3,15 @@ export type LinuxState =
   | "running"
   | "paused"
   | "waiting"
+  | "powered-off"
   | "failed"
   | "ended";
 
-export type LinuxProfile = "standard" | "alpine";
+export type LinuxProfile = "standard" | "alpine" | "alpine-root";
+
+export function canExportDisk(profile: LinuxProfile, state: LinuxState): boolean {
+  return state === (profile === "alpine-root" ? "powered-off" : "paused");
+}
 
 export type LinuxCommand = { sessionId: number } & (
   | { type: "boot"; profile: LinuxProfile; files: File[]; initramfs?: File; disk?: File }

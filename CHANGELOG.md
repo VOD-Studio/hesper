@@ -3,6 +3,7 @@
 记录 Hesper 各版本的用户可见变更。所有 Rust crate 统一版本；未发布的变更记在 `Unreleased`，发布时归入带日期的版本小节。
 
 ## [Unreleased]
+- **Web / RISC-V Linux**：新增「Alpine 系统盘」启动配置。客体正常关机后可下载 ext4 系统盘，供网页或 CLI 冷启动并读回软件包和配置。
 - **Wasm / RISC-V Linux**：`RiscvLinux.bootWithSystemDisk` 支持 Alpine ext4 系统盘，只有客体正常关机且 ext4 标记为干净时才可导出。
 - **CLI / RISC-V Linux**：`hesper linux` 可从 `images-alpine-lts-root` 的 ext4 系统盘冷启动，并在客体执行 `poweroff` 后原子导出。下一次启动可直接使用导出盘中的软件包与配置。Ctrl+] 放弃本次写入。
 - **RISC-V 机器库**：Alpine 系统盘板型接入 SiFive test 设备，向宿主报告客体的关机、重启和失败请求，并在收到请求时停止推进。

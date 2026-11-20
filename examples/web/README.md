@@ -86,6 +86,18 @@ Alpine 使用固定的 RAM 根。用内置 apk keys 离线安装的包只在当�
 随后点「暂停」和「导出数据盘」，浏览器下载独立的 `hesper-data.raw`。不上传、
 不修改源文件、不自动保存；停止时有尚未导出的磁盘写入会要求确认。
 
+#### Alpine 持久化系统盘
+
+运行 `make riscv-linux-alpine-root-data` 构建 `images-alpine-lts-root`，
+在「启动配置」选择「Alpine 系统盘」。加载四个锁定启动文件（无需
+`manifest.json`），再选择同目录的 `seed.raw` 或上一次从网页或 CLI
+导出的系统盘。客体直接从 `/dev/vda` 挂载 ext4 根。
+
+客体执行 `poweroff`，等状态显示「已关机」，点击「导出系统盘」下载
+`hesper-system.raw`。选择「结束会话」后可重新选盘。正常关机且 ext4
+超级块标记为干净时才能导出。暂停、直接停止和异常关机无法导出。
+磁盘仅在本地处理，输入盘保持原样。
+
 ## 数据流与边界
 
 - React → Worker 消息 → `runtime.ts` → Apple1 / Cpu6502Ram。两个工作区使用独立实例。

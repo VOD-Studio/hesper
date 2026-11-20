@@ -222,7 +222,7 @@ raw 文件作为下次冷启动的输入，重新挂载后可读回。`images-al
 `make riscv-linux-alpine-blk-browser` 在生产 Chromium 中验收双向交换
 （另需标准与无盘官方 Alpine 镜像）。
 
-#### Alpine 持久化系统盘（CLI）
+#### Alpine 持久化系统盘（CLI 与网页）
 
 构建需要带 libarchive 支持的 `mke2fs`。镜像锁使用 e2fsprogs 1.47.4，
 生成 16 MiB、无分区表的 raw ext4 种子盘。客体直接从 `/dev/vda` 挂载根目录。
@@ -265,6 +265,12 @@ poweroff
 
 `make riscv-linux-alpine-root-reference` 对照固定 QEMU。
 `make riscv-linux-alpine-root-native` 验收 release CLI、真实 PTY、管道和关机导出。
+
+网页选择「Alpine 系统盘」，加载同目录四个启动文件，再选 `seed.raw` 或 CLI
+导出的 raw 盘。客体执行正常 `poweroff` 后，点击「导出系统盘」下载
+`hesper-system.raw`。下一次可在网页重新选用此盘，也可在 CLI 中作为
+`--disk-in`。`make riscv-linux-alpine-root-browser` 在生产 Chromium 与
+release CLI 间验收往返（另需无盘官方 Alpine 镜像作校验对照）。
 
 ## Workspace 结构
 

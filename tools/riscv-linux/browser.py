@@ -54,25 +54,27 @@ def browser_session(argv, logs, command_count):
             reply = json.loads(line)
             if reply["type"] == "error":
                 raise ValueError(reply["message"])
+            if reply["type"] == "serial":
+                data = base64.b64decode(reply["bytes"], validate=True)
+                serial.extend(data)
+                output.write(data)
+                if len(serial) > (command_count + 2) * STEP_BYTES:
+                    raise ValueError("browser serial transcript exceeded its byte budget")
+                reply["bytes"] = data
             return reply
 
         def receive(seconds):
             reply = event(time.monotonic() + seconds)
             if reply["type"] != "serial":
                 raise ValueError(f"expected serial bytes, got {reply['type']}")
-            data = base64.b64decode(reply["bytes"], validate=True)
-            serial.extend(data)
-            output.write(data)
-            if len(serial) > (command_count + 2) * STEP_BYTES:
-                raise ValueError("browser serial transcript exceeded its byte budget")
-            return data
+            return reply["bytes"]
 
         def send(data):
             guest.stdin.write(json.dumps(data).encode("ascii") + b"\n")
             guest.stdin.flush()
 
-        def keys(data):
-            send(dict(type="keys", text=data.decode("ascii")))
+        def keys(data, *, kind="keys"):
+            send(dict(type=kind, text=data.decode("ascii")))
             inputs.write(data)
 
         def finish():

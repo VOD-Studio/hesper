@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
 import { validDiskSize } from "./linux-disk";
 import { DEFAULT_INITRAMFS_NAME, validInitramfsSize } from "./linux-initramfs";
-import type { LinuxCommand, LinuxProfile, LinuxReply, LinuxState } from "./linux-messages";
+import { canExportDisk, type LinuxCommand, type LinuxProfile, type LinuxReply, type LinuxState } from "./linux-messages";
 import "@xterm/xterm/css/xterm.css";
 import "./LinuxWorkspace.css";
 
@@ -26,6 +26,7 @@ const labels: Record<LinuxState, string> = {
   running: "运行中",
   paused: "已暂停",
   waiting: "等待输入",
+  "powered-off": "已关机",
   failed: "运行失败",
   ended: "未运行",
 };
@@ -36,6 +37,7 @@ type DiskSelection = "empty" | "selected" | "invalid";
 type Session = {
   id: number;
   worker: Worker;
+  profile: LinuxProfile;
   ready: boolean;
   state: LinuxState;
   hasDisk: boolean;
@@ -95,12 +97,12 @@ function postInput({ id, worker }: Session, bytes: Uint8Array<ArrayBuffer>) {
   }
 }
 
-function downloadDisk(bytes: Uint8Array<ArrayBuffer>) {
+function downloadDisk(bytes: Uint8Array<ArrayBuffer>, profile: LinuxProfile) {
   const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
   try {
     const link = document.createElement("a");
     link.href = url;
-    link.download = "hesper-data.raw";
+    link.download = profile === "alpine-root" ? "hesper-system.raw" : "hesper-data.raw";
     link.click();
   } finally {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -177,7 +179,8 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   }
 
   function selectProfile(value: string) {
-    if (session.current || value === profile || (value !== "standard" && value !== "alpine")) return;
+    if (session.current || value === profile ||
+        (value !== "standard" && value !== "alpine" && value !== "alpine-root")) return;
     if (filesInput.current) filesInput.current.value = "";
     setFiles([]);
     clearInitramfs();
@@ -207,7 +210,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       // Keep xterm's queued writes and decoder state isolated from the next boot.
       const tty = openSerial(host.current, (bytes) => {
         const current = session.current;
-        if (current?.id === id && current.ready && current.pending !== "stopping") {
+        if (current?.id === id && current.ready && current.state !== "powered-off" && current.pending !== "stopping") {
           postInput(current, bytes);
         }
       });
@@ -220,6 +223,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       const current: Session = {
         id,
         worker,
+        profile,
         ready: false,
         state: "loading",
         hasDisk: disk !== undefined,
@@ -246,14 +250,17 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             if (data.state === "ended" || data.state === "failed") {
               releaseSession();
               setPending(null);
-            } else if (current.pending === "resuming" && data.state !== "paused") {
-              updatePending(current, null);
+            } else {
+              if (data.state === "powered-off") terminal.options.disableStdin = true;
+              if (current.pending === "resuming" && data.state !== "paused") {
+                updatePending(current, null);
+              }
             }
             break;
           case "disk": {
             // Stop invalidates the in-flight export even if its reply is queued.
-            if (current.pending !== "exporting" || current.state !== "paused") break;
-            downloadDisk(data.bytes);
+            if (current.pending !== "exporting" || !canExportDisk(current.profile, current.state)) break;
+            downloadDisk(data.bytes, current.profile);
             const command: LinuxCommand = { type: "exported", sessionId: id };
             worker.postMessage(command);
             updatePending(current, null);
@@ -261,11 +268,12 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
           }
           case "discard-required": {
             if (current.pending !== "stopping") break;
-            if (window.confirm("数据盘有未导出的修改。要丢弃修改并停止会话吗？")) {
+            const kind = current.profile === "alpine-root" ? "系统盘" : "数据盘";
+            if (window.confirm(`${kind}有未导出的修改。要丢弃修改并停止会话吗？`)) {
               const command: LinuxCommand = { type: "stop", sessionId: id, discard: true };
               worker.postMessage(command);
             } else {
-              terminal.options.disableStdin = false;
+              terminal.options.disableStdin = current.state === "powered-off";
               updatePending(current, null);
             }
             break;
@@ -308,9 +316,9 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
       if (serial.current) serial.current.terminal.options.disableStdin = true;
       updatePending(current, "stopping");
     } else if (type === "resume" || type === "export") {
-      if (current.state !== "paused" || current.pending || (type === "export" && !current.hasDisk)) {
-        return;
-      }
+      const allowed = type === "resume" ? current.state === "paused"
+        : current.hasDisk && canExportDisk(current.profile, current.state);
+      if (!allowed || current.pending) return;
       updatePending(current, type === "export" ? "exporting" : "resuming");
     }
     const command: LinuxCommand = { type, sessionId: current.id };
@@ -320,14 +328,15 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
   const active = status.state !== "ended" && status.state !== "failed";
   const stopping = pending === "stopping";
   const advancing = status.state === "running" || status.state === "waiting";
+  const systemDisk = profile === "alpine-root";
   const requiredImages = profile === "standard" && initramfs ? baseImageNames : defaultImageNames;
   const selectedNames = new Set(files.map((file) => file.name));
   const missingImages = requiredImages.filter((name) => !selectedNames.has(name));
   const unexpectedImages = selectedNames.size !== files.length ||
     files.some((file) => !defaultImageNames.includes(file.name));
   const canStart = missingImages.length === 0 && !unexpectedImages &&
-    !initramfsError && diskSelection !== "invalid";
-  const canExport = status.state === "paused" && pending === null && diskSelection === "selected";
+    !initramfsError && (systemDisk ? diskSelection === "selected" : diskSelection !== "invalid");
+  const canExport = canExportDisk(profile, status.state) && pending === null && diskSelection === "selected";
 
   return (
     <main className="linux-workspace" hidden={hidden}>
@@ -384,7 +393,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             disabled={!canExport}
             onClick={() => control("export")}
           >
-            <Download /> 导出数据盘
+            <Download /> {systemDisk ? "导出系统盘" : "导出数据盘"}
           </Button>
           <Button
             data-linux-stop
@@ -393,7 +402,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             disabled={!active || stopping}
             onClick={() => control("stop")}
           >
-            <Square /> {status.state === "loading" ? "取消启动" : "停止"}
+            <Square /> {status.state === "loading" ? "取消启动" : status.state === "powered-off" ? "结束会话" : "停止"}
           </Button>
         </div>
       </div>
@@ -419,10 +428,12 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               >
                 <option value="standard">标准</option>
                 <option value="alpine">Alpine</option>
+                <option value="alpine-root">Alpine 系统盘</option>
               </select>
             </label>
             <p id="linux-files-help">
               请一次选择此配置的锁定文件。浏览器只在本地读取并校验，不会上传。
+              {systemDisk && " 系统盘配置使用 images-alpine-lts-root。"}
               {profile === "alpine" && " Alpine 使用锁定的 initramfs。"}
             </p>
             <ul className="linux-images">
@@ -459,7 +470,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
           <section
             className="linux-local-input"
             aria-labelledby="linux-initramfs-label"
-            hidden={profile === "alpine"}
+            hidden={profile !== "standard"}
           >
             <h2 className="section-label" id="linux-initramfs-label">
               自定义 initramfs（可选）
@@ -474,7 +485,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               aria-label="选择自定义 initramfs"
               aria-describedby="linux-initramfs-help"
               aria-invalid={Boolean(initramfsError)}
-              disabled={active || profile === "alpine"}
+              disabled={active || profile !== "standard"}
               onChange={(event) => selectInitramfs(event.currentTarget)}
             />
             {initramfsError && (
@@ -484,7 +495,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               data-linux-clear-initramfs
               variant="outline"
               size="sm"
-              disabled={active || profile === "alpine" || (!initramfs && !initramfsError)}
+              disabled={active || profile !== "standard" || (!initramfs && !initramfsError)}
               onClick={clearInitramfs}
             >
               清除自定义 initramfs
@@ -495,20 +506,20 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             aria-labelledby="linux-disk-label"
           >
             <h2 className="section-label" id="linux-disk-label">
-              本地数据盘（可选）
+              {systemDisk ? "本地系统盘（必选）" : "本地数据盘（可选）"}
             </h2>
             <p id="linux-disk-help">
-              {profile === "alpine"
-                ? "选用数据盘时，请使用 images-alpine-lts-blk 的启动文件。"
-                : "选用数据盘时，请使用 images-blk 的启动文件。"}
-              先在客体卸载数据盘，再暂停并导出。数据盘不会上传或覆盖原文件。
+              {systemDisk
+                ? "选择 seed.raw 或上次导出的系统盘。在客体执行 poweroff，等到已关机后导出。直接停止会丢弃本次修改。"
+                : `选用数据盘时，请使用 ${profile === "alpine" ? "images-alpine-lts-blk" : "images-blk"} 的启动文件。先在客体卸载数据盘，再暂停并导出。`}
+              磁盘不会上传或覆盖原文件。
             </p>
             <input
               data-linux-disk
               ref={diskInput}
               type="file"
               accept=".raw"
-              aria-label="选择 Linux 原始数据盘"
+              aria-label={systemDisk ? "选择 Alpine 原始系统盘" : "选择 Linux 原始数据盘"}
               aria-describedby="linux-disk-help"
               aria-invalid={diskSelection === "invalid"}
               disabled={active}
@@ -516,7 +527,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
             />
             {diskSelection === "invalid" && (
               <p data-linux-disk-error role="alert">
-                数据盘大小必须是 512 字节的正整数倍，且不得超过 16 MiB。
+                磁盘大小必须是 512 字节的正整数倍，且不得超过 16 MiB。
               </p>
             )}
             <Button
@@ -526,7 +537,7 @@ export default function LinuxWorkspace({ hidden }: { hidden: boolean }) {
               disabled={active || diskSelection === "empty"}
               onClick={clearDisk}
             >
-              清除数据盘
+              {systemDisk ? "清除系统盘" : "清除数据盘"}
             </Button>
           </section>
           <section aria-labelledby="linux-metrics-label">

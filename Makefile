@@ -38,6 +38,7 @@
 #   make riscv-linux-alpine-blk-data / riscv-linux-alpine-blk-reference  复建并验证官方 Alpine 数据盘配置
 #   make riscv-linux-alpine-root-data / riscv-linux-alpine-root-reference  复建 ext4 系统盘并用固定 QEMU 验证
 #   make riscv-linux-alpine-root-native  release CLI 的 PTY 持久化、管道与失败验收
+#   make riscv-linux-alpine-root-browser  生产 Chrome 与 CLI 往返持久化系统盘
 #   make riscv-linux-fd-reference  对照 QEMU 与 Hesper 的浮点位签名
 #   make riscv-linux-alpine-native  原生管道、PTY、冷启动和镜像拒绝验收
 #   make riscv-linux-alpine-bench   同一宿主的官方 Alpine 冷启动基准（手动执行）
@@ -243,6 +244,12 @@ riscv-linux-initramfs-browser:
 riscv-linux-alpine-browser:
 	cd examples/web && bun run build
 	python3 tools/riscv-linux/browser_alpine.py
+
+.PHONY: riscv-linux-alpine-root-browser
+riscv-linux-alpine-root-browser:
+	cargo build --locked --release -p hesper
+	cd examples/web && bun run build
+	python3 tools/riscv-linux/browser_alpine_root.py "$(or $(CARGO_TARGET_DIR),target)/release/hesper"
 
 .PHONY: riscv-linux-alpine-bench
 riscv-linux-alpine-bench:

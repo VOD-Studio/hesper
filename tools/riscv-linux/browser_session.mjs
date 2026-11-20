@@ -8,13 +8,15 @@ import { Readable } from "node:stream";
 const [dist, images, logs, mode, ...input] = process.argv.slice(2);
 const alpineDiskGate = mode === "alpine-disk";
 const diskGate = mode === "disk" || alpineDiskGate;
+const alpineRootGate = mode === "alpine-root";
 const initramfsGate = mode === "initramfs";
 const alpineGate = mode === "alpine";
 const benchmark = mode === "alpine-bench";
 const benchDisk = benchmark ? input[0] : undefined;
 const [cliDisk, webDisk, oversized, alpineSerialImages, standardImages] = input;
 const [corrupt] = input;
-const lockName = alpineDiskGate || benchDisk ? "images-alpine-lts-blk.lock.json" : diskGate ? "images-blk.lock.json"
+const lockName = alpineRootGate ? "images-alpine-lts-root.lock.json"
+  : alpineDiskGate || benchDisk ? "images-alpine-lts-blk.lock.json" : diskGate ? "images-blk.lock.json"
   : alpineGate || benchmark ? "images-alpine-lts.lock.json" : "images.lock.json";
 const readLock = name => JSON.parse(readFileSync(new URL(name, import.meta.url), "utf8"));
 const lock = readLock(lockName);
@@ -25,8 +27,11 @@ const tab = "/hesper/";
 const guestNames = new Set(lock.images.map(entry => entry.path));
 if (initramfsGate) for (const file of input.slice(1)) guestNames.add(basename(file));
 if (diskGate) for (const file of [cliDisk, webDisk]) guestNames.add(basename(file));
+if (alpineRootGate) for (const file of [cliDisk, webDisk]) guestNames.add(basename(file));
 if (benchDisk) guestNames.add(basename(benchDisk));
-const isGuestPath = path => guestNames.has(basename(path)) || (alpineGate && /\.apk$/i.test(path));
+const isGuestPath = path => guestNames.has(basename(path)) || (alpineRootGate && /\.raw$/i.test(path))
+  || ((alpineGate || alpineRootGate) && /\.apk$/i.test(path));
+const recordWorker = diskGate || initramfsGate || alpineGate || alpineRootGate;
 const alpineWorkerEvents = [], networkTrace = [], networkRequests = new Map(), servedWasm = new Set();
 const guestRequests = [];
 let guestDownloadedBytes = 0;
@@ -92,8 +97,8 @@ try {
   const page = pages.find(target => target.type === "page");
   check(page, "Chromium did not expose its temporary tab");
   socket = await connect(page.webSocketDebuggerUrl);
-  if (diskGate) browserSocket = await connect(version.webSocketDebuggerUrl);
-  let sequence = 0, streaming, serialBytes = 0;
+  if (diskGate || alpineRootGate) browserSocket = await connect(version.webSocketDebuggerUrl);
+  let sequence = 0, streaming, expectedGuestError, serialBytes = 0;
   const requests = new Map();
   const replies = [];
   const workerEvents = alpineGate ? alpineWorkerEvents : [];
@@ -126,14 +131,16 @@ try {
       dialogs.push(message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params.name === "observeHesper") {
       const event = JSON.parse(message.params.payload);
-      if (diskGate || initramfsGate || alpineGate) workerEvents.push(event);
+      if (recordWorker) workerEvents.push(event);
       if (event.request) return;
       replies.push(event);
       if (event.sessionId !== streaming) return;
       if (event.type === "stdout") {
         serialBytes += event.bytes.length;
         emit({ type: "serial", bytes: Buffer.from(event.bytes).toString("base64") });
-      } else if (event.type === "error") emit({ type: "error", message: event.message });
+      } else if (event.type === "error" && event.sessionId !== expectedGuestError) {
+        emit({ type: "error", message: event.message });
+      }
     }
   };
   socket.onmessage = onmessage;
@@ -159,24 +166,24 @@ try {
       emit({ type: "error", message: `Chromium target monitoring: ${networkError}` });
     }
   }
-  async function evaluate(expression, awaitPromise = false) {
-    const result = await call("Runtime.evaluate", { expression, awaitPromise, returnByValue: true });
+  async function evaluate(expression, awaitPromise = false, deadline) {
+    const result = await call("Runtime.evaluate", { expression, awaitPromise, returnByValue: true }, deadline);
     if (result.exceptionDetails) throw new Error(`${result.exceptionDetails.exception?.description}: ${expression}`);
     return result.result.value;
   }
   const state = name => `document.querySelector('[data-linux-state]')?.dataset.linuxState === '${name}'`;
   const visible = prefix => `document.querySelector(${JSON.stringify(prefix)})?.checkVisibility()`;
   const tty = () => `Array.from(document.querySelectorAll('[data-linux-terminal] .xterm-rows > div'), row => row.textContent).join('\\n')`;
-  async function until(predicate, name) {
+  async function until(predicate, name, ms = 8000) {
     const available = await evaluate(`new Promise(resolve => {
       const started = performance.now();
       function tick() {
         if (${predicate}) resolve(true);
-        else if (performance.now() - started > 8000) resolve(false);
+        else if (performance.now() - started > ${ms}) resolve(false);
         else setTimeout(tick, 12);
       }
       tick();
-    })`, true);
+    })`, true, ms + 4000);
     check(available, `page did not reach ${name}`);
   }
   async function waitFor(predicate, name) {
@@ -195,11 +202,14 @@ try {
   const profilePicker = 'select[data-linux-profile][aria-label="启动配置"]';
   const picker = `document.querySelector(${JSON.stringify(profilePicker)})`;
   async function selectProfile(value) {
-    const key = value === "alpine" ? "End" : "Home";
     check(await evaluate(`${enabled(profilePicker)} && (${picker}.focus(), document.activeElement === ${picker})`),
       "could not focus the launch configuration selector with the session stopped");
-    await call("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: key === "End" ? 35 : 36 });
-    await call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key });
+    const keys = { Home: 36, End: 35, ArrowDown: 40 };
+    const sequence = value === "alpine-root" ? ["End"] : value === "alpine" ? ["Home", "ArrowDown"] : ["Home"];
+    for (const key of sequence) {
+      await call("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code: key, windowsVirtualKeyCode: keys[key] });
+      await call("Input.dispatchKeyEvent", { type: "keyUp", key, code: key });
+    }
     await until(`${picker}.value === ${JSON.stringify(value)} &&
       document.querySelector('[data-linux-files]').files.length === 0 && !${enabled("[data-linux-start]")}`,
       `keyboard selection of ${value} with cleared local files`);
@@ -275,7 +285,7 @@ try {
         });
       }
       postMessage(message, ...transfer) {
-        if (${diskGate || initramfsGate || alpineGate} && typeof message?.sessionId === 'number' && message.type !== 'stdin') {
+        if (${recordWorker} && typeof message?.sessionId === 'number' && message.type !== 'stdin') {
           this.#observedSessionId = message.sessionId;
           const file = value => value instanceof File ? {name: value.name, size: value.size} : undefined;
           observeHesper(JSON.stringify({request: true, sessionId: message.sessionId, type: message.type,
@@ -308,6 +318,7 @@ try {
   await click("[data-linux-tab]");
   await until(visible("[data-linux-files]"), "lazy Linux workspace");
   if (diskGate) await runDiskGate();
+  else if (alpineRootGate) await runAlpineRootGate();
   else if (initramfsGate) await runInitramfsGate();
   else if (alpineGate) await runAlpineGate();
   else if (benchmark) await runBenchmark();
@@ -663,6 +674,134 @@ try {
           guestRequests: guestRequests.length, guestDownloadedBytes });
         break;
       } else throw new Error(`unexpected browser initramfs gate request ${request.type} during ${phase}`);
+    }
+  }
+
+  async function runAlpineRootGate() {
+    const [inputDisk, corruptSeed, ramRootImages] = input;
+    const diskInput = "[data-linux-disk]";
+    const exporter = "[data-linux-export]";
+    const start = "[data-linux-start]";
+    const stop = "[data-linux-stop]";
+    const error = "[data-linux-error]";
+    const filename = "hesper-system.raw";
+    const diskBytes = lock.seed.bytes;
+    const nextId = () => 1 + (workerEvents.findLast(event => event.request && event.type === "boot")?.sessionId ?? 0);
+    const repliesFor = id => replies.filter(reply => reply.sessionId === id);
+    const rejections = [];
+    const directory = join(logs, "downloads");
+
+    async function selectFilesForRoot(directory, pins = lock) {
+      await setFiles("[data-linux-files]", pins.images.map(entry => join(directory, entry.path)));
+    }
+    async function rejectBeforeBoot(path, expected) {
+      await setFiles(diskInput, [path]);
+      await until(enabled(start), "system disk selected");
+      const id = nextId();
+      await click(start);
+      await until(`${state("failed")} && ${visible(error)}`, "preflight rejection");
+      const events = repliesFor(id);
+      const message = events.find(reply => reply.type === "error")?.message;
+      check(message?.includes(expected) && events.every(reply => !["ready", "stdout", "disk"].includes(reply.type)),
+        `unexpected preflight result for ${expected}: ${message}`);
+      rejections.push({ id, message });
+    }
+    async function boot(phase) {
+      await setFiles(diskInput, [inputDisk]);
+      await until(enabled(start), "start enabled with a selected system disk");
+      streaming = nextId();
+      const imageBytes = await evaluate("Array.from(document.querySelector('[data-linux-files]').files, file => file.size).reduce((a,b) => a+b, 0)");
+      await click(start);
+      const request = await waitFor(() => workerEvents.find(event => event.request && event.type === "boot" &&
+        event.sessionId === streaming), `system disk boot for ${phase}`);
+      check(request.profile === "alpine-root" && request.disk?.name === basename(inputDisk) &&
+        request.disk.size === diskBytes && !request.initramfs, "Worker did not use the selected system disk profile");
+      emit({ type: "start", phase, imageBytes, browser: version.Browser, url: `http://127.0.0.1:${server.port}${tab}` });
+    }
+    async function discard(accept) {
+      const before = dialogs.length;
+      const pressed = click(stop);
+      const dialog = await waitFor(() => dialogs[before], "system disk discard confirmation");
+      check(dialog.type === "confirm" && dialog.message.includes("系统盘"), "wrong dialog for a dirty system disk");
+      await call("Page.handleJavaScriptDialog", { accept });
+      await pressed;
+      await until(accept ? state("ended") : `${state("paused")} && ${enabled(stop)}`, "system disk discard response");
+    }
+
+    await selectProfile("alpine-root");
+    await selectFilesForRoot(ramRootImages, readLock("images-alpine-lts.lock.json"));
+    await rejectBeforeBoot(inputDisk, "requires images-alpine-lts-root");
+    await click("[data-linux-clear-disk]");
+    await selectFilesForRoot(images);
+    check(await evaluate(`!${enabled(start)} && !${visible("[data-linux-initramfs]")}`),
+      "system disk boot was available without a disk or offered an initramfs override");
+    await rejectBeforeBoot(corruptSeed, "seed.raw: SHA-256");
+    await call("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: directory, eventsEnabled: true },
+      12_000, browserSocket);
+    await boot("cli-to-web");
+
+    let exported, forcedError, discarded;
+    for await (const line of createInterface({ input: process.stdin })) {
+      const request = JSON.parse(line);
+      if (request.type === "keys") {
+        check(!await evaluate(enabled(exporter)), "system disk could be exported while running");
+        await type(request.text);
+      } else if (request.type === "download-system") {
+        await until(`${state("powered-off")} && ${enabled(exporter)}`, "clean shutdown with export enabled", 45000);
+        check(!await evaluate(`${enabled("[data-linux-resume]")} || ${enabled("[data-linux-pause]")}`),
+          "a powered-off system was still runnable");
+        await until(`${tty()}.split('\\n').some(line => line.trimEnd() === 'HESPER_WEB_SYSTEM_DISK:42')`,
+          "xterm rendered the browser's config update result");
+        check(downloads.length === 0 && repliesFor(streaming).every(reply => reply.type !== "disk"),
+          "clean shutdown exported without an explicit action");
+        await click(exporter);
+        const begin = await waitFor(() => downloads[0], "system disk download start");
+        const progress = await waitFor(() => {
+          const status = downloadProgress.get(begin.guid);
+          return status && status.state !== "inProgress" && status;
+        }, "system disk download completion");
+        const reply = repliesFor(streaming).find(reply => reply.type === "disk");
+        check(progress.state === "completed" && progress.receivedBytes === diskBytes &&
+          begin.suggestedFilename === filename && begin.url.startsWith("blob:") &&
+          statSync(join(directory, filename)).size === diskBytes && reply?.byteLength === diskBytes,
+          "browser did not download the full raw system disk");
+        const screenshot = await call("Page.captureScreenshot", { format: "png" });
+        writeFileSync(join(logs, "browser-system-disk.png"), Buffer.from(screenshot.data, "base64"));
+        await click(stop);
+        await until(state("ended"), "closing after export without discarding any unsaved changes");
+        streaming = undefined;
+        exported = true;
+        emit({ type: "download", filename, bytes: diskBytes });
+      } else if (request.type === "boot-control") {
+        check(exported, "system disk control ran before the round trip");
+        await boot(request.phase);
+      } else if (request.type === "force-poweroff") {
+        expectedGuestError = streaming;
+        await type(request.text);
+        await until(`${state("failed")} && ${visible(error)}`, "unclean poweroff rejected", 45000);
+        forcedError = repliesFor(streaming).find(reply => reply.type === "error")?.message;
+        check(forcedError?.includes("unclean ext4 system disk"), `unexpected forced poweroff result: ${forcedError}`);
+        check(!await evaluate(enabled(exporter)), "an unclean poweroff enabled system disk export");
+        check(repliesFor(streaming).every(reply => reply.type !== "disk"), "forced poweroff returned a disk");
+        streaming = undefined;
+        emit({ type: "forced-poweroff", message: forcedError });
+      } else if (request.type === "discard-system") {
+        await click("[data-linux-pause]");
+        await until(`${state("paused")} && !${enabled(exporter)}`, "paused system disk with export disabled");
+        await discard(false);
+        check(!await evaluate(enabled(exporter)), "declining Stop enabled system disk export");
+        await discard(true);
+        check(repliesFor(streaming).every(reply => reply.type !== "disk"), "Stop returned a system disk");
+        streaming = undefined;
+        discarded = true;
+        emit({ type: "discarded" });
+      } else if (request.type === "finish") {
+        check(exported && forcedError && discarded, "system disk acceptance is incomplete");
+        check(downloads.length === 1 && readdirSync(directory).join() === filename, "unexpected system disk download");
+        check(guestDownloadedBytes === 0 && guestRequests.length === 0, "the site requested guest files over HTTP");
+        emit({ type: "done", rejections, guestDownloadedBytes });
+        break;
+      } else throw new Error(`unknown system disk gate request ${request.type}`);
     }
   }
 

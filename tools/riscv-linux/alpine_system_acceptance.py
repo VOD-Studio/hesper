@@ -19,11 +19,11 @@ def install_states():
     )
 
 
-def cold_states():
+def cold_states(config_data=CONFIG_DATA):
     return (
         ROOT_MOUNT,
         checked("mawk-db-installed", APK + b" info -e mawk"),
         checked("mawk-sha256", b"sha256sum /usr/bin/mawk", MAWK_SHA256),
         checked("mawk", b"""mawk 'BEGIN {print sprintf("%.3f", 7*1.25/2)}'""", b"4.375"),
-        checked("read-config", b"printf '" + CONFIG_DATA + b"' | cmp - " + CONFIG),
+        checked("read-config", b"printf '" + config_data + b"' | cmp - " + CONFIG),
     )
